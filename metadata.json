@@ -1,0 +1,6 @@
+{
+  "name": "انجمن علمی مهندسی صنایع | IE Student Association",
+  "description": "مینی‌اپلیکیشن تلگرام انجمن علمی مهندسی صنایع با طراحی پیکسل‌آرت دنج، هسته امنیتی، و تجربه لمسی تعاملی",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

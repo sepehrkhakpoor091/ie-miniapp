@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    touch-action: manipulation;
+  }
+
+  code, kbd, samp, pre, .font-mono {
+    font-family: 'Vazirmatn', ui-monospace, monospace;
+  }
+}
+
+/* Crisp Pixel Art Rendering */
+.pixelated {
+  image-rendering: -moz-crisp-edges;
+  image-rendering: -webkit-crisp-edges;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* Custom Cozy Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(145, 181, 190, 0.25);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(145, 181, 190, 0.45);
+}
+
+/* Shimmer animation for liquid gold progress bar */
+@keyframes liquidShimmer {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+.animate-shimmer {
+  animation: liquidShimmer 2.4s infinite linear;
+}
+
+/* Subtle pixel star twinkle (GPU-accelerated translate3d) */
+@keyframes pixelTwinkle {
+  0%, 100% { opacity: 0.25; transform: translate3d(0, 0, 0) scale(0.8); }
+  50% { opacity: 1; transform: translate3d(1px, -1.5px, 0) scale(1.15); }
+}
+
+@keyframes pixel-twinkle {
+  0%, 100% { opacity: 0.25; transform: translate3d(0, 0, 0) scale(0.8); }
+  50% { opacity: 1; transform: translate3d(1.5px, -2px, 0) scale(1.2); }
+}
+
+.animate-twinkle {
+  animation: pixelTwinkle 2.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Subtle cloud drift (GPU-accelerated translate3d) */
+@keyframes cloudDrift {
+  0% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(-18px, -1.5px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes pixel-cloud-drift-1 {
+  0%, 100% { transform: translate3d(0px, 0px, 0); }
+  50% { transform: translate3d(22px, -2px, 0); }
+}
+
+@keyframes pixel-cloud-drift-2 {
+  0%, 100% { transform: translate3d(0px, 0px, 0); }
+  50% { transform: translate3d(-20px, 1.5px, 0); }
+}
+
+@keyframes pixel-float {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -2.5px, 0); }
+}
+
+.animate-cloud {
+  animation: cloudDrift 12s ease-in-out infinite;
+  will-change: transform;
+}
+
