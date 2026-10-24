@@ -61,7 +61,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
     {
       id: 'achievements',
       label: 'تالار افتخارات',
-      subtitle: 'رقابت ورودی‌ها و صندوقچه',
+      subtitle: 'جدول برترین‌ها و صندوقچه',
       iconFile: '19_badge_trophy.png',
     },
     {

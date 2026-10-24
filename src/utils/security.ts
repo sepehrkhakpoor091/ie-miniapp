@@ -730,16 +730,12 @@ export async function secureFetch(
   options: RequestInit = {}
 ): Promise<Response> {
   const nonce = generateRequestNonce();
-  const tgUser = getRealTelegramUser();
   const headers = new Headers(options.headers || {});
   if (!headers.has('Content-Type') && options.method && options.method !== 'GET') {
     headers.set('Content-Type', 'application/json');
   }
   headers.set('X-Request-Nonce', nonce);
   headers.set('X-Telegram-Init-Data', getTelegramInitDataRaw());
-  if (tgUser?.id) {
-    headers.set('X-Telegram-User-Id', tgUser.id);
-  }
   return fetch(url, { ...options, headers });
 }
 

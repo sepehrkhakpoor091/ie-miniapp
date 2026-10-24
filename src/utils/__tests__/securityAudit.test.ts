@@ -63,12 +63,28 @@ test('Patch 2 & Master Admin Binding: verifyMasterPasswordHash & Telegram ID 629
     resolveBotEndpoint('/api/miniapp/admin-auth'),
     'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/admin-auth'
   );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/bootstrap'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/bootstrap'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/register-profile'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/register-profile'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/dispute-student-id'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/dispute-student-id'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/admin-save-lootbox'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/admin-save-lootbox'
+  );
 });
 
 test('Patch 3: verifyStateIntegrity binds checksum to both studentId and telegramUserId (Anti-Replay)', () => {
   const stuA = {
     score: 280,
-    studentId: '4021202422',
+    studentId: '4011234567',
     level: 3,
     telegramUserId: 'tg-user-11111',
   };
@@ -119,7 +135,7 @@ test('Patch 4: validateUploadedImageFile blocks SVG/scripts, >4MB files, and inv
 });
 
 test('Patch 5: generateTicketPayload and verifyTicketSignature bind paidAmount against forgery', () => {
-  const qr = generateTicketPayload('ev-python-data', '4021202422', 'TK-884920', 150000);
+  const qr = generateTicketPayload('ev-python-data', '4011234567', 'TK-884920', 150000);
   assert.equal(verifyTicketSignature(qr), true);
   assert.equal(qr.split(':').length, 5);
 

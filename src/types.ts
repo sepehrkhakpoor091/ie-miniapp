@@ -172,6 +172,49 @@ export interface DiscountVoucher {
   signatureHash: string;
 }
 
+export interface LootboxPrizeItem {
+  id: string;
+  title: string;
+  type?: 'voucher' | 'discount' | 'points' | 'empty';
+  rewardType?: 'discount' | 'voucher' | 'points' | 'empty';
+  discountPercent?: number;
+  maxDiscountTomans?: number;
+  bonusPoints?: number;
+  chancePercent: number; // 0 to 100
+}
+
+export interface LootboxConfig {
+  bronzeCost: number;
+  goldCost: number;
+  bronzePrizes: LootboxPrizeItem[];
+  goldPrizes: LootboxPrizeItem[];
+  updatedAt?: string;
+}
+
+export interface StudentIdDisputeTicket {
+  id: string;
+  studentId: string;
+  fullName: string;
+  reporterName?: string;
+  phone: string;
+  phoneNumber?: string;
+  explanation: string;
+  telegramUserId?: string;
+  submittedAt: string;
+  status: 'open' | 'resolved';
+}
+
+export interface BootstrapResponse {
+  ok: boolean;
+  completedProfile?: boolean;
+  profile?: UserProfile;
+  students?: AdminStudentDossier[];
+  lootboxConfig?: LootboxConfig;
+  announcements?: ChannelAnnouncement[];
+  disputes?: StudentIdDisputeTicket[];
+  disputeTickets?: StudentIdDisputeTicket[];
+}
+
 export interface LeaderboardStudent {
   id: string;
   rank: number;

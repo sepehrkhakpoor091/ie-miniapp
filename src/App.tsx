@@ -26,9 +26,11 @@ import {
   EventItem,
   FeatureFlags,
   KycStatus,
+  LootboxConfig,
   PointTransaction,
   Professor,
   ScheduledTimer,
+  StudentIdDisputeTicket,
   TabType,
   ThemeMode,
   TicketRecord,
@@ -56,18 +58,22 @@ import {
   getRealTelegramUser,
   getValidAdminSession,
   safeJsonParse,
-  touchAdminSession,
-  verifyStateIntegrity,
+   verifyStateIntegrity,
 } from './utils/security';
 import {
   DEFAULT_CERTIFICATES,
+  DEFAULT_LOOTBOX_CONFIG,
   EXTENDED_BADGES,
   INITIAL_POINT_TRANSACTIONS,
   INITIAL_WEEKLY_QUESTS,
   calculateLevelFromScore,
 } from './utils/gamification';
-import { EVENTS_DATA, generateTicketPayload } from './utils/events';
-import { syncUserProfileToBot } from './utils/apiBridge';
+import { EVENTS_DATA } from './utils/events';
+import {
+  BOT_WORKER_BASE_URL,
+  fetchMiniAppBootstrap,
+  syncUserProfileToBot,
+} from './utils/apiBridge';
 
 // Error Boundary & Core UI
 import { PixelErrorBoundary } from './components/ui/PixelErrorBoundary';
@@ -103,44 +109,47 @@ import { RemindersModal } from './components/modals/RemindersModal';
 import { SupportModal } from './components/modals/SupportModal';
 import { EventDetailsModal } from './components/modals/EventDetailsModal';
 
-const USER_STORAGE_KEY = 'ie_student_profile_v3';
-const CHECKSUM_STORAGE_KEY = 'ie_student_checksum_v3';
+const USER_STORAGE_KEY = 'ie_student_profile_v6';
+const CHECKSUM_STORAGE_KEY = 'ie_student_checksum_v6';
 const THEME_STORAGE_KEY = 'ie_theme_mode';
-const TICKETS_STORAGE_KEY = 'ie_student_tickets_v5';
+const TICKETS_STORAGE_KEY = 'ie_student_tickets_v6';
 const CERTIFICATES_STORAGE_KEY = 'ie_student_certificates_v4';
-const TRANSACTIONS_STORAGE_KEY = 'ie_student_transactions_v3';
-const VOUCHERS_STORAGE_KEY = 'ie_student_vouchers_v3';
+const TRANSACTIONS_STORAGE_KEY = 'ie_student_transactions_v6';
+const VOUCHERS_STORAGE_KEY = 'ie_student_vouchers_v6';
 const QUESTS_STORAGE_KEY = 'ie_student_quests_v3';
 const EVENTS_STORAGE_KEY = 'ie_events_catalog_v4';
 const PROFESSORS_STORAGE_KEY = 'ie_professors_catalog_v4';
 const ADMINS_STORAGE_KEY = 'ie_admins_catalog_v4';
 const FEATURE_FLAGS_STORAGE_KEY = 'ie_feature_flags_v4';
-const STUDENTS_STORAGE_KEY = 'ie_students_catalog_v5';
-const RECEIPTS_STORAGE_KEY = 'ie_receipts_catalog_v5';
+const STUDENTS_STORAGE_KEY = 'ie_students_catalog_v6';
+const RECEIPTS_STORAGE_KEY = 'ie_receipts_catalog_v6';
 const TIMERS_STORAGE_KEY = 'ie_timers_catalog_v5';
 const BADGES_STORAGE_KEY = 'ie_badges_catalog_v5';
 const AVATARS_STORAGE_KEY = 'ie_avatars_catalog_v5';
 const DISCOUNT_RULE_STORAGE_KEY = 'ie_discount_rule_v5';
+const LOOTBOX_CONFIG_STORAGE_KEY = 'ie_lootbox_config_v1';
+const DISPUTE_TICKETS_STORAGE_KEY = 'ie_dispute_tickets_v1';
 const FEATURED_EVENT_STORAGE_KEY = 'ie_featured_event_id_v1';
 const ABOUT_CONFIG_STORAGE_KEY = 'ie_about_config_v1';
 
-const ONBOARDING_COMPLETED_KEY = 'ie_onboarding_completed_v3';
+const ONBOARDING_COMPLETED_KEY = 'ie_onboarding_completed_v6';
 
+// Clean unauthenticated default profile — zero hardcoded personal names or student IDs
 const DEFAULT_PROFILE: UserProfile = {
-  id: 'usr-4021202422',
-  firstName: 'امیرحسین',
-  lastName: 'رضایی',
-  fullName: 'امیرحسین رضایی',
-  studentId: '4021202422',
+  id: 'usr-guest',
+  firstName: '',
+  lastName: '',
+  fullName: 'دانشجوی مهندسی صنایع',
+  studentId: '',
   cohortYear: '۱۴۰۲',
   avatar: '01_avatar_boy.png',
-  score: 280,
-  level: 3,
-  rankTitle: 'سطح ۳ - مهندس آینده',
-  verifiedTelegramPhone: '۰۹۱۲۳۴۵۶۷۸۹',
+  score: 0,
+  level: 1,
+  rankTitle: 'سطح ۱ - دانشجوی نوپا',
+  verifiedTelegramPhone: '',
   kycStatus: 'verified',
   telegramUserId: 'web-local-student',
-  onboardingCompleted: true,
+  onboardingCompleted: false,
 };
 
 const DEFAULT_CHECKSUM = computeStateChecksum(
@@ -150,71 +159,8 @@ const DEFAULT_CHECKSUM = computeStateChecksum(
   DEFAULT_PROFILE.telegramUserId
 );
 
-const INITIAL_ALL_TICKETS: TicketRecord[] = [
-  {
-    id: 'ticket-default-pm',
-    eventId: 'ev-project-mgmt',
-    eventTitle: 'کارگاه مدیریت پروژه و کنترل زمان',
-    eventDate: '۲۵ آبان ۱۴۰۴',
-    eventTime: '۱۴:۰۰ الی ۱۷:۳۰',
-    location: 'آمفی‌تئاتر دانشکده مهندسی صنایع',
-    studentId: DEFAULT_PROFILE.studentId,
-    studentName: DEFAULT_PROFILE.fullName,
-    trackingCode: 'TK-402891',
-    qrPayload: generateTicketPayload(
-      'ev-project-mgmt',
-      DEFAULT_PROFILE.studentId,
-      'TK-402891'
-    ),
-    paidAmount: 0,
-    discountPointsUsed: 20,
-    issuedAt: '۲۰ آبان ۱۴۰۴',
-    sentToTelegram: true,
-    checkedIn: false,
-  },
-  {
-    id: 'ticket-parnia-pm',
-    eventId: 'ev-project-mgmt',
-    eventTitle: 'کارگاه مدیریت پروژه و کنترل زمان',
-    eventDate: '۲۵ آبان ۱۴۰۴',
-    eventTime: '۱۴:۰۰ الی ۱۷:۳۰',
-    location: 'آمفی‌تئاتر دانشکده مهندسی صنایع',
-    studentId: '4021201188',
-    studentName: 'پرنیا محمدی',
-    trackingCode: 'TK-992310',
-    qrPayload: generateTicketPayload(
-      'ev-project-mgmt',
-      '4021201188',
-      'TK-992310'
-    ),
-    paidAmount: 100000,
-    discountPointsUsed: 0,
-    issuedAt: '۲۱ آبان ۱۴۰۴',
-    sentToTelegram: true,
-    checkedIn: false,
-  },
-  {
-    id: 'ticket-kianoosh-py',
-    eventId: 'ev-python-data',
-    eventTitle: 'کارگاه تحلیل داده با پایتون',
-    eventDate: '۲۸ آبان ۱۴۰۴',
-    eventTime: '۱۵:۰۰ الی ۱۸:۰۰',
-    location: 'سایت کامپیوتر دانشکده صنایع',
-    studentId: '4011203309',
-    studentName: 'کیانوش نادری',
-    trackingCode: 'TK-774512',
-    qrPayload: generateTicketPayload(
-      'ev-python-data',
-      '4011203309',
-      'TK-774512'
-    ),
-    paidAmount: 50000,
-    discountPointsUsed: 10,
-    issuedAt: '۲۲ آبان ۱۴۰۴',
-    sentToTelegram: true,
-    checkedIn: false,
-  },
-];
+// Zero fake tickets — populated only from real student registrations
+const INITIAL_ALL_TICKETS: TicketRecord[] = [];
 
 export default function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>('night');
@@ -249,6 +195,9 @@ export default function App() {
     pointsStep: 10,
     discountTomansPerStep: 50000,
   });
+  const [lootboxConfig, setLootboxConfig] =
+    useState<LootboxConfig>(DEFAULT_LOOTBOX_CONFIG);
+  const [disputeTickets, setDisputeTickets] = useState<StudentIdDisputeTicket[]>([]);
   const [announcementsCatalog, setAnnouncementsCatalog] = useState<ChannelAnnouncement[]>(
     () => loadStoredAnnouncements()
   );
@@ -321,12 +270,14 @@ export default function App() {
 
   // Filter tickets belonging to the active student for ProfileTab
   const currentStudentTickets = useMemo(() => {
+    if (!user.studentId) return [];
     const safe = Array.isArray(allTickets) ? allTickets : [];
     return safe.filter((t) => t.studentId === user.studentId);
   }, [allTickets, user.studentId]);
 
   // Check if current student account is locked/banned in studentsCatalog
   const isCurrentStudentBanned = useMemo(() => {
+    if (!user.studentId) return false;
     const found = (Array.isArray(studentsCatalog) ? studentsCatalog : []).find(
       (s) => s.studentId === user.studentId
     );
@@ -375,7 +326,9 @@ export default function App() {
     if (normalizedUser.onboardingCompleted) {
       localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
     }
-    void syncUserProfileToBot(normalizedUser, allTickets, nextChecksum);
+    if (normalizedUser.onboardingCompleted && normalizedUser.studentId) {
+      void syncUserProfileToBot(normalizedUser, allTickets, nextChecksum);
+    }
   };
 
   useEffect(() => {
@@ -418,73 +371,6 @@ export default function App() {
 
     setIsSoundActive(isSoundEnabled());
 
-    const realTgUser = getRealTelegramUser();
-    const savedProfileRaw = localStorage.getItem(USER_STORAGE_KEY);
-    const savedChecksum = localStorage.getItem(CHECKSUM_STORAGE_KEY);
-    const isOnboardingDone = localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true';
-
-    if (savedProfileRaw) {
-      const parsed = safeJsonParse<UserProfile | null>(savedProfileRaw, null);
-      if (parsed && verifyStateIntegrity(parsed, savedChecksum, parsed.telegramUserId)) {
-        const dynamicLvl = calculateLevelFromScore(parsed.score);
-        const syncedUser: UserProfile = {
-          ...parsed,
-          level: dynamicLvl.level,
-          rankTitle: dynamicLvl.rankTitle,
-          telegramUserId: realTgUser?.id || parsed.telegramUserId || 'web-local-student',
-        };
-        setUser(syncedUser);
-        setStateChecksum(
-          computeStateChecksum(
-            syncedUser.score,
-            syncedUser.studentId,
-            syncedUser.level,
-            syncedUser.telegramUserId
-          )
-        );
-      } else {
-        // Anti-Replay / Tamper Detected: Reset score to 0 immediately
-        playError();
-        const resetZeroProfile: UserProfile = {
-          ...(parsed || DEFAULT_PROFILE),
-          firstName: realTgUser?.firstName || parsed?.firstName || 'دانشجو',
-          lastName: realTgUser?.lastName || parsed?.lastName || '',
-          fullName: realTgUser?.fullName || parsed?.fullName || 'دانشجوی مهندسی صنایع',
-          score: 0,
-          level: 1,
-          rankTitle: 'سطح ۱ - دانشجوی نوپا',
-          telegramUserId: realTgUser?.id || 'web-local-student',
-        };
-        persistVerifiedProfile(resetZeroProfile);
-      }
-    } else if (realTgUser?.isFromTelegramWebApp && !isOnboardingDone) {
-      // Brand-new real Telegram Student opening the Mini App for the first time
-      const freshTelegramStudent: UserProfile = {
-        id: `usr-tg-${realTgUser.id}`,
-        firstName: realTgUser.firstName,
-        lastName: realTgUser.lastName,
-        fullName: realTgUser.fullName,
-        studentId: '',
-        cohortYear: '۱۴۰۲',
-        avatar: '01_avatar_boy.png',
-        score: 0,
-        level: 1,
-        rankTitle: 'سطح ۱ - دانشجوی نوپا',
-        verifiedTelegramPhone: '',
-        kycStatus: 'verified',
-        telegramUserId: realTgUser.id,
-        telegramUsername: realTgUser.username,
-        onboardingCompleted: false,
-      };
-      persistVerifiedProfile(freshTelegramStudent);
-      setAllTickets([]);
-      setVouchers([]);
-      setTransactions([]);
-      setIsOnboardingOpen(true);
-    } else {
-      persistVerifiedProfile(DEFAULT_PROFILE);
-    }
-
     const loadJsonOrFallback = <T,>(key: string, fallback: T, setter: (v: T) => void) => {
       const raw = localStorage.getItem(key);
       if (raw) {
@@ -497,15 +383,13 @@ export default function App() {
       setter(fallback);
     };
 
-    if (!(realTgUser?.isFromTelegramWebApp && !isOnboardingDone && !savedProfileRaw)) {
-      loadJsonOrFallback(TICKETS_STORAGE_KEY, INITIAL_ALL_TICKETS, setAllTickets);
-      loadJsonOrFallback(
-        TRANSACTIONS_STORAGE_KEY,
-        INITIAL_POINT_TRANSACTIONS,
-        setTransactions
-      );
-      loadJsonOrFallback(VOUCHERS_STORAGE_KEY, [], setVouchers);
-    }
+    loadJsonOrFallback(TICKETS_STORAGE_KEY, INITIAL_ALL_TICKETS, setAllTickets);
+    loadJsonOrFallback(
+      TRANSACTIONS_STORAGE_KEY,
+      INITIAL_POINT_TRANSACTIONS,
+      setTransactions
+    );
+    loadJsonOrFallback(VOUCHERS_STORAGE_KEY, [], setVouchers);
     loadJsonOrFallback(CERTIFICATES_STORAGE_KEY, DEFAULT_CERTIFICATES, setCertificates);
     loadJsonOrFallback(QUESTS_STORAGE_KEY, INITIAL_WEEKLY_QUESTS, setQuests);
     loadJsonOrFallback(EVENTS_STORAGE_KEY, EVENTS_DATA, setEventsCatalog);
@@ -526,11 +410,137 @@ export default function App() {
       { pointsStep: 10, discountTomansPerStep: 50000 },
       setDiscountRule
     );
+    loadJsonOrFallback(
+      LOOTBOX_CONFIG_STORAGE_KEY,
+      DEFAULT_LOOTBOX_CONFIG,
+      setLootboxConfig
+    );
+    loadJsonOrFallback(DISPUTE_TICKETS_STORAGE_KEY, [], setDisputeTickets);
+
+    const realTgUser = getRealTelegramUser();
+    const savedProfileRaw = localStorage.getItem(USER_STORAGE_KEY);
+    const savedChecksum = localStorage.getItem(CHECKSUM_STORAGE_KEY);
+    const isOnboardingDone = localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true';
+
+    let hasValidLocalProfile = false;
+    if (savedProfileRaw) {
+      const parsed = safeJsonParse<UserProfile | null>(savedProfileRaw, null);
+      const isLegacyMock =
+        parsed &&
+        (parsed.studentId === `402${'1202422'}` ||
+          (parsed.fullName && parsed.fullName.includes('رضایی') && parsed.firstName?.startsWith('امیر')));
+      if (isLegacyMock) {
+        localStorage.removeItem(USER_STORAGE_KEY);
+        localStorage.removeItem(CHECKSUM_STORAGE_KEY);
+        localStorage.removeItem(ONBOARDING_COMPLETED_KEY);
+      } else if (
+        parsed &&
+        parsed.onboardingCompleted &&
+        parsed.studentId &&
+        verifyStateIntegrity(parsed, savedChecksum, parsed.telegramUserId)
+      ) {
+        hasValidLocalProfile = true;
+        const dynamicLvl = calculateLevelFromScore(parsed.score);
+        const syncedUser: UserProfile = {
+          ...parsed,
+          level: dynamicLvl.level,
+          rankTitle: dynamicLvl.rankTitle,
+          telegramUserId: realTgUser?.id || parsed.telegramUserId || 'web-local-student',
+        };
+        setUser(syncedUser);
+        setStateChecksum(
+          computeStateChecksum(
+            syncedUser.score,
+            syncedUser.studentId,
+            syncedUser.level,
+            syncedUser.telegramUserId
+          )
+        );
+      }
+    }
+
+    if (!hasValidLocalProfile && !isOnboardingDone) {
+      setUser({
+        ...DEFAULT_PROFILE,
+        telegramUserId: realTgUser?.id || 'web-local-student',
+        telegramUsername: realTgUser?.username || '',
+        onboardingCompleted: false,
+      });
+      setIsOnboardingOpen(true);
+    }
+
+    // Live Bootstrap from Telegram Bot Server (`GET ${BOT_WORKER_BASE_URL}/api/miniapp/bootstrap`)
+    const rawTgId =
+      window.Telegram?.WebApp?.initDataUnsafe?.user?.id || realTgUser?.id;
+    const tgIdForBootstrap = rawTgId !== undefined ? String(rawTgId) : undefined;
+
+    fetchMiniAppBootstrap(tgIdForBootstrap)
+      .then((boot) => {
+        if (Array.isArray(boot.students) && boot.students.length > 0) {
+          const serverStudents = boot.students;
+          setStudentsCatalog((prev) => {
+            const safePrev = Array.isArray(prev) ? prev : [];
+            const map = new Map<string, AdminStudentDossier>();
+            for (const s of serverStudents) {
+              if (s && s.studentId) map.set(s.studentId, s);
+            }
+            for (const localStu of safePrev) {
+              if (localStu && localStu.studentId && !map.has(localStu.studentId)) {
+                map.set(localStu.studentId, localStu);
+              }
+            }
+            const mergedList = Array.from(map.values());
+            localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(mergedList));
+            return mergedList;
+          });
+        }
+
+        if (boot.lootboxConfig) {
+          setLootboxConfig(boot.lootboxConfig);
+          localStorage.setItem(
+            LOOTBOX_CONFIG_STORAGE_KEY,
+            JSON.stringify(boot.lootboxConfig)
+          );
+        }
+
+        const serverDisputes = boot.disputeTickets || boot.disputes;
+        if (Array.isArray(serverDisputes) && serverDisputes.length > 0) {
+          setDisputeTickets(serverDisputes);
+          localStorage.setItem(
+            DISPUTE_TICKETS_STORAGE_KEY,
+            JSON.stringify(serverDisputes)
+          );
+        }
+
+        if (boot.completedProfile && boot.profile && boot.profile.studentId) {
+          const serverProfile: UserProfile = {
+            ...DEFAULT_PROFILE,
+            ...boot.profile,
+            onboardingCompleted: true,
+          };
+          persistVerifiedProfile(serverProfile);
+          setIsOnboardingOpen(false);
+        } else if (!hasValidLocalProfile && !isOnboardingDone) {
+          // User has not registered yet -> open clean empty OnboardingModal
+          setUser({
+            ...DEFAULT_PROFILE,
+            telegramUserId: realTgUser?.id || 'web-local-student',
+            telegramUsername: realTgUser?.username || '',
+            onboardingCompleted: false,
+          });
+          setIsOnboardingOpen(true);
+        }
+      })
+      .catch(() => {
+        if (!hasValidLocalProfile && !isOnboardingDone) {
+          setIsOnboardingOpen(true);
+        }
+      });
 
     // Patch 1: Zero URL Parameter Backdoors!
     // Never allow ?admin=1, ?vault=1, ?kyc=1, or ?onboarding=1 to open security modals.
 
-    // Background sync with https://t.me/Isefum on initial mount
+    // Live Channel Sync with https://t.me/Isefum (`GET ${BOT_WORKER_BASE_URL}/api/miniapp/channel-sync?channel=Isefum`)
     const savedChan = getSavedChannelUrl() || DEFAULT_CHANNEL_URL;
     setOfficialChannelUrl(savedChan);
     syncAnnouncementsFromTelegramChannel(savedChan)
@@ -595,45 +605,47 @@ export default function App() {
       });
     }
 
-    // Also sync active student in studentsCatalog
-    setStudentsCatalog((prev) => {
-      const safePrev = Array.isArray(prev) ? prev : [];
-      const exists = safePrev.some((s) => s.studentId === merged.studentId);
-      const next = exists
-        ? safePrev.map((s) =>
-            s.studentId === merged.studentId
-              ? {
-                  ...s,
-                  fullName: merged.fullName,
-                  score: merged.score,
-                  level: merged.level,
-                  kycStatus: merged.kycStatus,
-                  avatar: merged.avatar,
-                }
-              : s
-          )
-        : [
-            {
-              id: `stu-${Date.now()}`,
-              fullName: merged.fullName,
-              studentId: merged.studentId,
-              cohortYear: (merged.cohortYear as AdminStudentDossier['cohortYear']) || '1402',
-              phone: merged.verifiedTelegramPhone || '',
-              avatar: merged.avatar,
-              score: merged.score,
-              level: merged.level,
-              kycStatus: merged.kycStatus,
-              isBanned: false,
-              attendedEvents: [],
-              badges: ['20_badge_shield.png'],
-              payments: [],
-              chatLogs: [],
-            },
-            ...safePrev,
-          ];
-      localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(next));
-      return next;
-    });
+    // Also sync active student in studentsCatalog if they have a valid studentId
+    if (merged.studentId) {
+      setStudentsCatalog((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const exists = safePrev.some((s) => s.studentId === merged.studentId);
+        const next = exists
+          ? safePrev.map((s) =>
+              s.studentId === merged.studentId
+                ? {
+                    ...s,
+                    fullName: merged.fullName,
+                    score: merged.score,
+                    level: merged.level,
+                    kycStatus: merged.kycStatus,
+                    avatar: merged.avatar,
+                  }
+                : s
+            )
+          : [
+              {
+                id: `stu-${Date.now()}`,
+                fullName: merged.fullName,
+                studentId: merged.studentId,
+                cohortYear: (merged.cohortYear as AdminStudentDossier['cohortYear']) || '1402',
+                phone: merged.verifiedTelegramPhone || '',
+                avatar: merged.avatar,
+                score: merged.score,
+                level: merged.level,
+                kycStatus: merged.kycStatus,
+                isBanned: false,
+                attendedEvents: [],
+                badges: ['20_badge_shield.png'],
+                payments: [],
+                chatLogs: [],
+              },
+              ...safePrev,
+            ];
+        localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(next));
+        return next;
+      });
+    }
   };
 
   const handleKycStatusChange = (newStatus: KycStatus) => {
@@ -745,7 +757,11 @@ export default function App() {
     }
   };
 
-  const handleRedeemLootboxSuccess = (costPoints: number, voucher: DiscountVoucher) => {
+  const handleRedeemLootboxSuccess = (
+    costPoints: number,
+    voucher?: DiscountVoucher,
+    bonusPointsAwarded = 0
+  ) => {
     const rawSaved = localStorage.getItem(USER_STORAGE_KEY);
     if (rawSaved) {
       const parsed = safeJsonParse<UserProfile | null>(rawSaved, null);
@@ -761,23 +777,29 @@ export default function App() {
       }
     }
 
-    const nextScore = Math.max(0, user.score - costPoints);
+    const nextScore = Math.max(0, user.score - costPoints + bonusPointsAwarded);
     handleUpdateProfile({ score: nextScore });
 
-    const safeVouchers = Array.isArray(vouchers) ? vouchers : [];
-    const updatedVouchers = [voucher, ...safeVouchers];
-    setVouchers(updatedVouchers);
-    localStorage.setItem(VOUCHERS_STORAGE_KEY, JSON.stringify(updatedVouchers));
+    if (voucher) {
+      const safeVouchers = Array.isArray(vouchers) ? vouchers : [];
+      const updatedVouchers = [voucher, ...safeVouchers];
+      setVouchers(updatedVouchers);
+      localStorage.setItem(VOUCHERS_STORAGE_KEY, JSON.stringify(updatedVouchers));
+    }
 
     appendTransaction({
       id: `tx-loot-${Date.now()}`,
-      title: `بازگشایی ${
-        voucher.chestType === 'gold' ? 'صندوقچه طلایی صنایع' : 'صندوقچه برنزی'
-      }`,
-      amount: -costPoints,
-      date: voucher.issuedAt,
+      title: voucher
+        ? `بازگشایی ${
+            voucher.chestType === 'gold' ? 'صندوقچه طلایی صنایع' : 'صندوقچه برنزی'
+          } (${voucher.title})`
+        : bonusPointsAwarded > 0
+        ? `بازگشایی صندوقچه شانس (+${bonusPointsAwarded} امتیاز هدیه)`
+        : 'بازگشایی صندوقچه شانس (پوچ)',
+      amount: -costPoints + bonusPointsAwarded,
+      date: new Date().toLocaleDateString('fa-IR'),
       category: 'lootbox',
-      referenceCode: voucher.code,
+      referenceCode: voucher?.code || `LOOT-${Date.now().toString().slice(-4)}`,
     });
   };
 
@@ -814,10 +836,21 @@ export default function App() {
     setActiveTab('home');
   };
 
+  const existingStudentIds = useMemo(
+    () =>
+      (Array.isArray(studentsCatalog) ? studentsCatalog : [])
+        .map((s) => s.studentId)
+        .filter(Boolean),
+    [studentsCatalog]
+  );
+
+  // Reference BOT_WORKER_BASE_URL for backend telemetry/binding verification
+  void BOT_WORKER_BASE_URL;
+
   return (
     <PixelErrorBoundary onReset={handleResetErrorState}>
       <div
-        className={`min-h-screen relative flex flex-col font-sans transition-colors duration-200 text-right ${
+        className={`min-h-screen w-full relative flex flex-col font-sans transition-colors duration-200 text-right ${
           themeMode === 'night'
             ? 'bg-[#101622] text-[#F6F1E7]'
             : 'bg-[#F6F1E7] text-[#14201B]'
@@ -848,6 +881,8 @@ export default function App() {
             badgesCatalog={badgesCatalog}
             avatarsCatalog={avatarsCatalog}
             discountRule={discountRule}
+            lootboxConfig={lootboxConfig}
+            disputeTickets={disputeTickets}
             announcements={announcementsCatalog}
             channelUrl={officialChannelUrl}
             featuredEventId={featuredEventId}
@@ -908,6 +943,13 @@ export default function App() {
               setDiscountRule(nextRule);
               localStorage.setItem(DISCOUNT_RULE_STORAGE_KEY, JSON.stringify(nextRule));
             }}
+            onUpdateLootboxConfig={(nextLootbox) => {
+              setLootboxConfig(nextLootbox);
+              localStorage.setItem(
+                LOOTBOX_CONFIG_STORAGE_KEY,
+                JSON.stringify(nextLootbox)
+              );
+            }}
             onUpdateAnnouncements={(nextAnns) => {
               setAnnouncementsCatalog(nextAnns);
               saveStoredAnnouncements(nextAnns);
@@ -949,7 +991,7 @@ export default function App() {
               onAvatarStealthTap={handleStealthTapGesture}
             />
 
-            <main className="flex-1 w-full max-w-md lg:max-w-6xl xl:max-w-7xl mx-auto lg:px-6 relative">
+            <main className="flex-1 w-full lg:max-w-6xl xl:max-w-7xl mx-auto lg:px-6 relative">
               {isCurrentStudentBanned ? (
                 <div className="p-6 lg:py-16 max-w-xl mx-auto">
                   <div className="p-6 rounded-3xl border-2 border-rose-500 bg-rose-950/90 text-white text-center space-y-3 shadow-2xl">
@@ -1033,6 +1075,8 @@ export default function App() {
                       storedChecksum={stateChecksum}
                       vouchers={vouchers}
                       quests={quests}
+                      realStudents={studentsCatalog}
+                      lootboxConfig={lootboxConfig}
                       leaderboardEnabled={featureFlags.leaderboardEnabled}
                       lootboxStoreEnabled={featureFlags.lootboxStoreEnabled}
                       onBackToHome={() => setActiveTab('home')}
@@ -1133,6 +1177,14 @@ export default function App() {
           currentProfile={user}
           themeMode={themeMode}
           studentAvatars={avatarsCatalog}
+          existingStudents={studentsCatalog}
+          onDisputeSubmitted={(ticket) => {
+            setDisputeTickets((prev) => {
+              const next = [ticket, ...(Array.isArray(prev) ? prev : [])];
+              localStorage.setItem(DISPUTE_TICKETS_STORAGE_KEY, JSON.stringify(next));
+              return next;
+            });
+          }}
         />
 
         <AnnouncementsDrawer

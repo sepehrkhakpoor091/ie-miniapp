@@ -6,7 +6,16 @@
  * Connects all 5 live Mini App endpoints using secureFetch + X-Telegram-Init-Data.
  */
 
-import { ChannelAnnouncement, SupportTicket, TicketRecord, UserProfile } from '../types';
+import {
+  AdminStudentDossier,
+  BootstrapResponse,
+  ChannelAnnouncement,
+  LootboxConfig,
+  StudentIdDisputeTicket,
+  SupportTicket,
+  TicketRecord,
+  UserProfile,
+} from '../types';
 import {
   BOT_WORKER_BASE_URL as SECURITY_WORKER_BASE_URL,
   MASTER_ADMIN_TELEGRAM_ID,
@@ -76,7 +85,6 @@ async function postToMiniAppApi<T>(
       headers: {
         'Content-Type': 'application/json',
         'X-Telegram-Init-Data': getTelegramInitDataRaw(),
-        'X-Telegram-User-Id': tgUser?.id || '',
       },
       body: JSON.stringify({
         ...body,
@@ -318,3 +326,289 @@ export async function submitSupportTicketToBot(
     ticketId: res.data?.ticketId || ticket.id,
   };
 }
+
+/**
+ * 6. GET ${BOT_WORKER_BASE_URL}/api/miniapp/bootstrap
+ * Reads the user's real profile & score by Telegram User ID, plus real students array & lootbox config.
+ */
+export async function fetchMiniAppBootstrap(
+  telegramUserId?: string,
+  timeoutMs = 6000
+): Promise<BootstrapResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const tgUser = getRealTelegramUser();
+    const resolvedTgId =
+      telegramUserId ||
+      tgUser?.id ||
+      (typeof window !== 'undefined' &&
+      window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+        ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+        : '');
+
+    const query = resolvedTgId
+      ? `?telegramUserId=${encodeURIComponent(resolvedTgId)}`
+      : '';
+    const url = `${getBotApiBaseUrl()}/api/miniapp/bootstrap${query}`;
+
+    const response = await secureFetch(url, {
+      method: 'GET',
+      headers: {
+        'X-Telegram-Init-Data': getTelegramInitDataRaw(),
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!response.ok) {
+      return { ok: false };
+    }
+    const text = await response.text();
+    const json = safeJsonParse<BootstrapResponse | null>(text, null);
+    if (!json) {
+      return { ok: false };
+    }
+    return {
+      ok: true,
+      completedProfile: Boolean(
+        json.completedProfile ??
+          (json.profile &&
+            json.profile.studentId &&
+            String(json.profile.studentId).trim().length >= 6)
+      ),
+      profile: json.profile,
+      students: Array.isArray(json.students) ? json.students : undefined,
+      lootboxConfig: json.lootboxConfig,
+      announcements: Array.isArray(json.announcements) ? json.announcements : undefined,
+      disputes: Array.isArray(json.disputes)
+        ? json.disputes
+        : Array.isArray(json.disputeTickets)
+        ? json.disputeTickets
+        : undefined,
+      disputeTickets: Array.isArray(json.disputeTickets)
+        ? json.disputeTickets
+        : Array.isArray(json.disputes)
+        ? json.disputes
+        : undefined,
+    };
+  } catch {
+    clearTimeout(timer);
+    return { ok: false };
+  }
+}
+
+/**
+ * 7. POST ${BOT_WORKER_BASE_URL}/api/miniapp/register-profile
+ * Registers a new student profile in both the Mini App and the Telegram Bot KV database.
+ * Enforces unique Student ID constraint (returns errorCode === 'DUPLICATE_STUDENT_ID' if taken).
+ */
+export async function registerStudentProfileOnBot(
+  profile: UserProfile,
+  existingStudents: AdminStudentDossier[] = []
+): Promise<{
+  ok: boolean;
+  errorCode?: 'DUPLICATE_STUDENT_ID' | string;
+  error?: string;
+  profile?: UserProfile;
+  students?: AdminStudentDossier[];
+}> {
+  const cleanStudentId = (profile.studentId || '').trim();
+  const tgUser = getRealTelegramUser();
+  const resolvedTelegramId =
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : profile.telegramUserId || '');
+
+  // Check local real students list for duplicate studentId owned by another account
+  const duplicateLocal = (Array.isArray(existingStudents) ? existingStudents : []).find(
+    (s) =>
+      s.studentId &&
+      s.studentId.trim() === cleanStudentId &&
+      s.id !== profile.id &&
+      (!resolvedTelegramId || !s.id.includes(resolvedTelegramId))
+  );
+
+  // Also check localStorage registry of registered studentIds -> ownerIds
+  const REGISTRY_KEY = 'ie_registered_student_ids_v1';
+  let localRegistry: Record<string, string> = {};
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localRegistry = safeJsonParse<Record<string, string>>(
+        window.localStorage.getItem(REGISTRY_KEY),
+        {}
+      );
+    }
+  } catch {
+    // Ignore
+  }
+  const ownerKey = resolvedTelegramId || profile.id || 'local-user';
+  const registeredOwner = localRegistry[cleanStudentId];
+
+  if (duplicateLocal || (registeredOwner && registeredOwner !== ownerKey)) {
+    return {
+      ok: false,
+      errorCode: 'DUPLICATE_STUDENT_ID',
+      error:
+        '⛔ این شماره دانشجویی قبلاً ثبت شده است! با هر شماره دانشجویی فقط یک اکانت می‌توان ساخت.',
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6500);
+  try {
+    const response = await secureFetch(resolveBotEndpoint('/api/miniapp/register-profile'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': getTelegramInitDataRaw(),
+      },
+      body: JSON.stringify({
+        profile,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        fullName: profile.fullName,
+        studentId: cleanStudentId,
+        cohortYear: profile.cohortYear,
+        phone: profile.verifiedTelegramPhone,
+        avatar: profile.avatar,
+        telegramUserId: resolvedTelegramId,
+        telegramUser: tgUser,
+        timestamp: new Date().toISOString(),
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    const text = await response.text();
+    const parsed = safeJsonParse<{
+      ok?: boolean;
+      errorCode?: string;
+      error?: string;
+      profile?: UserProfile;
+      students?: AdminStudentDossier[];
+    } | null>(text, null);
+
+    if (
+      response.status === 409 ||
+      parsed?.errorCode === 'DUPLICATE_STUDENT_ID' ||
+      (parsed?.error && parsed.error.includes('DUPLICATE_STUDENT_ID'))
+    ) {
+      return {
+        ok: false,
+        errorCode: 'DUPLICATE_STUDENT_ID',
+        error:
+          '⛔ این شماره دانشجویی قبلاً ثبت شده است! با هر شماره دانشجویی فقط یک اکانت می‌توان ساخت.',
+      };
+    }
+
+    // Record studentId ownership locally after successful check
+    try {
+      if (typeof window !== 'undefined' && window.localStorage && cleanStudentId) {
+        localRegistry[cleanStudentId] = ownerKey;
+        window.localStorage.setItem(REGISTRY_KEY, JSON.stringify(localRegistry));
+      }
+    } catch {
+      // Ignore
+    }
+
+    return {
+      ok: true,
+      profile: parsed?.profile || profile,
+      students: Array.isArray(parsed?.students) ? parsed?.students : undefined,
+    };
+  } catch {
+    clearTimeout(timer);
+    // Record studentId ownership locally so duplicate checks work offline too
+    try {
+      if (typeof window !== 'undefined' && window.localStorage && cleanStudentId) {
+        localRegistry[cleanStudentId] = ownerKey;
+        window.localStorage.setItem(REGISTRY_KEY, JSON.stringify(localRegistry));
+      }
+    } catch {
+      // Ignore
+    }
+    return {
+      ok: true,
+      profile,
+    };
+  }
+}
+
+/**
+ * 8. POST ${BOT_WORKER_BASE_URL}/api/miniapp/dispute-student-id
+ * Submits an urgent dispute ticket when a student's Student ID was already registered by someone else.
+ */
+export async function submitStudentIdDisputeToBot(payload: {
+  studentId: string;
+  fullName: string;
+  phone: string;
+  explanation: string;
+  telegramUserId?: string;
+}): Promise<{ ok: boolean; disputeId: string; ticket: StudentIdDisputeTicket }> {
+  const tgUser = getRealTelegramUser();
+  const resolvedTgId =
+    payload.telegramUserId ||
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : '');
+
+  const ticket: StudentIdDisputeTicket = {
+    id: `DSP-${Math.floor(1000 + Math.random() * 9000)}`,
+    studentId: payload.studentId.trim(),
+    fullName: payload.fullName.trim(),
+    reporterName: payload.fullName.trim(),
+    phone: payload.phone.trim(),
+    phoneNumber: payload.phone.trim(),
+    explanation: payload.explanation.trim(),
+    telegramUserId: resolvedTgId,
+    submittedAt: new Date().toLocaleString('fa-IR'),
+    status: 'open',
+  };
+
+  const res = await postToMiniAppApi<{ ok: boolean; disputeId?: string }>(
+    '/api/miniapp/dispute-student-id',
+    {
+      ...ticket,
+      studentId: ticket.studentId,
+      fullName: ticket.fullName,
+      phone: ticket.phone,
+      explanation: ticket.explanation,
+      telegramUserId: resolvedTgId,
+    }
+  );
+
+  return {
+    ok: true,
+    disputeId: res.data?.disputeId || ticket.id,
+    ticket,
+  };
+}
+
+/**
+ * 9. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-save-lootbox
+ * Saves the Admin's custom Lootbox prizes & win probabilities (0-100%) for Bronze and Gold chests.
+ */
+export async function saveLootboxConfigOnBot(
+  config: LootboxConfig
+): Promise<{ ok: boolean; savedAt: string }> {
+  const savedAt = new Date().toISOString();
+  const res = await postToMiniAppApi<{ ok: boolean; savedAt?: string }>(
+    '/api/miniapp/admin-save-lootbox',
+    {
+      lootboxConfig: {
+        ...config,
+        updatedAt: savedAt,
+      },
+      adminId: MASTER_ADMIN_TELEGRAM_ID,
+    }
+  );
+  return {
+    ok: true,
+    savedAt: res.data?.savedAt || savedAt,
+  };
+}
+

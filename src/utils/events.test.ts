@@ -54,8 +54,8 @@ test('formatToman formats zero as رایگان and numbers with currency', () =>
 });
 
 test('generateTicketPayload creates deterministic signed QR payload', () => {
-  const payload = generateTicketPayload('ev-1', '4021202422', 'TK-998');
-  assert.ok(payload.startsWith('IE-TICKET:ev-1:4021202422:TK-998:'));
+  const payload = generateTicketPayload('ev-1', '4011234567', 'TK-998');
+  assert.ok(payload.startsWith('IE-TICKET:ev-1:4011234567:TK-998:'));
   assert.equal(payload.split(':').length, 5);
 });
 

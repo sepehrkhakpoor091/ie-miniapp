@@ -32,7 +32,7 @@ interface KycLockOverlayProps {
 export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
   status,
   onUpdateStatus,
-  studentId = '4021202422',
+  studentId = '---',
   fullName = 'دانشجوی مهندسی صنایع',
   cohortYear = '۱۴۰۲',
   onSubmitKycCard,

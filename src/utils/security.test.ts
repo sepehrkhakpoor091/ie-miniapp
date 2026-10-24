@@ -24,19 +24,19 @@ test('sanitizeInput strips dangerous HTML injection characters', () => {
 });
 
 test('isValidPersianName validates pure Persian names and rejects Latin or digits', () => {
-  assert.equal(isValidPersianName('امیرحسین رضایی'), true);
+  assert.equal(isValidPersianName('علی محمدی'), true);
   assert.equal(isValidPersianName('سپهر خاکپور'), true);
   assert.equal(isValidPersianName('فاطمه زهرا حسینی'), true);
 
   assert.equal(isValidPersianName('Ali Rezaei'), false);
-  assert.equal(isValidPersianName('امیرحسین123'), false);
+  assert.equal(isValidPersianName('علی123'), false);
   assert.equal(isValidPersianName('س'), false);
   assert.equal(isValidPersianName(''), false);
   assert.equal(isValidPersianName('مریم@احمدی'), false);
 });
 
 test('extractCohortFromStudentId extracts cohort correctly from 400-405 and handles Persian digits', () => {
-  const res402 = extractCohortFromStudentId('4021202422');
+  const res402 = extractCohortFromStudentId('4021234567');
   assert.equal(res402.isValid, true);
   assert.equal(res402.cohort, '۱۴۰۲');
   assert.equal(res402.rawPrefix, '402');
@@ -65,29 +65,29 @@ test('generateRequestNonce generates distinct nonces', () => {
 });
 
 test('verifyStateIntegrity detects localStorage point tampering', () => {
-  const validProfile = { score: 280, studentId: '4021202422', level: 3 };
+  const validProfile = { score: 280, studentId: '4011234567', level: 3 };
   const checksum = computeStateChecksum(validProfile.score, validProfile.studentId, validProfile.level);
 
   // Legitimate state passes
   assert.equal(verifyStateIntegrity(validProfile, checksum), true);
 
   // Cheater edits score in localStorage from 280 to 9999 without valid salted checksum
-  const tamperedProfile = { score: 9999, studentId: '4021202422', level: 3 };
+  const tamperedProfile = { score: 9999, studentId: '4011234567', level: 3 };
   assert.equal(verifyStateIntegrity(tamperedProfile, checksum), false);
 
   // Negative score fails
-  assert.equal(verifyStateIntegrity({ score: -50, studentId: '4021202422', level: 3 }, checksum), false);
+  assert.equal(verifyStateIntegrity({ score: -50, studentId: '4011234567', level: 3 }, checksum), false);
 });
 
 test('verifyTicketSignature & generateCertificateCode validate cryptographic hashes', () => {
-  const signedQr = generateTicketPayload('ev-python-data', '4021202422', 'TK-748392');
+  const signedQr = generateTicketPayload('ev-python-data', '4011234567', 'TK-748392');
   assert.equal(verifyTicketSignature(signedQr), true);
 
   // Tampered QR payload fails verification
-  const forgedQr = 'IE-TICKET:ev-python-data:4021202422:TK-748392:DEADBEEF';
+  const forgedQr = 'IE-TICKET:ev-python-data:4011234567:TK-748392:DEADBEEF';
   assert.equal(verifyTicketSignature(forgedQr), false);
 
-  const certCode = generateCertificateCode('402', 'python-data', '4021202422');
+  const certCode = generateCertificateCode('402', 'python-data', '4011234567');
   assert.ok(certCode.startsWith('CERT-402-'));
   assert.equal(certCode.length, 13);
 });

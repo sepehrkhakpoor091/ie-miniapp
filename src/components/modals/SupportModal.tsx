@@ -79,7 +79,7 @@ const SAMPLE_TICKETS: SupportTicket[] = [
 const VERIFIED_CERTIFICATES: Record<string, CertificateInfo> = {
   'CERT-402-IE': {
     certificateId: 'CERT-402-IE',
-    studentName: 'امیرحسین رضایی',
+    studentName: 'علی محمدی',
     courseTitle: 'کارگاه تخصصی شبیه‌سازی سیستم‌های گسسته با Arena',
     instructor: 'دکتر محمدرضا رضایی (عضو هیئت علمی دانشکده صنایع)',
     issueDate: '۱۵ مهر ۱۴۰۴',

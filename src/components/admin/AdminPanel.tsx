@@ -29,11 +29,14 @@ import {
   EventItem,
   FeatureFlags,
   KycStatus,
+  LootboxConfig,
+  LootboxPrizeItem,
   LootiChatMessage,
   LootiModelId,
   OnlineSessionUser,
   Professor,
   ScheduledTimer,
+  StudentIdDisputeTicket,
   ThemeMode,
   TicketRecord,
   UserProfile,
@@ -48,7 +51,11 @@ import {
   saveStoredAnnouncements,
   syncAnnouncementsFromTelegramChannel,
 } from '../../utils/channelSync';
-import { EXTENDED_BADGES, INITIAL_WEEKLY_QUESTS } from '../../utils/gamification';
+import {
+  DEFAULT_LOOTBOX_CONFIG,
+  EXTENDED_BADGES,
+  INITIAL_WEEKLY_QUESTS,
+} from '../../utils/gamification';
 import {
   MASTER_ADMIN_TELEGRAM_ID,
   computeBadgeVerificationHash,
@@ -60,7 +67,10 @@ import {
   validateUploadedImageFile,
   verifyTicketSignature,
 } from '../../utils/security';
-import { verifyQrCheckInWithBot } from '../../utils/apiBridge';
+import {
+  saveLootboxConfigOnBot,
+  verifyQrCheckInWithBot,
+} from '../../utils/apiBridge';
 import {
   askAdminLootiAi,
   parseMultiProfessorSchedules,
@@ -164,218 +174,13 @@ export const DEFAULT_AVATARS_CATALOG: AvatarCatalogItem[] = [
   },
 ];
 
-export const DEFAULT_STUDENTS: AdminStudentDossier[] = [
-  {
-    id: 'stu-1',
-    fullName: 'امیرحسین رضایی',
-    studentId: '4021202422',
-    cohortYear: '1402',
-    phone: '09123456789',
-    avatar: '01_avatar_boy.png',
-    score: 280,
-    level: 3,
-    kycStatus: 'verified',
-    isBanned: false,
-    attendedEvents: ['کارگاه مدیریت پروژه و کنترل زمان'],
-    badges: ['19_badge_Gear.png', '20_badge_chart.png', '21_badge_code.png'],
-    payments: [
-      { title: 'کارگاه تحلیل داده با پایتون', amount: 50000, date: '۱۴۰۴/۰۸/۲۰', status: 'تایید شده' },
-      { title: 'سمینار هوش مصنوعی در صنایع', amount: 30000, date: '۱۴۰۴/۰۸/۱۲', status: 'تایید شده' },
-    ],
-    chatLogs: [
-      { sender: 'دانشجو', text: 'سلام، گواهی کارگاه مدیریت پروژه کی صادر میشه؟', time: '۱۰:۲۵' },
-      { sender: 'شورا', text: 'سلام امیرحسین جان، کد گواهی در پروفایلت ثبت شد.', time: '۱۰:۳۲' },
-    ],
-  },
-  {
-    id: 'stu-2',
-    fullName: 'پرنیا محمدی',
-    studentId: '4021201188',
-    cohortYear: '1402',
-    phone: '09129876543',
-    avatar: '02_avatar_girl.png',
-    score: 410,
-    level: 4,
-    kycStatus: 'verified',
-    isBanned: false,
-    attendedEvents: ['کارگاه تحلیل داده با پایتون', 'بازدید کارخانه ایران‌خودرو', 'سمینار لجستیک'],
-    badges: ['19_badge_Gear.png', '20_badge_chart.png', '22_badge_helmet.png', '24_badge_trophy.png'],
-    payments: [
-      { title: 'بازدید علمی خط تولید', amount: 45000, date: '۱۴۰۴/۰۸/۱۸', status: 'تایید شده' },
-    ],
-    chatLogs: [
-      { sender: 'دانشجو', text: 'فیش واریزی بازدید رو ارسال کردم.', time: '۱۴:۱۰' },
-    ],
-  },
-  {
-    id: 'stu-3',
-    fullName: 'کیانوش نادری',
-    studentId: '4011203309',
-    cohortYear: '1401',
-    phone: '09351112233',
-    avatar: '01_avatar_boy.png',
-    score: 345,
-    level: 3,
-    kycStatus: 'verified',
-    isBanned: false,
-    attendedEvents: ['کارگاه کنترل پروژه MSP', 'سمینار زنجیره تامین'],
-    badges: ['19_badge_Gear.png', '23_badge_idea.png'],
-    payments: [
-      { title: 'کارگاه کنترل پروژه MSP', amount: 90000, date: '۱۴۰۴/۰۸/۰۵', status: 'تایید شده' },
-    ],
-    chatLogs: [],
-  },
-  {
-    id: 'stu-4',
-    fullName: 'سارا کاظمی',
-    studentId: '4031205541',
-    cohortYear: '1403',
-    phone: '09194445566',
-    avatar: '02_avatar_girl.png',
-    score: 190,
-    level: 2,
-    kycStatus: 'pending_review',
-    isBanned: false,
-    attendedEvents: ['جشن معارفه ورودی‌ها'],
-    badges: ['19_badge_Gear.png'],
-    payments: [],
-    chatLogs: [
-      { sender: 'دانشجو', text: 'تصویر کارت دانشجویی رو بارگذاری کردم، ممنون میشم بررسی کنید.', time: '۱۶:۴۰' },
-    ],
-  },
-  {
-    id: 'stu-5',
-    fullName: 'مهدی سلطانی',
-    studentId: '4001207712',
-    cohortYear: '1400',
-    phone: '09127778899',
-    avatar: '01_avatar_boy.png',
-    score: 520,
-    level: 5,
-    kycStatus: 'verified',
-    isBanned: false,
-    attendedEvents: ['کارگاه شبیه‌سازی Arena', 'کارگاه GAMS', 'مسابقه بهینه‌سازی'],
-    badges: ['19_badge_Gear.png', '20_badge_chart.png', '21_badge_code.png', '24_badge_trophy.png'],
-    payments: [
-      { title: 'کارگاه شبیه‌سازی Arena', amount: 110000, date: '۱۴۰۴/۰۷/۲۸', status: 'تایید شده' },
-    ],
-    chatLogs: [],
-  },
-  {
-    id: 'stu-6',
-    fullName: 'آرین شریفی',
-    studentId: '4041209901',
-    cohortYear: '1404',
-    phone: '09901234567',
-    avatar: '01_avatar_boy.png',
-    score: 140,
-    level: 1,
-    kycStatus: 'kyc_locked',
-    isBanned: false,
-    attendedEvents: ['کارگاه آشنایی با مهندسی صنایع'],
-    badges: ['23_badge_idea.png'],
-    payments: [],
-    chatLogs: [],
-  },
-  {
-    id: 'stu-7',
-    fullName: 'نگین جلالی',
-    studentId: '4051201020',
-    cohortYear: '1405',
-    phone: '09123339900',
-    avatar: '02_avatar_girl.png',
-    score: 95,
-    level: 1,
-    kycStatus: 'verified',
-    isBanned: false,
-    attendedEvents: ['تور آشنایی دانشکده صنایع'],
-    badges: ['19_badge_Gear.png'],
-    payments: [],
-    chatLogs: [],
-  },
-];
+// Zero fake/dummy students — populated exclusively from real registered Telegram bot users
+export const DEFAULT_STUDENTS: AdminStudentDossier[] = [];
 
 export const DEFAULT_EVENTS: EventItem[] = EVENTS_DATA;
 
-export const DEFAULT_RECEIPTS: AdminReceiptItem[] = [
-  {
-    id: 'rcp-101',
-    type: 'receipt',
-    studentName: 'امیرحسین رضایی',
-    studentId: '4021202422',
-    cohortYear: '1402',
-    eventId: 'ev-python-data',
-    eventTitle: 'کارگاه تحلیل داده با پایتون',
-    amountTomans: 50000,
-    submittedAt: '۱۰ دقیقه پیش',
-    aiConfidenceText: '🤖 بررسی هوش مصنوعی: مبلغ ۵۰,۰۰۰ تومان و نام منطبق است ✅ (دقت ۹۸٪)',
-    status: 'pending',
-    trackingCode: 'IE-884120',
-  },
-  {
-    id: 'rcp-102',
-    type: 'receipt',
-    studentName: 'پرنیا محمدی',
-    studentId: '4021201188',
-    cohortYear: '1402',
-    eventId: 'ev-project-mgmt',
-    eventTitle: 'کارگاه مدیریت پروژه و کنترل زمان',
-    amountTomans: 100000,
-    submittedAt: '۲۵ دقیقه پیش',
-    aiConfidenceText: '🤖 بررسی هوش مصنوعی: مبلغ ۱۰۰,۰۰۰ تومان و کد پیگیری بانکی منطبق است ✅',
-    status: 'pending',
-    trackingCode: 'IE-992310',
-  },
-  {
-    id: 'rcp-103',
-    type: 'receipt',
-    studentName: 'مهدی سلطانی',
-    studentId: '4001207712',
-    cohortYear: '1400',
-    eventId: 'ev-factory-visit',
-    eventTitle: 'بازدید علمی خط تولید ایران‌خودرو',
-    amountTomans: 45000,
-    submittedAt: 'دیروز',
-    decidedAt: 'دیروز ساعت ۱۸:۲۰',
-    aiConfidenceText: '🤖 بررسی هوش مصنوعی: فیش واریزی تایید شده و بلیط صادر گردیده است ✅',
-    status: 'approved',
-    trackingCode: 'IE-771204',
-  },
-  {
-    id: 'kyc-201',
-    type: 'kyc',
-    studentName: 'سارا کاظمی',
-    studentId: '4031205541',
-    cohortYear: '1403',
-    submittedAt: '۳۵ دقیقه پیش',
-    aiConfidenceText: '🤖 بررسی هوش مصنوعی: هولوگرام کارت دانشجویی و کد ۴۰۳۱۲۰۵۵۴۱ منطبق است ✅',
-    status: 'pending',
-    trackingCode: 'KYC-4035541',
-  },
-  {
-    id: 'kyc-202',
-    type: 'kyc',
-    studentName: 'آرین شریفی',
-    studentId: '4041209901',
-    cohortYear: '1404',
-    submittedAt: '۱ ساعت پیش',
-    aiConfidenceText: '🤖 بررسی هوش مصنوعی: مشخصات کارت موقت ورودی ۱۴۰۴ منطبق است ✅',
-    status: 'pending',
-    trackingCode: 'KYC-4049901',
-  },
-  {
-    id: 'kyc-203',
-    type: 'kyc',
-    studentName: 'نگین جلالی',
-    studentId: '4051201020',
-    cohortYear: '1405',
-    submittedAt: '۲ روز پیش',
-    decidedAt: '۲ روز پیش ساعت ۱۱:۱۰',
-    aiConfidenceText: '🤖 بررسی هوش مصنوعی: کارت دانشجویی ورودی ۱۴۰۵ تایید شده است ✅',
-    status: 'approved',
-    trackingCode: 'KYC-4051020',
-  },
-];
+// Zero fake/dummy receipts — populated exclusively from real student submissions
+export const DEFAULT_RECEIPTS: AdminReceiptItem[] = [];
 
 export const DEFAULT_PROFESSORS: Professor[] = [
   {
@@ -511,7 +316,7 @@ export const DEFAULT_TIMERS: ScheduledTimer[] = [
 export const DEFAULT_LOGS: AdminAuditLogItem[] = [
   {
     id: 'log-1',
-    actor: 'امیرحسین رضایی (سطح ۱)',
+    actor: 'مدیر ارشد انجمن (ID: 629890497)',
     action: 'ورود موفق به پنل مدیریت با تایید رمز ارشد',
     target: 'نشست امن #۸۴۹۲',
     timestamp: '۱۴۰۴/۰۸/۲۳ - ۱۰:۴۰',
@@ -587,6 +392,8 @@ interface AdminPanelProps {
   badgesCatalog?: BadgeItem[];
   avatarsCatalog?: AvatarCatalogItem[];
   discountRule?: DiscountRuleConfig;
+  lootboxConfig?: LootboxConfig;
+  disputeTickets?: StudentIdDisputeTicket[];
   announcements?: ChannelAnnouncement[];
   channelUrl?: string;
   featuredEventId?: string;
@@ -605,6 +412,7 @@ interface AdminPanelProps {
   onUpdateAvatars?: (nextAvatars: AvatarCatalogItem[]) => void;
   onUpdateTickets?: (nextTickets: TicketRecord[]) => void;
   onUpdateDiscountRule?: (nextRule: DiscountRuleConfig) => void;
+  onUpdateLootboxConfig?: (nextLootboxConfig: LootboxConfig) => void;
   onUpdateAnnouncements?: (nextAnnouncements: ChannelAnnouncement[]) => void;
   onUpdateChannelUrl?: (nextChannelUrl: string) => void;
   onUpdateCurrentUserProfile?: (fields: Partial<UserProfile>) => void;
@@ -635,6 +443,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   badgesCatalog = EXTENDED_BADGES,
   avatarsCatalog = DEFAULT_AVATARS_CATALOG,
   discountRule: propDiscountRule,
+  lootboxConfig: propLootboxConfig = DEFAULT_LOOTBOX_CONFIG,
+  disputeTickets = [],
   announcements: propAnnouncements = DEFAULT_ISEFUM_ANNOUNCEMENTS,
   channelUrl: propChannelUrl = DEFAULT_CHANNEL_URL,
   featuredEventId: propFeaturedEventId = 'ev-project-mgmt',
@@ -653,6 +463,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onUpdateAvatars,
   onUpdateTickets,
   onUpdateDiscountRule,
+  onUpdateLootboxConfig,
   onUpdateAnnouncements,
   onUpdateChannelUrl,
   onUpdateCurrentUserProfile,
@@ -716,11 +527,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [professors]);
 
   useEffect(() => {
-    if (Array.isArray(students) && students.length > 0) setStudentList(students);
+    if (Array.isArray(students)) setStudentList(students);
   }, [students]);
 
   useEffect(() => {
-    if (Array.isArray(receipts) && receipts.length > 0) setReceiptList(receipts);
+    if (Array.isArray(receipts)) setReceiptList(receipts);
   }, [receipts]);
 
   useEffect(() => {
@@ -791,52 +602,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onUpdateTickets?.(next);
   };
 
-  // Live Online Users Radar State
-  const [onlineSessions, setOnlineSessions] = useState<OnlineSessionUser[]>(() => [
-    {
-      id: 'sess-current',
-      studentId: currentUser?.studentId || '4021202422',
-      fullName: currentUser?.fullName || 'امیرحسین رضایی',
-      cohortYear: currentUser?.cohortYear || '۱۴۰۲',
-      device:
-        typeof window !== 'undefined' && window.innerWidth >= 1024
-          ? 'Desktop Web'
-          : 'Telegram Mobile',
-      activePage: 'پروفایل دانشجویی / بلیط QR',
-      lastHeartbeat: 'هم‌اکنون آنلاین (شما)',
-      isLocked: false,
-    },
-    {
-      id: 'sess-2',
-      studentId: '4021201188',
-      fullName: 'پرنیا محمدی',
-      cohortYear: '۱۴۰۲',
-      device: 'Telegram Mobile',
-      activePage: 'رویدادها و کارگاه‌ها',
-      lastHeartbeat: '۱۲ ثانیه پیش',
-      isLocked: false,
-    },
-    {
-      id: 'sess-3',
-      studentId: '4011203309',
-      fullName: 'کیانوش نادری',
-      cohortYear: '۱۴۰۱',
-      device: 'Desktop Web',
-      activePage: 'تالار افتخارات و صندوقچه',
-      lastHeartbeat: '۲۸ ثانیه پیش',
-      isLocked: false,
-    },
-    {
-      id: 'sess-4',
-      studentId: '4031205541',
-      fullName: 'سارا کاظمی',
-      cohortYear: '۱۴۰۳',
-      device: 'Telegram Mobile',
-      activePage: 'رادار اساتید دانشکده',
-      lastHeartbeat: '۴۵ ثانیه پیش',
-      isLocked: false,
-    },
-  ]);
+  // Live Online Users Radar State (strictly real users)
+  const [onlineSessions, setOnlineSessions] = useState<OnlineSessionUser[]>(() =>
+    currentUser?.studentId
+      ? [
+          {
+            id: 'sess-current',
+            studentId: currentUser.studentId,
+            fullName: currentUser.fullName || 'دانشجوی آنلاین',
+            cohortYear: currentUser.cohortYear || '۱۴۰۲',
+            device:
+              typeof window !== 'undefined' && window.innerWidth >= 1024
+                ? 'Desktop Web'
+                : 'Telegram Mobile',
+            activePage: 'پروفایل دانشجویی / بلیط QR',
+            lastHeartbeat: 'هم‌اکنون آنلاین (شما)',
+            isLocked: false,
+          },
+        ]
+      : []
+  );
 
   // ==========================================================================
   // MODULE 1 STATE: QR Scanner vs Separate Ticket History Page + Image Upload
@@ -862,7 +647,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
     return (
       firstUnscanned?.qrPayload ||
-      generateTicketPayload('ev-project-mgmt', '4021202422', 'TK-402891')
+      generateTicketPayload('ev-project-mgmt', '4011234567', 'TK-402891')
     );
   });
   const [scanErrorAlert, setScanErrorAlert] = useState<string | null>(null);
@@ -1000,16 +785,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   );
 
   // ==========================================================================
-  // MODULE 6 STATE: Dynamic Medal Creator + Universal Avatar Studio + Discount Rule
+  // MODULE 6 STATE: Dynamic Medal Creator + Universal Avatar Studio + Discount Rule + Lootbox Manager
   // ==========================================================================
-  const [mod6SubTab, setMod6SubTab] = useState<'medals' | 'avatars' | 'discounts'>('medals');
+  const [mod6SubTab, setMod6SubTab] = useState<
+    'medals' | 'avatars' | 'discounts' | 'lootbox'
+  >('lootbox');
   const [discountRule, setDiscountRule] = useState<DiscountRuleConfig>(
     propDiscountRule || {
       pointsStep: 10,
       discountTomansPerStep: 50000,
     }
   );
-  const [selectedStudentForBadge, setSelectedStudentForBadge] = useState<string>('4021202422');
+  const [lootboxDraft, setLootboxDraft] = useState<LootboxConfig>(() =>
+    propLootboxConfig &&
+    Array.isArray(propLootboxConfig.bronzePrizes) &&
+    Array.isArray(propLootboxConfig.goldPrizes)
+      ? propLootboxConfig
+      : DEFAULT_LOOTBOX_CONFIG
+  );
+  const [isSavingLootbox, setIsSavingLootbox] = useState(false);
+  const [newPrizeChestType, setNewPrizeChestType] = useState<'bronze' | 'gold'>('bronze');
+  const [newPrizeTitle, setNewPrizeTitle] = useState('');
+  const [newPrizeRewardType, setNewPrizeRewardType] =
+    useState<LootboxPrizeItem['rewardType']>('discount');
+  const [newPrizeChance, setNewPrizeChance] = useState<number>(25);
+  const [newPrizeBonusPoints, setNewPrizeBonusPoints] = useState<number>(20);
+
+  const [selectedStudentForBadge, setSelectedStudentForBadge] = useState<string>(
+    () => currentUser?.studentId || students[0]?.studentId || ''
+  );
   const [selectedBadgeFilename, setSelectedBadgeFilename] =
     useState<string>('19_badge_Gear.png');
   const [newQuestTitle, setNewQuestTitle] = useState('');
@@ -1203,7 +1007,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const parts = raw.split(':');
     const eventId = parts[1] || 'ev-project-mgmt';
-    const studentId = parts[2] || '4021202422';
+    const studentId = parts[2] || '4011234567';
     const trackingCode = parts[3] || 'TK-402891';
     const paidFromPayload =
       parts.length === 6 ? Math.max(0, Number(parts[4]) || 0) : undefined;
@@ -1506,7 +1310,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )
       );
 
-      if (item.studentId === (currentUser?.studentId || '4021202422')) {
+      if (currentUser?.studentId && item.studentId === currentUser.studentId) {
         onUpdateCurrentUserProfile?.({ kycStatus: nextKycStatus });
       }
     } else if (decision === 'approved') {
@@ -1648,8 +1452,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       })
     );
 
-    const isCurrentStudent =
-      student.studentId === (currentUser?.studentId || '4021202422');
+    const isCurrentStudent = Boolean(
+      currentUser?.studentId && student.studentId === currentUser.studentId
+    );
 
     if (typeof change.deltaScore === 'number' && change.deltaScore !== 0) {
       const reasonText =
@@ -2046,7 +1851,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         'اعطاشده به‌پاس مشارکت برتر در فعالیت‌های علمی و کارگاه‌های مهندسی صنایع.',
       verificationHash: computeBadgeVerificationHash(
         idSlug,
-        currentUser?.studentId || '4021202422',
+        currentUser?.studentId || '4011234567',
         new Date().toLocaleDateString('fa-IR')
       ),
       nextTierRequirement:
@@ -2155,7 +1960,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
 
     if (
-      selectedStudentForBadge === (currentUser?.studentId || '4021202422') &&
+      currentUser?.studentId &&
+      selectedStudentForBadge === currentUser.studentId &&
       onAwardCurrentStudentPoints
     ) {
       onAwardCurrentStudentPoints(30, `دریافت نشان «${badgeObj.title}» از شورای مرکزی`);
@@ -2546,7 +2352,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   },
                   {
                     key: 'leaderboardEnabled' as keyof FeatureFlags,
-                    label: 'جدول برترین‌ها و رقابت ورودی‌ها',
+                    label: 'جدول برترین‌ها',
                   },
                   {
                     key: 'supportTicketsEnabled' as keyof FeatureFlags,
@@ -3246,10 +3052,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 type="text"
                 value={userSearchQuery}
                 onChange={(e) => setUserSearchQuery(e.target.value)}
-                placeholder="جستجو بر اساس نام، شماره دانشجویی (مثلاً 4021202422) یا تلفن..."
+                placeholder="جستجو بر اساس نام، شماره دانشجویی (مثلاً 4011234567) یا تلفن..."
                 className={`w-full pr-9 pl-3 py-2 rounded-xl text-xs font-bold border focus:outline-none ${inputClass}`}
               />
             </div>
+
+            {Array.isArray(disputeTickets) && disputeTickets.length > 0 && (
+              <div className="p-3.5 rounded-2xl border-2 border-rose-500/50 bg-rose-950/30 space-y-2 text-xs">
+                <div className="font-black text-rose-300">
+                  🚨 تیکت‌های فوری اعتراض شماره دانشجویی ({disputeTickets.length.toLocaleString('fa-IR')} مورد):
+                </div>
+                {disputeTickets.map((dt) => (
+                  <div
+                    key={dt.id}
+                    className="p-2.5 rounded-xl bg-black/30 border border-rose-500/30 space-y-1"
+                  >
+                    <div className="flex items-center justify-between font-black">
+                      <span>
+                        {dt.reporterName || dt.fullName} • کد دانشجویی:{' '}
+                        <span className="font-mono text-[#D4AB58]">{dt.studentId}</span>
+                      </span>
+                      <span className="font-mono text-[11px]">{dt.phoneNumber || dt.phone}</span>
+                    </div>
+                    <p className="text-[11px] opacity-90">{dt.explanation}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(Array.isArray(filteredStudents) ? filteredStudents : []).length === 0 ? (
+              <div className={`p-6 rounded-2xl border text-center space-y-1.5 text-xs ${subCardClass}`}>
+                <div className="font-black text-sm">
+                  هنوز کاربر ثبت‌نام‌شده‌ای در این بخش وجود ندارد
+                </div>
+                <p className="opacity-75 font-bold">
+                  تنها کاربران واقعی که در ربات تلگرام یا فرم ثبت‌نام احراز هویت کرده‌اند در این فهرست نمایش داده می‌شوند.
+                </p>
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {(Array.isArray(filteredStudents) ? filteredStudents : []).map((st) => (
@@ -4427,11 +4267,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           setIsSyncingChannel(false);
                         }
                       }}
-                      className="px-4 py-2 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer shrink-0 disabled:opacity-60"
+                      className="px-5 py-3 rounded-xl bg-[#D4AB58] hover:bg-[#e1b864] text-[#101622] font-black text-xs sm:text-sm cursor-pointer shrink-0 disabled:opacity-60 shadow-md border-b-2 border-[#8A6A26]"
                     >
                       {isSyncingChannel
                         ? '⏳ در حال دریافت از تلگرام...'
-                        : '🔄 همگام‌سازی آنی اطلاعیه‌ها از کانال'}
+                        : '🔄 آپدیت آنی اطلاعیه‌ها از کانال تلگرام (@Isefum)'}
                     </button>
                   </div>
                 </div>
@@ -4877,7 +4717,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </p>
               </div>
 
-              <div className="flex gap-1.5 p-1 rounded-2xl bg-black/25 shrink-0">
+              <div className="flex flex-wrap gap-1.5 p-1 rounded-2xl bg-black/25 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    playSwitch();
+                    setMod6SubTab('lootbox');
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer ${
+                    mod6SubTab === 'lootbox' ? 'bg-[#D4AB58] text-[#101622]' : 'opacity-80'
+                  }`}
+                >
+                  🎰 مدیریت جوایز صندوقچه‌ها و درصد شانس
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -4916,6 +4768,335 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </button>
               </div>
             </div>
+
+            {mod6SubTab === 'lootbox' && (
+              <div className="space-y-4 animate-fade-in">
+                <div className={`p-4 rounded-2xl border-2 border-[#D4AB58]/60 space-y-4 text-xs ${subCardClass}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-2.5">
+                    <div>
+                      <h3 className="text-sm font-black text-[#D4AB58]">
+                        🎰 مدیریت جوایز صندوقچه‌ها و درصد شانس
+                      </h3>
+                      <p className="text-[11px] font-bold opacity-80 mt-0.5">
+                        برای هر جایزه در صندوقچه برنزی و طلایی، عنوان جایزه و «درصد شانس برنده شدن (از ۰ تا ۱۰۰ درصد)» را تعیین کنید.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSavingLootbox}
+                      onClick={async () => {
+                        playCoin();
+                        setIsSavingLootbox(true);
+                        try {
+                          onUpdateLootboxConfig?.(lootboxDraft);
+                          const res = await saveLootboxConfigOnBot(lootboxDraft);
+                          appendLog(
+                            'ذخیره جوایز و درصد شانس صندوقچه‌ها',
+                            `برنزی (${lootboxDraft.bronzePrizes.length}) / طلایی (${lootboxDraft.goldPrizes.length})`,
+                            'success'
+                          );
+                          triggerToast(
+                            res.ok
+                              ? '✅ جوایز و درصد شانس صندوقچه‌ها در سرور ربات و مینی‌اپ ذخیره شد!'
+                              : '✅ جوایز و درصد شانس صندوقچه‌ها در مینی‌اپ ذخیره و فعال شد!'
+                          );
+                        } finally {
+                          setIsSavingLootbox(false);
+                        }
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow-md border-b-2 border-emerald-800"
+                    >
+                      {isSavingLootbox
+                        ? '⏳ در حال ذخیره در سرور...'
+                        : '💾 ذخیره جوایز و درصد شانس در سرور (POST /api/miniapp/admin-save-lootbox)'}
+                    </button>
+                  </div>
+
+                  {/* Add New Prize Form */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!newPrizeTitle.trim()) {
+                        playError();
+                        triggerToast('⚠️ لطفاً عنوان جایزه را وارد کنید.');
+                        return;
+                      }
+                      playCoin();
+                      const createdPrize: LootboxPrizeItem = {
+                        id: `${newPrizeChestType}-${Date.now()}`,
+                        title: newPrizeTitle.trim(),
+                        chancePercent: Math.max(0, Math.min(100, Number(newPrizeChance) || 0)),
+                        rewardType: newPrizeRewardType,
+                        bonusPoints:
+                          newPrizeRewardType === 'points'
+                            ? Math.max(1, Number(newPrizeBonusPoints) || 20)
+                            : undefined,
+                      };
+                      const nextConfig: LootboxConfig =
+                        newPrizeChestType === 'bronze'
+                          ? {
+                              ...lootboxDraft,
+                              bronzePrizes: [...lootboxDraft.bronzePrizes, createdPrize],
+                            }
+                          : {
+                              ...lootboxDraft,
+                              goldPrizes: [...lootboxDraft.goldPrizes, createdPrize],
+                            };
+                      setLootboxDraft(nextConfig);
+                      onUpdateLootboxConfig?.(nextConfig);
+                      setNewPrizeTitle('');
+                      triggerToast(`🎁 جایزه «${createdPrize.title}» با شانس ${createdPrize.chancePercent}% اضافه شد.`);
+                    }}
+                    className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}
+                  >
+                    <div className="font-black text-xs">
+                      ➕ افزودن جایزه جدید به صندوقچه برنزی یا طلایی:
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                      <select
+                        value={newPrizeChestType}
+                        onChange={(e) => setNewPrizeChestType(e.target.value as 'bronze' | 'gold')}
+                        className={`px-3 py-2 rounded-xl border text-xs font-black ${inputClass}`}
+                      >
+                        <option value="bronze">🥉 صندوقچه برنزی</option>
+                        <option value="gold">🏆 صندوقچه طلایی</option>
+                      </select>
+
+                      <input
+                        type="text"
+                        value={newPrizeTitle}
+                        onChange={(e) => setNewPrizeTitle(e.target.value)}
+                        placeholder="عنوان جایزه (مثلاً: کد تخفیف ۳۰٪ یا ۲۰ امتیاز هدیه یا پوچ)"
+                        className={`sm:col-span-2 px-3 py-2 rounded-xl border text-xs font-bold ${inputClass}`}
+                      />
+
+                      <select
+                        value={newPrizeRewardType}
+                        onChange={(e) =>
+                          setNewPrizeRewardType(e.target.value as LootboxPrizeItem['rewardType'])
+                        }
+                        className={`px-3 py-2 rounded-xl border text-xs font-black ${inputClass}`}
+                      >
+                        <option value="discount">🎟 کد تخفیف کارگاه</option>
+                        <option value="points">💎 امتیاز هدیه</option>
+                        <option value="empty">💨 پوچ (بدون جایزه)</option>
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+                      <div>
+                        <label className="text-[10px] font-bold block mb-1">
+                          درصد شانس برنده شدن (۰ تا ۱۰۰٪):
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={newPrizeChance}
+                          onChange={(e) =>
+                            setNewPrizeChance(Math.max(0, Math.min(100, Number(e.target.value) || 0)))
+                          }
+                          className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
+                        />
+                      </div>
+
+                      {newPrizeRewardType === 'points' ? (
+                        <div>
+                          <label className="text-[10px] font-bold block mb-1">
+                            مقدار امتیاز هدیه:
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={1000}
+                            value={newPrizeBonusPoints}
+                            onChange={(e) =>
+                              setNewPrizeBonusPoints(Math.max(1, Number(e.target.value) || 20))
+                            }
+                            className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
+                          />
+                        </div>
+                      ) : (
+                        <div className="text-[11px] font-bold opacity-75 py-2">
+                          نوع جایزه:{' '}
+                          {newPrizeRewardType === 'discount'
+                            ? 'صدور خودکار کد تخفیف'
+                            : 'پوچ (شانس مجدد)'}
+                        </div>
+                      )}
+
+                      <button
+                        type="submit"
+                        className="py-2.5 px-4 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer"
+                      >
+                        + افزودن جایزه به لیست
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Bronze & Gold Prize Tables with Live Chance Sliders/Inputs */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* Bronze Chest Prizes */}
+                    <div className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}>
+                      <div className="flex items-center justify-between border-b border-current/10 pb-2">
+                        <span className="font-black text-xs text-amber-500">
+                          🥉 جوایز صندوقچه برنزی ({lootboxDraft.bronzeCost} امتیاز)
+                        </span>
+                        <span className="text-[10px] font-mono font-bold">
+                          مجموع شانس:{' '}
+                          {lootboxDraft.bronzePrizes.reduce(
+                            (acc, p) => acc + (Number(p.chancePercent) || 0),
+                            0
+                          )}
+                          %
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
+                        {lootboxDraft.bronzePrizes.map((prize) => (
+                          <div
+                            key={prize.id}
+                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${subCardClass}`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <input
+                                type="text"
+                                value={prize.title}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setLootboxDraft((prev) => ({
+                                    ...prev,
+                                    bronzePrizes: prev.bronzePrizes.map((p) =>
+                                      p.id === prize.id ? { ...p, title: val } : p
+                                    ),
+                                  }));
+                                }}
+                                className={`w-full px-2 py-1 rounded-lg border text-xs font-black ${inputClass}`}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={prize.chancePercent}
+                                onChange={(e) => {
+                                  const pct = Math.max(
+                                    0,
+                                    Math.min(100, Number(e.target.value) || 0)
+                                  );
+                                  setLootboxDraft((prev) => ({
+                                    ...prev,
+                                    bronzePrizes: prev.bronzePrizes.map((p) =>
+                                      p.id === prize.id ? { ...p, chancePercent: pct } : p
+                                    ),
+                                  }));
+                                }}
+                                className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
+                              />
+                              <span className="text-xs font-black">%</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setLootboxDraft((prev) => ({
+                                    ...prev,
+                                    bronzePrizes: prev.bronzePrizes.filter(
+                                      (p) => p.id !== prize.id
+                                    ),
+                                  }))
+                                }
+                                className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Gold Chest Prizes */}
+                    <div className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}>
+                      <div className="flex items-center justify-between border-b border-current/10 pb-2">
+                        <span className="font-black text-xs text-[#D4AB58]">
+                          🏆 جوایز صندوقچه طلایی ({lootboxDraft.goldCost} امتیاز)
+                        </span>
+                        <span className="text-[10px] font-mono font-bold">
+                          مجموع شانس:{' '}
+                          {lootboxDraft.goldPrizes.reduce(
+                            (acc, p) => acc + (Number(p.chancePercent) || 0),
+                            0
+                          )}
+                          %
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
+                        {lootboxDraft.goldPrizes.map((prize) => (
+                          <div
+                            key={prize.id}
+                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${subCardClass}`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <input
+                                type="text"
+                                value={prize.title}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setLootboxDraft((prev) => ({
+                                    ...prev,
+                                    goldPrizes: prev.goldPrizes.map((p) =>
+                                      p.id === prize.id ? { ...p, title: val } : p
+                                    ),
+                                  }));
+                                }}
+                                className={`w-full px-2 py-1 rounded-lg border text-xs font-black ${inputClass}`}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={prize.chancePercent}
+                                onChange={(e) => {
+                                  const pct = Math.max(
+                                    0,
+                                    Math.min(100, Number(e.target.value) || 0)
+                                  );
+                                  setLootboxDraft((prev) => ({
+                                    ...prev,
+                                    goldPrizes: prev.goldPrizes.map((p) =>
+                                      p.id === prize.id ? { ...p, chancePercent: pct } : p
+                                    ),
+                                  }));
+                                }}
+                                className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
+                              />
+                              <span className="text-xs font-black">%</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setLootboxDraft((prev) => ({
+                                    ...prev,
+                                    goldPrizes: prev.goldPrizes.filter(
+                                      (p) => p.id !== prize.id
+                                    ),
+                                  }))
+                                }
+                                className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {mod6SubTab === 'medals' && (
               <div className="space-y-4 animate-fade-in">

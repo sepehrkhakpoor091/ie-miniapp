@@ -1,15 +1,18 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * Pure Gamification Logic: Badges, Leaderboard, Cohort Battle, Lootbox Store, & Quests
+ * Pure Gamification Logic: Badges, Real Leaderboard, Lootbox Probability Engine, & Quests
  */
 
 import {
+  AdminStudentDossier,
   BadgeItem,
   CertificateInfo,
   CohortBattleStat,
   DiscountVoucher,
   LeaderboardStudent,
+  LootboxConfig,
+  LootboxPrizeItem,
   PointTransaction,
   TicketRecord,
   UserProfile,
@@ -26,7 +29,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۱۴ آبان ۱۴۰۴',
     tier: 'gold',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:19_badge_trophy:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:19_badge_trophy:4011234567'),
     description: 'اعطا شده به پاس کسب مقام اول تیمی در ماراتن مدل‌سازی ریاضی و زنجیره تامین دانشکده مهندسی صنایع.',
     nextTierRequirement: 'کسب ۲ مقام دیگر در مسابقات ملی مهندسی صنایع برای ارتقا به کاپ الماس.',
   },
@@ -38,7 +41,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۲ مهر ۱۴۰۴',
     tier: 'cyan',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:20_badge_shield:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:20_badge_shield:4011234567'),
     description: 'نشان رسمی بازرسان و اعضای پرتلاش برگزاری رویدادهای علمی و کارگاه‌های تخصصی انجمن صنایع.',
     nextTierRequirement: 'همکاری در برگزاری ۵ رویداد بزرگ دانشکده برای دریافت سپر طلایی.',
   },
@@ -50,7 +53,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۲۲ مهر ۱۴۰۴',
     tier: 'emerald',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:22_badge_book:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:22_badge_book:4011234567'),
     description: 'تکمیل موفقیت‌آمیز بیش از ۴۰ ساعت دوره آموزشی تخصصی پایتون، شبیه‌سازی و تحلیل سیستم‌ها.',
     nextTierRequirement: 'چاپ ۱ مقاله علمی-ترویجی در نشریه تخصصی مهندسی صنایع.',
   },
@@ -62,20 +65,20 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۱۰ آبان ۱۴۰۴',
     tier: 'gold',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:21_badge_medal:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:21_badge_medal:4011234567'),
     description: 'انتشار مقاله تحلیلی پیرامون کاربرد هوش مصنوعی در برنامه‌ریزی تولید در نشریه علمی دانشجویی.',
     nextTierRequirement: 'سردبیری ویژهنامه سالانه انجمن علمی مهندسی صنایع.',
   },
   {
     id: 'badge-crown',
     title: 'تاج نخبگان ورودی',
-    subtitle: '۵ نفر اول ورودی ۱۴۰۲',
+    subtitle: '۵ نفر اول ورودی',
     filename: '24_badge_crown.png',
     earnedDate: '۲۵ آبان ۱۴۰۴',
     tier: 'royal',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:24_badge_crown:4021202422'),
-    description: 'قرارگیری در جمع ۵ دانشجوی پرامتیاز و برتر ورودی ۱۴۰۲ در جدول رده‌بندی کل انجمن.',
+    verificationHash: computeSignatureHash('BADGE:24_badge_crown:4011234567'),
+    description: 'قرارگیری در جمع ۵ دانشجوی پرامتیاز و برتر در جدول رده‌بندی کل انجمن.',
     nextTierRequirement: 'حفظ جایگاه در سکوی ۳ نفر اول تا پایان نیم‌سال تحصیلی.',
   },
 ];
@@ -90,7 +93,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۲۶ آبان ۱۴۰۴',
     tier: 'cyan',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:23_badge_diamond:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:23_badge_diamond:4011234567'),
     description: 'عبور از مرز ۲۵۰ امتیاز خالص در فعالیت‌های علمی، کارگاه‌ها و ماموریت‌های هفتگی.',
     nextTierRequirement: 'رسیدن به مرز ۵۰۰ امتیاز برای دریافت الماس درخشان.',
   },
@@ -102,7 +105,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۱ مهر ۱۴۰۲',
     tier: 'emerald',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:25_rank_lvl1:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:25_rank_lvl1:4011234567'),
     description: 'ورود رسمی به خانواده بزرگ انجمن علمی مهندسی صنایع و احراز هویت تلگرامی.',
     nextTierRequirement: 'تکمیل شده ✓',
   },
@@ -114,91 +117,58 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۱۵ اردیبهشت ۱۴۰۳',
     tier: 'cyan',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:26_rank_lvl2:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:26_rank_lvl2:4011234567'),
     description: 'کسب مهارت‌های پایه در برنامه‌ریزی، کنترل پروژه و مشارکت در بازدیدهای صنعتی.',
     nextTierRequirement: 'تکمیل شده ✓',
   },
   {
     id: 'rank-lvl3',
     title: 'سطح ۳ - مهندس آینده',
-    subtitle: 'رتبه فعلی شما (۲۸۰ امتیاز)',
+    subtitle: 'رتبه پیشرفته انجمن',
     filename: '27_rank_lvl3.png',
     earnedDate: '۱ آبان ۱۴۰۴',
     tier: 'gold',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:27_rank_lvl3:4021202422'),
+    verificationHash: computeSignatureHash('BADGE:27_rank_lvl3:4011234567'),
     description: 'تسلط بر ابزارهای نوین تحلیل داده و حضور مستمر در رویدادهای تخصصی دانشکده.',
-    nextTierRequirement: 'کسب ۷۰ امتیاز دیگر برای ارتقا به سطح ۴ (مشاور ارشد).',
+    nextTierRequirement: 'کسب امتیاز بیشتر برای ارتقا به سطح ۴ (مشاور ارشد).',
   },
   {
     id: 'rank-lvl4',
     title: 'سطح ۴ - مشاور ارشد صنایع',
-    subtitle: 'نیازمند ۳۵۰ امتیاز کل',
+    subtitle: 'نیازمند ۳۰۰ امتیاز کل',
     filename: '28_rank_lvl4.png',
-    earnedDate: 'قفل (۷۰ امتیاز باقی‌مانده)',
+    earnedDate: 'قفل (در انتظار تکمیل شرایط)',
     tier: 'royal',
     isUnlocked: false,
     verificationHash: computeSignatureHash('BADGE:28_rank_lvl4:LOCKED'),
     description: 'بالاترین نشان افتخار دانشجویی انجمن علمی مهندسی صنایع با مزایای ویژه رایگان در تمام رویدادها.',
-    nextTierRequirement: 'رسیدن به ۳۵۰ امتیاز کل و شرکت در حداقل ۱۵ رویداد.',
+    nextTierRequirement: 'رسیدن به ۳۰۰ امتیاز کل و شرکت در کارگاه‌های تخصصی.',
   },
 ];
 
 export const DEFAULT_CERTIFICATES: CertificateInfo[] = [
   {
-    certificateId: generateCertificateCode('402', 'PMBOK-MSP', '4021202422'),
-    studentName: 'امیرحسین رضایی',
+    certificateId: generateCertificateCode('401', 'PMBOK-MSP', '4011234567'),
+    studentName: 'علی محمدی',
     courseTitle: 'کارگاه تخصصی کنترل پروژه با MSP و استاندارد PMBOK',
     instructor: 'دکتر علی محمدی',
     issueDate: '۱۵ مهر ۱۴۰۴',
     grade: 'عالی (۹۸ از ۱۰۰)',
     isValid: true,
     hours: 16,
-    signatureHash: computeSignatureHash('CERT:PMBOK-MSP:4021202422'),
+    signatureHash: computeSignatureHash('CERT:PMBOK-MSP:4011234567'),
   },
   {
-    certificateId: generateCertificateCode('402', 'PYTHON-IE', '4021202422'),
-    studentName: 'امیرحسین رضایی',
+    certificateId: generateCertificateCode('401', 'PYTHON-IE', '4011234567'),
+    studentName: 'علی محمدی',
     courseTitle: 'بوت‌کمپ تحلیل داده‌های صنعتی با Python و Pandas',
     instructor: 'مهندس آرش شمس',
     issueDate: '۲۸ مهر ۱۴۰۴',
     grade: 'عالی (۹۵ از ۱۰۰)',
     isValid: true,
     hours: 24,
-    signatureHash: computeSignatureHash('CERT:PYTHON-IE:4021202422'),
-  },
-  {
-    certificateId: generateCertificateCode('402', 'SUPPLY-OPT', '4021202422'),
-    studentName: 'امیرحسین رضایی',
-    courseTitle: 'سمینار تخصصی بهینه‌سازی زنجیره تامین و لجستیک هوشمند',
-    instructor: 'دکتر محمدرضا رضایی',
-    issueDate: '۵ آبان ۱۴۰۴',
-    grade: 'گواهی حضور کامل',
-    isValid: true,
-    hours: 8,
-    signatureHash: computeSignatureHash('CERT:SUPPLY-OPT:4021202422'),
-  },
-  {
-    certificateId: generateCertificateCode('402', 'SIX-SIGMA', '4021202422'),
-    studentName: 'امیرحسین رضایی',
-    courseTitle: 'دوره کمربند سبز شش سیگما (Lean Six Sigma Green Belt)',
-    instructor: 'دکتر سارا شمسایی',
-    issueDate: '۱۲ آبان ۱۴۰۴',
-    grade: 'عالی (۹۶ از ۱۰۰)',
-    isValid: true,
-    hours: 20,
-    signatureHash: computeSignatureHash('CERT:SIX-SIGMA:4021202422'),
-  },
-  {
-    certificateId: generateCertificateCode('402', 'BI-DASH', '4021202422'),
-    studentName: 'امیرحسین رضایی',
-    courseTitle: 'کارگاه طراحی داشبوردهای مدیریتی با Power BI',
-    instructor: 'مهندس کیانوش فرهمند',
-    issueDate: '۲۰ آبان ۱۴۰۴',
-    grade: 'عالی (۱۰۰ از ۱۰۰)',
-    isValid: true,
-    hours: 12,
-    signatureHash: computeSignatureHash('CERT:BI-DASH:4021202422'),
+    signatureHash: computeSignatureHash('CERT:PYTHON-IE:4011234567'),
   },
 ];
 
@@ -209,166 +179,12 @@ export const INITIAL_POINT_TRANSACTIONS: PointTransaction[] = [
     amount: 50,
     date: '۱ مهر ۱۴۰۴',
     category: 'onboarding',
-    referenceCode: 'ONB-402120',
-  },
-  {
-    id: 'tx-2',
-    title: 'شرکت در بوت‌کمپ تحلیل داده با پایتون',
-    amount: 60,
-    date: '۲۸ مهر ۱۴۰۴',
-    category: 'event',
-    referenceCode: 'EV-PY-882',
-  },
-  {
-    id: 'tx-3',
-    title: 'کسب رتبه اول مسابقه بهینه‌سازی زنجیره تامین',
-    amount: 100,
-    date: '۱۴ آبان ۱۴۰۴',
-    category: 'quest',
-    referenceCode: 'QST-HACK-01',
-  },
-  {
-    id: 'tx-4',
-    title: 'استفاده از تخفیف امتیازی کارگاه Power BI',
-    amount: -20,
-    date: '۱۸ آبان ۱۴۰۴',
-    category: 'discount',
-    referenceCode: 'DSC-BI-100K',
-  },
-  {
-    id: 'tx-5',
-    title: 'انتشار مقاله در نشریه علمی مهندسی صنایع',
-    amount: 90,
-    date: '۲۲ آبان ۱۴۰۴',
-    category: 'quest',
-    referenceCode: 'JRN-IE-402',
+    referenceCode: 'ONB-INIT',
   },
 ];
 
-export const INITIAL_LEADERBOARD_STUDENTS: LeaderboardStudent[] = [
-  {
-    id: 'stu-1',
-    rank: 1,
-    fullName: 'پرنیا کریمی',
-    studentId: '4021104419',
-    cohortYear: '۱۴۰۲',
-    avatar: '02_avatar_girl.png',
-    score: 420,
-    level: 4,
-    badgesCount: 9,
-  },
-  {
-    id: 'stu-2',
-    rank: 2,
-    fullName: 'کیانوش نادری',
-    studentId: '4011208831',
-    cohortYear: '۱۴۰۱',
-    avatar: '01_avatar_boy.png',
-    score: 385,
-    level: 4,
-    badgesCount: 8,
-  },
-  {
-    id: 'stu-3',
-    rank: 3,
-    fullName: 'نگین محمدپور',
-    studentId: '4021209912',
-    cohortYear: '۱۴۰۲',
-    avatar: '02_avatar_girl.png',
-    score: 340,
-    level: 3,
-    badgesCount: 7,
-  },
-  {
-    id: 'stu-4',
-    rank: 4,
-    fullName: 'سهراب احمدی',
-    studentId: '4001103321',
-    cohortYear: '۱۴۰۰',
-    avatar: '01_avatar_boy.png',
-    score: 315,
-    level: 3,
-    badgesCount: 7,
-  },
-  {
-    id: 'stu-5',
-    rank: 5,
-    fullName: 'آیدا رحیمی',
-    studentId: '4021205541',
-    cohortYear: '۱۴۰۲',
-    avatar: '02_avatar_girl.png',
-    score: 295,
-    level: 3,
-    badgesCount: 6,
-  },
-  {
-    id: 'usr-4021202422',
-    rank: 6,
-    fullName: 'امیرحسین رضایی',
-    studentId: '4021202422',
-    cohortYear: '۱۴۰۲',
-    avatar: '01_avatar_boy.png',
-    score: 280,
-    level: 3,
-    badgesCount: 6,
-    isCurrentUser: true,
-  },
-  {
-    id: 'stu-7',
-    rank: 7,
-    fullName: 'مهدی سلطانی',
-    studentId: '4031201189',
-    cohortYear: '۱۴۰۳',
-    avatar: '01_avatar_boy.png',
-    score: 255,
-    level: 3,
-    badgesCount: 5,
-  },
-  {
-    id: 'stu-8',
-    rank: 8,
-    fullName: 'زهرا موسوی',
-    studentId: '4011107742',
-    cohortYear: '۱۴۰۱',
-    avatar: '02_avatar_girl.png',
-    score: 240,
-    level: 2,
-    badgesCount: 5,
-  },
-  {
-    id: 'stu-9',
-    rank: 9,
-    fullName: 'عرفان جلالی',
-    studentId: '4031106612',
-    cohortYear: '۱۴۰۳',
-    avatar: '01_avatar_boy.png',
-    score: 210,
-    level: 2,
-    badgesCount: 4,
-  },
-  {
-    id: 'stu-10',
-    rank: 10,
-    fullName: 'سارا توکلی',
-    studentId: '4041203390',
-    cohortYear: '۱۴۰۴',
-    avatar: '02_avatar_girl.png',
-    score: 185,
-    level: 2,
-    badgesCount: 4,
-  },
-  {
-    id: 'stu-11',
-    rank: 11,
-    fullName: 'آرمان حسینی',
-    studentId: '4051102218',
-    cohortYear: '۱۴۰۵',
-    avatar: '01_avatar_boy.png',
-    score: 140,
-    level: 2,
-    badgesCount: 3,
-  },
-];
+// Zero fake users! Only real registered students from the Telegram Bot database are shown.
+export const INITIAL_LEADERBOARD_STUDENTS: LeaderboardStudent[] = [];
 
 export const COHORT_FILTER_OPTIONS = [
   { id: 'all', label: 'همه ورودی‌ها' },
@@ -380,32 +196,87 @@ export const COHORT_FILTER_OPTIONS = [
   { id: '۱۴۰۵', label: 'ورودی ۱۴۰۵' },
 ];
 
+function normalizeCohortComparison(val: string): string {
+  return (val || '')
+    .trim()
+    .replace(/0/g, '۰')
+    .replace(/1/g, '۱')
+    .replace(/2/g, '۲')
+    .replace(/3/g, '۳')
+    .replace(/4/g, '۴')
+    .replace(/5/g, '۵')
+    .replace(/6/g, '۶')
+    .replace(/7/g, '۷')
+    .replace(/8/g, '۸')
+    .replace(/9/g, '۹');
+}
+
 /**
- * Dynamically synchronizes current user's live profile into the leaderboard,
- * filters by cohort year, sorts descending by score, and assigns 1-based ranks.
+ * Dynamically builds the Leaderboard strictly from real registered students (`realStudents`)
+ * plus the current authenticated user (`currentUser` if registered). Zero fake/mock users.
  */
 export function getFilteredLeaderboard(
   cohortFilter: string,
-  currentUser: UserProfile
+  currentUser?: UserProfile,
+  realStudents: AdminStudentDossier[] = []
 ): LeaderboardStudent[] {
-  const merged = INITIAL_LEADERBOARD_STUDENTS.map((s) =>
-    s.isCurrentUser
-      ? {
-          ...s,
-          fullName: currentUser.fullName,
-          studentId: currentUser.studentId,
-          cohortYear: currentUser.cohortYear,
-          avatar: currentUser.avatar,
-          score: currentUser.score,
-          level: currentUser.level,
-        }
-      : s
-  );
+  const safeReal = Array.isArray(realStudents) ? realStudents : [];
+  const map = new Map<string, LeaderboardStudent>();
+
+  for (const stu of safeReal) {
+    if (!stu || !stu.studentId || !stu.studentId.trim()) continue;
+    const key = stu.studentId.trim();
+    const isMe = Boolean(
+      currentUser &&
+        currentUser.studentId &&
+        currentUser.studentId.trim() === key
+    );
+    map.set(key, {
+      id: stu.id || `stu-${key}`,
+      rank: 0,
+      fullName: stu.fullName || 'دانشجوی انجمن',
+      studentId: key,
+      cohortYear: normalizeCohortComparison(stu.cohortYear || '۱۴۰۲'),
+      avatar: stu.avatar || '01_avatar_boy.png',
+      score: Math.max(0, Number(stu.score) || 0),
+      level: Math.max(1, Number(stu.level) || 1),
+      badgesCount: Array.isArray(stu.badges) ? stu.badges.length : 1,
+      isCurrentUser: isMe,
+    });
+  }
+
+  if (
+    currentUser &&
+    currentUser.studentId &&
+    currentUser.studentId.trim().length > 0 &&
+    currentUser.fullName &&
+    currentUser.fullName.trim().length > 0 &&
+    currentUser.fullName !== 'دانشجوی مهندسی صنایع'
+  ) {
+    const myKey = currentUser.studentId.trim();
+    map.set(myKey, {
+      id: currentUser.id || `usr-${myKey}`,
+      rank: 0,
+      fullName: currentUser.fullName,
+      studentId: myKey,
+      cohortYear: normalizeCohortComparison(currentUser.cohortYear || '۱۴۰۲'),
+      avatar: currentUser.avatar || '01_avatar_boy.png',
+      score: Math.max(0, Number(currentUser.score) || 0),
+      level: Math.max(1, Number(currentUser.level) || 1),
+      badgesCount: Array.isArray(currentUser.badges) ? currentUser.badges.length : 1,
+      isCurrentUser: true,
+    });
+  }
+
+  const allReal = Array.from(map.values());
+  const normalizedFilter = normalizeCohortComparison(cohortFilter);
 
   const filtered =
-    cohortFilter === 'all'
-      ? merged
-      : merged.filter((student) => student.cohortYear === cohortFilter);
+    !cohortFilter || cohortFilter === 'all' || cohortFilter === 'همه'
+      ? allReal
+      : allReal.filter(
+          (student) => normalizeCohortComparison(student.cohortYear) === normalizedFilter
+        );
 
   const sorted = [...filtered].sort((a, b) => b.score - a.score);
   return sorted.map((student, idx) => ({
@@ -414,59 +285,120 @@ export function getFilteredLeaderboard(
   }));
 }
 
-/**
- * Computes Inter-Cohort Battle Radar statistics
- */
-export function getCohortBattleStats(currentUser: UserProfile): CohortBattleStat[] {
-  const baseStats: CohortBattleStat[] = [
-    {
-      cohortYear: '۱۴۰۲',
-      label: 'ورودی ۱۴۰۲',
-      totalPoints: 4570 + currentUser.score,
-      studentsCount: 48,
-      colorClass: 'from-[#D4AB58] to-[#E8C779]',
-    },
-    {
-      cohortYear: '۱۴۰۱',
-      label: 'ورودی ۱۴۰۱',
-      totalPoints: 4120,
-      studentsCount: 44,
-      colorClass: 'from-[#7FB69E] to-[#9CD4BC]',
-    },
-    {
-      cohortYear: '۱۴۰۳',
-      label: 'ورودی ۱۴۰۳',
-      totalPoints: 3490,
-      studentsCount: 52,
-      colorClass: 'from-[#91B5BE] to-[#B4D8E1]',
-    },
-    {
-      cohortYear: '۱۴۰۰',
-      label: 'ورودی ۱۴۰۰',
-      totalPoints: 2890,
-      studentsCount: 36,
-      colorClass: 'from-[#E77F6E] to-[#F3A193]',
-    },
-    {
-      cohortYear: '۱۴۰۴',
-      label: 'ورودی ۱۴۰۴',
-      totalPoints: 2150,
-      studentsCount: 58,
-      colorClass: 'from-[#A594F9] to-[#C4B8FF]',
-    },
-  ];
+export function getCohortBattleStats(_currentUser?: UserProfile): CohortBattleStat[] {
+  return [];
+}
 
-  return baseStats.sort((a, b) => b.totalPoints - a.totalPoints);
+export const DEFAULT_LOOTBOX_CONFIG: LootboxConfig = {
+  bronzeCost: 50,
+  goldCost: 100,
+  bronzePrizes: [
+    {
+      id: 'brz-discount-30',
+      title: 'کد تخفیف ۳۰٪ کارگاه‌های انجمن صنایع',
+      type: 'voucher',
+      rewardType: 'discount',
+      discountPercent: 30,
+      maxDiscountTomans: 90000,
+      chancePercent: 45,
+    },
+    {
+      id: 'brz-points-20',
+      title: '۲۰ امتیاز هدیه فعالیت علمی',
+      type: 'points',
+      rewardType: 'points',
+      bonusPoints: 20,
+      chancePercent: 35,
+    },
+    {
+      id: 'brz-empty',
+      title: 'پوچ (شانس مجدد در دوره بعد)',
+      type: 'empty',
+      rewardType: 'empty',
+      chancePercent: 20,
+    },
+  ],
+  goldPrizes: [
+    {
+      id: 'gld-discount-100',
+      title: 'بلیط طلایی ۱۰۰٪ رایگان کارگاه تخصصی VIP',
+      type: 'voucher',
+      rewardType: 'discount',
+      discountPercent: 100,
+      maxDiscountTomans: 250000,
+      chancePercent: 25,
+    },
+    {
+      id: 'gld-discount-60',
+      title: 'کد تخفیف ویژه ۶۰٪ صندوقچه طلایی',
+      type: 'voucher',
+      rewardType: 'discount',
+      discountPercent: 60,
+      maxDiscountTomans: 180000,
+      chancePercent: 45,
+    },
+    {
+      id: 'gld-points-50',
+      title: '۵۰ امتیاز هدیه ویژه نخبگان',
+      type: 'points',
+      rewardType: 'points',
+      bonusPoints: 50,
+      chancePercent: 20,
+    },
+    {
+      id: 'gld-empty',
+      title: 'پوچ (بدون جایزه)',
+      type: 'empty',
+      rewardType: 'empty',
+      chancePercent: 10,
+    },
+  ],
+};
+
+/**
+ * Draws a prize strictly according to the Admin's configured win probabilities (`chancePercent`).
+ */
+export function drawPrizeByProbability(
+  prizes: LootboxPrizeItem[],
+  randValue = Math.random()
+): LootboxPrizeItem {
+  const safePrizes = Array.isArray(prizes) && prizes.length > 0 ? prizes : DEFAULT_LOOTBOX_CONFIG.bronzePrizes;
+  const totalWeight = safePrizes.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.chancePercent) || 0),
+    0
+  );
+
+  if (totalWeight <= 0) {
+    return safePrizes[0];
+  }
+
+  const clampedRand = Math.max(0, Math.min(0.999999, randValue));
+  let threshold = clampedRand * totalWeight;
+
+  for (const prize of safePrizes) {
+    const weight = Math.max(0, Number(prize.chancePercent) || 0);
+    if (threshold < weight) {
+      return prize;
+    }
+    threshold -= weight;
+  }
+
+  return safePrizes[safePrizes.length - 1];
 }
 
 /**
  * Lootbox Store Redemption Pure Logic with Anti-Tamper Integrity Verification
+ * Supports both `(chestType, user, storedChecksum, deterministicSeed?, lootboxConfig?)`
+ * and `(chestType, user, storedChecksum, lootboxConfig?)`.
  */
 export interface LootboxRedeemResult {
   success: boolean;
   errorReason?: string;
   tamperDetected?: boolean;
   costPoints: number;
+  prizeType?: 'voucher' | 'points' | 'empty';
+  prizeTitle?: string;
+  bonusPointsAwarded?: number;
   voucher?: DiscountVoucher;
 }
 
@@ -474,9 +406,19 @@ export function redeemLootboxChest(
   chestType: 'bronze' | 'gold',
   user: Pick<UserProfile, 'score' | 'studentId' | 'level'>,
   storedChecksum: string | null,
-  deterministicSeed?: number
+  seedOrConfig?: number | LootboxConfig,
+  explicitConfig?: LootboxConfig
 ): LootboxRedeemResult {
-  const costPoints = chestType === 'bronze' ? 50 : 100;
+  const deterministicSeed = typeof seedOrConfig === 'number' ? seedOrConfig : undefined;
+  const activeConfig =
+    (typeof seedOrConfig === 'object' && seedOrConfig !== null
+      ? seedOrConfig
+      : explicitConfig) || DEFAULT_LOOTBOX_CONFIG;
+
+  const costPoints =
+    chestType === 'bronze'
+      ? Number(activeConfig.bronzeCost) || 50
+      : Number(activeConfig.goldCost) || 100;
 
   // 1. Verify anti-tamper state integrity first!
   if (!verifyStateIntegrity(user, storedChecksum)) {
@@ -498,28 +440,50 @@ export function redeemLootboxChest(
     };
   }
 
-  // 3. Issue signed voucher
+  // 3. Draw prize based on Admin's configured probabilities
   const rand = deterministicSeed !== undefined ? deterministicSeed : Math.random();
-  const cohortPrefix = user.studentId.substring(0, 3) || '402';
+  const prizePool =
+    chestType === 'bronze' ? activeConfig.bronzePrizes : activeConfig.goldPrizes;
+  const drawnPrize = drawPrizeByProbability(prizePool, rand);
+  const rawKind = drawnPrize.rewardType || drawnPrize.type || 'voucher';
+
+  if (rawKind === 'empty') {
+    return {
+      success: true,
+      costPoints,
+      prizeType: 'empty',
+      prizeTitle: drawnPrize.title || 'پوچ (بدون جایزه)',
+    };
+  }
+
+  if (rawKind === 'points') {
+    const bonus = Math.max(1, Number(drawnPrize.bonusPoints) || 20);
+    return {
+      success: true,
+      costPoints,
+      prizeType: 'points',
+      prizeTitle: drawnPrize.title || `${bonus.toLocaleString('fa-IR')} امتیاز هدیه`,
+      bonusPointsAwarded: bonus,
+    };
+  }
+
+  const cohortPrefix = (user.studentId || '').substring(0, 3) || '401';
   const suffix = Math.floor(1000 + rand * 8999);
   const code = `OFF-IE${cohortPrefix}-${suffix}`;
 
-  let discountPercent = 30;
-  let maxDiscountTomans = 100000;
-  let title = 'کد تخفیف ۳۰٪ کارگاه‌های تخصصی';
-
-  if (chestType === 'bronze') {
-    discountPercent = rand > 0.5 ? 40 : 25;
-    maxDiscountTomans = discountPercent === 40 ? 120000 : 80000;
-    title = `کد تخفیف ${discountPercent.toLocaleString('fa-IR')}٪ کارگاه‌های انجمن صنایع`;
-  } else {
-    discountPercent = rand > 0.65 ? 100 : rand > 0.3 ? 75 : 50;
-    maxDiscountTomans = discountPercent === 100 ? 250000 : 180000;
-    title =
-      discountPercent === 100
-        ? 'بلیط طلایی ۱۰۰٪ رایگان کارگاه یا بازدید علمی VIP'
-        : `کد تخفیف ویژه ${discountPercent.toLocaleString('fa-IR')}٪ صندوقچه طلایی`;
-  }
+  // Parse percent from title if not explicitly set
+  const matchedDigits = (drawnPrize.title || '')
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .match(/(\d+)\s*[%٪]/);
+  const discountPercent =
+    Number(drawnPrize.discountPercent) ||
+    (matchedDigits ? Math.min(100, Math.max(5, Number(matchedDigits[1]))) : chestType === 'gold' ? 60 : 30);
+  const maxDiscountTomans =
+    Number(drawnPrize.maxDiscountTomans) ||
+    (discountPercent === 100 ? 250000 : chestType === 'gold' ? 180000 : 100000);
+  const title =
+    drawnPrize.title ||
+    `کد تخفیف ${discountPercent.toLocaleString('fa-IR')}٪ کارگاه‌های انجمن صنایع`;
 
   const signatureHash = computeSignatureHash(`VOUCHER|${code}|${discountPercent}|${user.studentId}`);
 
@@ -538,6 +502,8 @@ export function redeemLootboxChest(
   return {
     success: true,
     costPoints,
+    prizeType: 'voucher',
+    prizeTitle: title,
     voucher,
   };
 }
@@ -729,7 +695,7 @@ export function evaluateDynamicBadges(
     }
 
     const verificationHash = unlocked
-      ? computeSignatureHash(`BADGE:${file}:${user.studentId || '4021202422'}`)
+      ? computeSignatureHash(`BADGE:${file}:${user.studentId || '4011234567'}`)
       : computeSignatureHash(`BADGE:${file}:LOCKED`);
 
     return {

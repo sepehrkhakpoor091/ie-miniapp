@@ -66,9 +66,12 @@ const PixelMiniCloud: React.FC<{ className?: string }> = ({ className = 'w-12 h-
 export const HomeTab: React.FC<HomeTabProps> = ({
   user,
   themeMode,
+  isSoundActive,
   announcements: propAnnouncements,
   channelUrl = DEFAULT_CHANNEL_URL,
   featuredEvent,
+  onToggleTheme,
+  onToggleSound,
   onChangeTab,
   onOpenQuickMenu,
   onOpenAnnouncementsDrawer,
@@ -81,12 +84,9 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 }) => {
   const isNight = themeMode === 'night';
 
-  const isGirlAvatar = user.avatar.includes('02_avatar_girl');
   const displayFirstName = user.firstName?.trim()
     ? user.firstName.trim()
-    : isGirlAvatar
-    ? 'مهندس رها'
-    : 'مهندس';
+    : 'دانشجو';
 
   const dynamicLevel = calculateLevelFromScore(user.score);
 
@@ -106,14 +106,16 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       : 45;
 
   return (
-    <div className="flex flex-col pb-24 lg:pb-10 select-none">
+    <div className="flex flex-col pb-24 lg:pb-10 select-none w-full">
       {/* 1. Panoramic Campus Header Banner (Mobile full-bleed / Desktop rounded panoramic hero) */}
-      <div className="relative w-full h-[215px] lg:h-[245px] lg:mt-4 lg:rounded-3xl overflow-hidden lg:border-2 lg:border-[#C8BFA8]/50">
-        <PixelImage
-          filename={isNight ? '09_banner_night.png' : '10_banner_day.png'}
-          alt="نمای دانشکده مهندسی صنایع"
-          className="w-full h-full object-cover object-top"
-        />
+      <div className="relative w-full min-h-[220px] sm:h-[225px] lg:h-[245px] lg:mt-4 lg:rounded-3xl overflow-hidden lg:border-2 lg:border-[#C8BFA8]/50 flex flex-col justify-between p-3.5 sm:p-4">
+        <div className="absolute inset-0 pointer-events-none">
+          <PixelImage
+            filename={isNight ? '09_banner_night.png' : '10_banner_day.png'}
+            alt="نمای دانشکده مهندسی صنایع"
+            className="w-full h-full object-cover object-top"
+          />
+        </div>
 
         {/* Animated Miniature Pixel Stars in Night Mode OR Drifting Miniature Pixel Clouds in Day Mode */}
         {isNight ? (
@@ -172,15 +174,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
         {/* Smooth Gradient Overlay at Bottom */}
         <div
-          className={`absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t ${
+          className={`absolute inset-x-0 bottom-0 h-28 pointer-events-none bg-gradient-to-t ${
             isNight
-              ? 'from-[#101622] via-[#101622]/75 to-transparent'
-              : 'from-[#F6F1E7] via-[#F6F1E7]/75 to-transparent'
+              ? 'from-[#101622] via-[#101622]/85 to-transparent'
+              : 'from-[#F6F1E7] via-[#F6F1E7]/85 to-transparent'
           }`}
         />
 
-        {/* Top Bar: Swapped Positions -> Right Side (in RTL): 4-Dot Menu | Left Side (in RTL): Bell Icon */}
-        <div className="absolute top-3.5 left-4 right-4 flex items-center justify-between z-20">
+        {/* Top Bar Row 1: Dedicated Action Controls (Menu | Theme + Sound + Bell) — Never overlaps student name */}
+        <div className="relative z-20 flex items-center justify-between gap-2 w-full">
           {/* Right Side (in RTL): 4-Dot Grid Squircle Icon */}
           <button
             type="button"
@@ -188,7 +190,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               playTick();
               onOpenQuickMenu();
             }}
-            className="w-10 h-10 rounded-xl bg-[#1E293B]/80 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-transform active:scale-90 shadow-md cursor-pointer"
+            className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
             aria-label="منوی دسترسی سریع"
             title="منوی تنظیمات دانشجویی"
           >
@@ -200,29 +202,64 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
           </button>
 
-          {/* Left Side (in RTL): Pixel-Art Bell Icon (31_icon_bell.png) */}
-          <button
-            type="button"
-            onClick={() => {
-              playTick();
-              onOpenAnnouncementsDrawer();
-            }}
-            className="w-10 h-10 rounded-xl bg-[#1E293B]/80 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center relative transition-transform active:scale-90 shadow-md cursor-pointer"
-            aria-label="اطلاعیه‌های کانال"
-            title="اطلاعیه‌های کانال انجمن"
-          >
-            <PixelImage
-              filename="31_icon_bell.png"
-              alt="زنگوله اعلانات"
-              className="w-6 h-6 object-contain"
-            />
-            <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-[#E77F6E] border-2 border-[#101622]" />
-          </button>
+          {/* Left Side (in RTL): Theme Toggle, Sound Toggle & Bell Icon */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                playTick();
+                onToggleTheme();
+              }}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
+              aria-label="تغییر تم روز و شب"
+              title={isNight ? 'حالت روز' : 'حالت شب'}
+            >
+              <PixelImage
+                filename={isNight ? '36_icon_sun.png' : '35_icon_moon.png'}
+                alt="تغییر تم"
+                className="w-5 h-5 object-contain"
+              />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                onToggleSound();
+              }}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
+              aria-label="قطع و وصل صدا"
+              title={isSoundActive ? 'صدا فعال' : 'بی‌صدا'}
+            >
+              <PixelImage
+                filename={isSoundActive ? '37_icon_sound_on.png' : '38_icon_sound_off.png'}
+                alt="وضعیت صدا"
+                className="w-5 h-5 object-contain"
+              />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                playTick();
+                onOpenAnnouncementsDrawer();
+              }}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center relative transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
+              aria-label="اطلاعیه‌های کانال"
+              title="اطلاعیه‌های کانال انجمن"
+            >
+              <PixelImage
+                filename="31_icon_bell.png"
+                alt="زنگوله اعلانات"
+                className="w-5 h-5 sm:w-6 sm:h-6 object-contain"
+              />
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-[#E77F6E] border-2 border-[#101622]" />
+            </button>
+          </div>
         </div>
 
-        {/* Avatar, Greeting & Subtitle (Supports 5-Tap Stealth Admin Gesture) */}
-        <div className="absolute bottom-2 right-4 left-4 flex items-center justify-between z-10">
-          <div className="flex items-center gap-3">
+        {/* Bottom Row 2: Avatar, Greeting & Subtitle (Supports 5-Tap Stealth Admin Gesture, Zero Overlap) */}
+        <div className="relative z-10 flex items-center justify-between gap-3 w-full pt-6">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
             {/* Avatar Frame with 5-Tap Stealth Trigger */}
             <div
               onClick={() => {
@@ -233,7 +270,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   onChangeTab('profile');
                 }
               }}
-              className="w-16 h-16 lg:w-18 lg:h-18 rounded-2xl overflow-hidden border-[2.5px] border-[#D4AB58] shadow-[0_4px_14px_rgba(0,0,0,0.45)] cursor-pointer relative bg-[#1A2424] active:scale-95 transition-transform"
+              className="w-14 h-14 sm:w-16 sm:h-16 lg:w-18 lg:h-18 rounded-2xl overflow-hidden border-[2.5px] border-[#D4AB58] shadow-[0_4px_14px_rgba(0,0,0,0.45)] cursor-pointer relative bg-[#1A2424] active:scale-95 transition-transform shrink-0"
             >
               <PixelImage
                 filename={user.avatar}
@@ -245,17 +282,17 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             {/* Greeting & Association Name */}
             <div
               onClick={() => onStealthTap?.()}
-              className="space-y-0.5 cursor-pointer select-none"
+              className="space-y-0.5 cursor-pointer select-none min-w-0 flex-1"
             >
               <h1
-                className={`text-lg lg:text-xl font-black tracking-tight drop-shadow-sm ${
+                className={`text-base sm:text-lg lg:text-xl font-black tracking-tight drop-shadow-sm truncate ${
                   isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'
                 }`}
               >
                 سلام، {displayFirstName}!
               </h1>
               <p
-                className={`text-xs font-bold ${
+                className={`text-[11px] sm:text-xs font-bold truncate ${
                   isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                 }`}
               >

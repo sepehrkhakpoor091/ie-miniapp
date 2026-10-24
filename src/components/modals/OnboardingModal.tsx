@@ -2,11 +2,17 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * Gamified 4-Step Onboarding Wizard for Engineering Students
- * Supports dynamic Student Avatars Catalog added by Admin
+ * Supports dynamic Student Avatars Catalog, Unique Student ID Lock, and Dispute Ticket Submission
  */
 
-import React, { useState } from 'react';
-import { AvatarCatalogItem, ThemeMode, UserProfile } from '../../types';
+import React, { useState, useEffect } from 'react';
+import {
+  AdminStudentDossier,
+  AvatarCatalogItem,
+  StudentIdDisputeTicket,
+  ThemeMode,
+  UserProfile,
+} from '../../types';
 import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
 import {
@@ -15,6 +21,10 @@ import {
   sanitizeInput,
   getRealTelegramUser,
 } from '../../utils/security';
+import {
+  registerStudentProfileOnBot,
+  submitStudentIdDisputeToBot,
+} from '../../utils/apiBridge';
 import { calculateLevelFromScore } from '../../utils/gamification';
 import {
   playCoin,
@@ -32,6 +42,7 @@ import {
   Phone,
   Gift,
   X,
+  AlertTriangle,
 } from 'lucide-react';
 
 const DEFAULT_STUDENT_AVATARS: AvatarCatalogItem[] = [
@@ -76,10 +87,12 @@ function getCleanCharacterLabel(title: string, idx: number): string {
 interface OnboardingModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onComplete: (profile: Partial<UserProfile>) => void;
+  onComplete: (profile: Partial<UserProfile>, updatedStudents?: AdminStudentDossier[]) => void;
   currentProfile: UserProfile;
   themeMode: ThemeMode;
   studentAvatars?: AvatarCatalogItem[];
+  existingStudents?: AdminStudentDossier[];
+  onDisputeSubmitted?: (ticket: StudentIdDisputeTicket) => void;
 }
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
@@ -89,6 +102,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   currentProfile,
   themeMode,
   studentAvatars,
+  existingStudents = [],
+  onDisputeSubmitted,
 }) => {
   const isNight = themeMode === 'night';
   const [step, setStep] = useState(1);
@@ -98,30 +113,69 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       ? studentAvatars.filter((a) => a.targetRole === 'student')
       : DEFAULT_STUDENT_AVATARS;
 
-  const realTgUser = getRealTelegramUser();
+  const isEditingExisting = Boolean(
+    currentProfile.onboardingCompleted &&
+      currentProfile.studentId &&
+      currentProfile.studentId.trim().length >= 6
+  );
+
   const [selectedAvatar, setSelectedAvatar] = useState(
     currentProfile.avatar || '01_avatar_boy.png'
   );
+  // For new users, initial values MUST be completely empty ("") so user never has to delete pre-typed text
   const [firstName, setFirstName] = useState(
-    currentProfile.firstName && currentProfile.firstName !== 'دانشجو'
-      ? currentProfile.firstName
-      : realTgUser?.firstName || ''
+    isEditingExisting ? currentProfile.firstName || '' : ''
   );
   const [lastName, setLastName] = useState(
-    currentProfile.lastName || realTgUser?.lastName || ''
+    isEditingExisting ? currentProfile.lastName || '' : ''
   );
   const [nameError, setNameError] = useState('');
 
-  const [studentId, setStudentId] = useState(currentProfile.studentId || '');
-  const [detectedCohort, setDetectedCohort] = useState(currentProfile.cohortYear || '');
+  const [studentId, setStudentId] = useState(
+    isEditingExisting ? currentProfile.studentId || '' : ''
+  );
+  const [detectedCohort, setDetectedCohort] = useState(
+    isEditingExisting ? currentProfile.cohortYear || '' : ''
+  );
   const [idError, setIdError] = useState('');
+  const [isDuplicateStudentId, setIsDuplicateStudentId] = useState(false);
+
+  // Dispute Form State (when DUPLICATE_STUDENT_ID occurs)
+  const [showDisputeForm, setShowDisputeForm] = useState(false);
+  const [disputeName, setDisputeName] = useState('');
+  const [disputePhone, setDisputePhone] = useState('');
+  const [disputeExplanation, setDisputeExplanation] = useState('');
+  const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
+  const [disputeSuccessMsg, setDisputeSuccessMsg] = useState('');
 
   const [phoneNumber, setPhoneNumber] = useState(
-    currentProfile.verifiedTelegramPhone || '۰۹۱۲۳۴۵۶۷۸۹'
+    isEditingExisting ? currentProfile.verifiedTelegramPhone || '' : ''
   );
+  const [phoneError, setPhoneError] = useState('');
   const [isPhoneVerified, setIsPhoneVerified] = useState(
-    !!currentProfile.verifiedTelegramPhone
+    Boolean(isEditingExisting && currentProfile.verifiedTelegramPhone)
   );
+  const [isSubmittingRegistration, setIsSubmittingRegistration] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      const editing = Boolean(
+        currentProfile.onboardingCompleted &&
+          currentProfile.studentId &&
+          currentProfile.studentId.trim().length >= 6
+      );
+      setFirstName(editing ? currentProfile.firstName || '' : '');
+      setLastName(editing ? currentProfile.lastName || '' : '');
+      setStudentId(editing ? currentProfile.studentId || '' : '');
+      setDetectedCohort(editing ? currentProfile.cohortYear || '' : '');
+      setPhoneNumber(editing ? currentProfile.verifiedTelegramPhone || '' : '');
+      setIsPhoneVerified(Boolean(editing && currentProfile.verifiedTelegramPhone));
+      setIdError('');
+      setIsDuplicateStudentId(false);
+      setShowDisputeForm(false);
+      setDisputeSuccessMsg('');
+    }
+  }, [isOpen, currentProfile.onboardingCompleted, currentProfile.studentId]);
 
   if (!isOpen) return null;
 
@@ -154,6 +208,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const handleStudentIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setStudentId(val);
+    setIdError('');
+    setIsDuplicateStudentId(false);
+    setShowDisputeForm(false);
+    setDisputeSuccessMsg('');
 
     if (val.length >= 3) {
       const cohortInfo = extractCohortFromStudentId(val.padEnd(8, '0'));
@@ -166,46 +224,169 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     }
   };
 
+  const checkIsDuplicateIdLocally = (candidateId: string): boolean => {
+    const clean = candidateId.trim();
+    if (!clean) return false;
+    const tgUser = getRealTelegramUser();
+    const myTgId =
+      tgUser?.id ||
+      (typeof window !== 'undefined' &&
+      window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+        ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+        : currentProfile.telegramUserId || '');
+
+    const takenInList = (Array.isArray(existingStudents) ? existingStudents : []).some(
+      (s) =>
+        s.studentId &&
+        s.studentId.trim() === clean &&
+        s.id !== currentProfile.id &&
+        (!myTgId || !s.id.includes(myTgId))
+    );
+    if (takenInList) return true;
+
+    try {
+      const rawReg = window.localStorage.getItem('ie_registered_student_ids_v1');
+      if (rawReg) {
+        const parsed = JSON.parse(rawReg) as Record<string, string>;
+        const ownerKey = myTgId || currentProfile.id || 'local-user';
+        if (parsed[clean] && parsed[clean] !== ownerKey) {
+          return true;
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return false;
+  };
+
   const handleIdNext = () => {
     const result = extractCohortFromStudentId(studentId);
     if (!result.isValid) {
       playError();
+      setIsDuplicateStudentId(false);
       setIdError('شماره دانشجویی باید بین ۶ تا ۱۴ رقم معتبر باشد.');
       return;
     }
 
+    if (checkIsDuplicateIdLocally(studentId)) {
+      playError();
+      setIsDuplicateStudentId(true);
+      setIdError(
+        '⛔ این شماره دانشجویی قبلاً ثبت شده است! با هر شماره دانشجویی فقط یک اکانت می‌توان ساخت.'
+      );
+      setDisputeName(`${firstName.trim()} ${lastName.trim()}`.trim());
+      setDisputePhone(phoneNumber.trim());
+      return;
+    }
+
     setIdError('');
+    setIsDuplicateStudentId(false);
     playTick();
     setStep(4);
   };
 
+  const handleSubmitDisputeTicket = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!disputeName.trim() || !disputePhone.trim() || !disputeExplanation.trim()) {
+      playError();
+      return;
+    }
+    setIsSubmittingDispute(true);
+    try {
+      const res = await submitStudentIdDisputeToBot({
+        studentId: studentId.trim(),
+        fullName: disputeName.trim(),
+        phone: disputePhone.trim(),
+        explanation: disputeExplanation.trim(),
+        telegramUserId: currentProfile.telegramUserId,
+      });
+      playFanfare();
+      onDisputeSubmitted?.(res.ticket);
+      setDisputeSuccessMsg(
+        `✅ تیکت اعتراض فوری شما با کد پیگیری (${res.disputeId}) برای ادمین ارشد انجمن ثبت و ارسال شد.`
+      );
+      setShowDisputeForm(false);
+    } finally {
+      setIsSubmittingDispute(false);
+    }
+  };
+
   const handleVerifyTelegramPhone = () => {
+    if (!phoneNumber.trim() || phoneNumber.trim().length < 10) {
+      playError();
+      setPhoneError('لطفاً ابتدا شماره تماس معتبر خود را در کادر بالا وارد کنید.');
+      return;
+    }
+    setPhoneError('');
     playFanfare();
     setIsPhoneVerified(true);
   };
 
-  const handleFinish = () => {
-    playFanfare();
-    const nextScore = Math.max(0, Number(currentProfile.score) || 0) + 5;
-    const levelInfo = calculateLevelFromScore(nextScore);
-    const tgUser = getRealTelegramUser();
-    const finalProfile: Partial<UserProfile> = {
-      avatar: selectedAvatar,
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      fullName: `${firstName.trim()} ${lastName.trim()}`.trim(),
-      studentId: studentId.trim(),
-      cohortYear: detectedCohort || '۱۴۰۲',
-      verifiedTelegramPhone: phoneNumber,
-      score: nextScore,
-      level: levelInfo.level,
-      rankTitle: levelInfo.rankTitle,
-      telegramUserId: tgUser?.id || currentProfile.telegramUserId || 'web-local-student',
-      telegramUsername: tgUser?.username || currentProfile.telegramUsername || '',
-      onboardingCompleted: true,
-    };
-    onComplete(finalProfile);
-    onClose();
+  const handleFinish = async () => {
+    if (!phoneNumber.trim()) {
+      playError();
+      setPhoneError('لطفاً شماره تماس خود را وارد کنید.');
+      return;
+    }
+    setPhoneError('');
+    setIsSubmittingRegistration(true);
+
+    try {
+      const isFirstRegistration = !currentProfile.onboardingCompleted;
+      const nextScore = isFirstRegistration
+        ? Math.max(0, Number(currentProfile.score) || 0) + 5
+        : Math.max(0, Number(currentProfile.score) || 0);
+      const levelInfo = calculateLevelFromScore(nextScore);
+      const tgUser = getRealTelegramUser();
+      const resolvedTgId =
+        tgUser?.id ||
+        (typeof window !== 'undefined' &&
+        window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+          ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+          : currentProfile.telegramUserId || `web-user-${studentId.trim()}`);
+
+      const candidateProfile: UserProfile = {
+        ...currentProfile,
+        id: currentProfile.id || `usr-${studentId.trim()}`,
+        avatar: selectedAvatar,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        fullName: `${firstName.trim()} ${lastName.trim()}`.trim(),
+        studentId: studentId.trim(),
+        cohortYear: detectedCohort || '۱۴۰۲',
+        verifiedTelegramPhone: phoneNumber.trim(),
+        score: nextScore,
+        level: levelInfo.level,
+        rankTitle: levelInfo.rankTitle,
+        telegramUserId: resolvedTgId,
+        telegramUsername: tgUser?.username || currentProfile.telegramUsername || '',
+        onboardingCompleted: true,
+        kycStatus: currentProfile.kycStatus || 'verified',
+      };
+
+      const botRes = await registerStudentProfileOnBot(
+        candidateProfile,
+        existingStudents
+      );
+
+      if (!botRes.ok && botRes.errorCode === 'DUPLICATE_STUDENT_ID') {
+        playError();
+        setStep(3);
+        setIsDuplicateStudentId(true);
+        setIdError(
+          '⛔ این شماره دانشجویی قبلاً ثبت شده است! با هر شماره دانشجویی فقط یک اکانت می‌توان ساخت.'
+        );
+        setDisputeName(candidateProfile.fullName);
+        setDisputePhone(candidateProfile.verifiedTelegramPhone);
+        return;
+      }
+
+      playFanfare();
+      onComplete(botRes.profile || candidateProfile, botRes.students);
+      onClose();
+    } finally {
+      setIsSubmittingRegistration(false);
+    }
   };
 
   return (
@@ -324,7 +505,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             </div>
           )}
 
-          {/* STEP 2: Strict Persian Names */}
+          {/* STEP 2: Strict Persian Names (Empty value, placeholder only) */}
           {step === 2 && (
             <div className="space-y-4">
               <div className="text-center">
@@ -349,7 +530,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                       setFirstName(e.target.value);
                       setNameError('');
                     }}
-                    placeholder="مثال: امیرحسین"
+                    placeholder="مثال: علی"
                     className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none transition-all ${
                       isNight
                         ? 'bg-[#101622] border-[#253247] text-[#F6F1E7] focus:border-[#D4AB58]'
@@ -369,7 +550,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                       setLastName(e.target.value);
                       setNameError('');
                     }}
-                    placeholder="مثال: رضایی"
+                    placeholder="مثال: محمدی"
                     className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none transition-all ${
                       isNight
                         ? 'bg-[#101622] border-[#253247] text-[#F6F1E7] focus:border-[#D4AB58]'
@@ -409,7 +590,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             </div>
           )}
 
-          {/* STEP 3: Student ID & Instant Cohort Recognition */}
+          {/* STEP 3: Student ID, Instant Cohort Recognition & Duplicate ID Dispute Ticket */}
           {step === 3 && (
             <div className="space-y-4">
               <div className="text-center">
@@ -430,7 +611,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   type="text"
                   value={studentId}
                   onChange={handleStudentIdChange}
-                  placeholder="مثال: 4021202422"
+                  placeholder="مثال: 4011234567"
                   maxLength={14}
                   className={`w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono tracking-widest text-center focus:outline-none transition-all ${
                     isNight
@@ -441,7 +622,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 />
               </div>
 
-              {detectedCohort && (
+              {detectedCohort && !isDuplicateStudentId && (
                 <div className="p-3 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/20 to-amber-500/20 border-2 border-[#D4AB58] text-center space-y-1 shadow-[0_0_15px_rgba(212,171,88,0.25)] animate-fade-in">
                   <span className="text-base">🎓</span>
                   <div className="text-sm font-bold text-[#D4AB58]">
@@ -454,8 +635,112 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               )}
 
               {idError && (
-                <div className="p-2.5 rounded-xl bg-[#E77F6E]/10 border border-[#E77F6E]/30 text-xs text-[#E77F6E]">
-                  {idError}
+                <div className="space-y-2.5 animate-fade-in">
+                  <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-500/60 text-xs font-bold text-rose-200 leading-relaxed">
+                    {idError}
+                  </div>
+
+                  {isDuplicateStudentId && (
+                    <div className="space-y-2.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playTick();
+                          setShowDisputeForm((prev) => !prev);
+                        }}
+                        className="w-full py-2.5 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border-2 border-[#D4AB58] text-[#D4AB58] text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        <span>
+                          🚨 من هنوز ثبت‌نام نکرده‌ام اما از شماره دانشجویی من استفاده شده (ثبت تیکت اعتراض)
+                        </span>
+                      </button>
+
+                      {showDisputeForm && (
+                        <form
+                          onSubmit={handleSubmitDisputeTicket}
+                          className={`p-3.5 rounded-2xl border space-y-2.5 text-xs animate-fade-in ${
+                            isNight
+                              ? 'bg-[#101622] border-[#D4AB58]/50 text-[#F6F1E7]'
+                              : 'bg-[#FFFFFF] border-[#8F6B24] text-[#14201B]'
+                          }`}
+                        >
+                          <div className="font-black text-[#D4AB58]">
+                            📝 فرم ثبت تیکت فوری اعتراض شماره دانشجویی ({studentId}):
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold mb-1">
+                              نام و نام خانوادگی شما:
+                            </label>
+                            <input
+                              type="text"
+                              value={disputeName}
+                              onChange={(e) => setDisputeName(e.target.value)}
+                              placeholder="مثال: علی محمدی"
+                              className={`w-full px-3 py-2 rounded-xl border text-xs font-bold ${
+                                isNight
+                                  ? 'bg-[#141C24] border-[#253247] text-[#F6F1E7]'
+                                  : 'bg-[#FAF7F0] border-[#C8BFA8] text-[#14201B]'
+                              }`}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold mb-1">
+                              شماره تماس مستقیم:
+                            </label>
+                            <input
+                              type="tel"
+                              dir="ltr"
+                              value={disputePhone}
+                              onChange={(e) => setDisputePhone(e.target.value)}
+                              placeholder="مثال: 09151234567"
+                              className={`w-full px-3 py-2 rounded-xl border text-xs font-mono font-bold text-center ${
+                                isNight
+                                  ? 'bg-[#141C24] border-[#253247] text-[#F6F1E7]'
+                                  : 'bg-[#FAF7F0] border-[#C8BFA8] text-[#14201B]'
+                              }`}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold mb-1">
+                              توضیحات شما برای ادمین انجمن:
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={disputeExplanation}
+                              onChange={(e) => setDisputeExplanation(e.target.value)}
+                              placeholder="توضیح دهید که این شماره دانشجویی متعلق به شماست..."
+                              className={`w-full px-3 py-2 rounded-xl border text-xs font-bold ${
+                                isNight
+                                  ? 'bg-[#141C24] border-[#253247] text-[#F6F1E7]'
+                                  : 'bg-[#FAF7F0] border-[#C8BFA8] text-[#14201B]'
+                              }`}
+                            />
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={
+                              isSubmittingDispute ||
+                              !disputeName.trim() ||
+                              !disputePhone.trim() ||
+                              !disputeExplanation.trim()
+                            }
+                            className="w-full py-2.5 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer disabled:opacity-50"
+                          >
+                            {isSubmittingDispute
+                              ? 'در حال ارسال تیکت فوری...'
+                              : '🚀 ارسال تیکت اعتراض فوری برای ادمین'}
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {disputeSuccessMsg && (
+                <div className="p-3 rounded-xl bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 text-xs font-bold leading-relaxed animate-fade-in">
+                  {disputeSuccessMsg}
                 </div>
               )}
 
@@ -483,7 +768,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             </div>
           )}
 
-          {/* STEP 4: Verified Telegram phone & Fanfare Celebration */}
+          {/* STEP 4: Phone Input (Empty Initial Value, Placeholder Only) & Registration Submit */}
           {step === 4 && (
             <div className="space-y-4 text-center">
               <div className="relative inline-block">
@@ -500,9 +785,9 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               </div>
 
               <div>
-                <h3 className="font-bold text-base">تأیید شماره و جایزه خوش‌آمدگویی!</h3>
+                <h3 className="font-bold text-base">تأیید شماره تماس و جایزه خوش‌آمدگویی!</h3>
                 <p className="text-xs opacity-75 mt-1">
-                  اتصال شماره تلگرام برای دریافت اعلان‌های فوری رویدادها
+                  ثبت شماره همراه جهت احراز هویت در ربات تلگرام و دریافت بلیط کارگاه‌ها
                 </p>
               </div>
 
@@ -518,36 +803,70 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-current/5 border border-current/10 text-right space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs opacity-75">شماره همراه تلگرام:</span>
-                  <span className="text-xs font-bold text-[#D4AB58]">{phoneNumber}</span>
-                </div>
+              <div className="p-4 rounded-2xl bg-current/5 border border-current/10 text-right space-y-2.5">
+                <label className="block text-xs font-semibold opacity-85">
+                  شماره تماس (موبایل):
+                </label>
+                <input
+                  type="tel"
+                  dir="ltr"
+                  value={phoneNumber}
+                  onChange={(e) => {
+                    setPhoneNumber(e.target.value);
+                    setPhoneError('');
+                  }}
+                  placeholder="مثال: 09151234567"
+                  maxLength={14}
+                  className={`w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono tracking-wider text-center focus:outline-none transition-all ${
+                    isNight
+                      ? 'bg-[#101622] border-[#253247] text-[#F6F1E7] focus:border-[#D4AB58]'
+                      : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B] focus:border-[#354B40]'
+                  }`}
+                />
+
+                {phoneError && (
+                  <div className="text-xs font-bold text-[#E77F6E]">{phoneError}</div>
+                )}
+
                 {!isPhoneVerified ? (
                   <button
+                    type="button"
                     onClick={handleVerifyTelegramPhone}
                     className="w-full py-2 px-3 rounded-xl bg-[#253247] hover:bg-[#2F3F59] text-xs font-bold text-[#F6F1E7] border border-[#354661] flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
                   >
                     <Phone className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>اشتراک‌گذاری شماره از تلگرام (Verify Phone)</span>
+                    <span>تأیید و اتصال شماره تلگرام (Verify Phone)</span>
                   </button>
                 ) : (
                   <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-bold bg-emerald-950/40 p-2 rounded-xl border border-emerald-800">
                     <Check className="w-4 h-4" />
-                    <span>شماره تلگرام با موفقیت تأیید گردید.</span>
+                    <span>شماره تماس با موفقیت تأیید گردید.</span>
                   </div>
                 )}
               </div>
 
-              <div className="pt-2">
+              <div className="flex gap-2 pt-2">
+                <PushButton
+                  variant="secondary"
+                  onClick={() => {
+                    playTick();
+                    setStep(3);
+                  }}
+                  icon={<ArrowRight className="w-4 h-4" />}
+                >
+                  قبلی
+                </PushButton>
                 <PushButton
                   variant="gold"
                   size="lg"
                   fullWidth
+                  disabled={isSubmittingRegistration || !phoneNumber.trim()}
                   onClick={handleFinish}
                   icon={<Sparkles className="w-5 h-5" />}
                 >
-                  ورود به مینی‌اپ و دریافت ۵ امتیاز ✨
+                  {isSubmittingRegistration
+                    ? 'در حال ثبت در سرور ربات...'
+                    : 'ورود به مینی‌اپ و دریافت ۵ امتیاز ✨'}
                 </PushButton>
               </div>
             </div>
@@ -557,3 +876,4 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     </div>
   );
 };
+
