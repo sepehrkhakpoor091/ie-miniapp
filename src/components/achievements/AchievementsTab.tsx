@@ -24,6 +24,7 @@ import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 import {
   COHORT_FILTER_OPTIONS,
   DEFAULT_LOOTBOX_CONFIG,
+  getCohortBattleStats,
   getFilteredLeaderboard,
   redeemLootboxChest,
 } from '../../utils/gamification';
@@ -87,10 +88,15 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
   } | null>(null);
   const [copiedVoucherCode, setCopiedVoucherCode] = useState<string | null>(null);
 
-  // Dynamically computed Leaderboard using ONLY real students from server + current registered user
+  // Dynamically computed Leaderboard & Cohort Competition using ONLY real students from server + current registered user
   const leaderboard = getFilteredLeaderboard(selectedCohort, user, realStudents);
   const cohortList = getFilteredLeaderboard(user.cohortYear || 'all', user, realStudents);
   const userCohortRank = cohortList.find((s) => s.isCurrentUser)?.rank || 1;
+  const cohortBattleStats = getCohortBattleStats(user, realStudents);
+  const maxCohortPoints = Math.max(
+    50,
+    ...cohortBattleStats.map((item) => item.totalPoints)
+  );
 
   const rank1 = leaderboard[0];
   const rank2 = leaderboard[1];
@@ -278,6 +284,89 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
             />
           ) : (
             <>
+              {/* COHORT COMPETITION SECTION: 🏆 رقابت امتیاز ورودی‌ها (۱۴۰۰ تا ۱۴۰۵) */}
+              <div
+                className={`rounded-3xl border-2 p-4 space-y-3 ${
+                  isNight
+                    ? 'bg-[#16202C] border-[#2C3E4C] shadow-[0_5px_0_#0B101B]'
+                    : 'bg-[#FFFFFF] border-[#C8BFA8] shadow-[0_5px_0_#C8BFA8]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🏆</span>
+                    <h3
+                      className={`text-xs sm:text-sm font-black ${
+                        isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'
+                      }`}
+                    >
+                      رقابت امتیاز ورودی‌ها (۱۴۰۰ تا ۱۴۰۵)
+                    </h3>
+                  </div>
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-[#D4AB58]/20 text-[#D4AB58] border border-[#D4AB58]/40">
+                    محاسبه زنده از دانشجویان واقعی
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {cohortBattleStats.map((stat) => {
+                    const percent =
+                      stat.totalPoints > 0
+                        ? Math.max(8, Math.min(100, Math.round((stat.totalPoints / maxCohortPoints) * 100)))
+                        : 0;
+                    const isMyCohort =
+                      stat.cohortYear === (user.cohortYear || '') ||
+                      stat.label.includes(user.cohortYear || '---');
+                    return (
+                      <div key={stat.cohortYear} className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`font-black ${
+                                isMyCohort
+                                  ? 'text-[#D4AB58]'
+                                  : isNight
+                                  ? 'text-[#F6F1E7]'
+                                  : 'text-[#14201B]'
+                              }`}
+                            >
+                              {stat.label}
+                            </span>
+                            {isMyCohort && (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#D4AB58] text-[#101622]">
+                                ورودی شما
+                              </span>
+                            )}
+                            <span
+                              className={`text-[10px] font-bold ${
+                                isNight ? 'text-[#91B5BE]' : 'text-[#5A6E63]'
+                              }`}
+                            >
+                              ({stat.studentsCount.toLocaleString('fa-IR')} نفر)
+                            </span>
+                          </div>
+                          <span className="font-black text-[#D4AB58] font-mono">
+                            {stat.totalPoints.toLocaleString('fa-IR')} امتیاز
+                          </span>
+                        </div>
+                        <div
+                          className={`w-full h-2.5 rounded-full overflow-hidden border ${
+                            isNight
+                              ? 'bg-[#0E1520] border-[#253247]'
+                              : 'bg-[#EFE8D8] border-[#C8BFA8]'
+                          }`}
+                        >
+                          <div
+                            className={`h-full rounded-full bg-gradient-to-l ${stat.colorClass} transition-all duration-500`}
+                            style={{ width: `${percent}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* 2. ENTRY-YEAR COHORT FILTER PILLS */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-0.5">

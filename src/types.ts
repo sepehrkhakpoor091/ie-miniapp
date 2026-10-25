@@ -213,6 +213,8 @@ export interface BootstrapResponse {
   announcements?: ChannelAnnouncement[];
   disputes?: StudentIdDisputeTicket[];
   disputeTickets?: StudentIdDisputeTicket[];
+  pendingApprovals?: AdminReceiptItem[];
+  receipts?: AdminReceiptItem[];
 }
 
 export interface LeaderboardStudent {
@@ -282,6 +284,7 @@ export interface AdminReceiptItem {
   type: 'receipt' | 'kyc' | 'payment_receipt' | 'student_card';
   studentName: string;
   studentId: string;
+  telegramUserId?: string;
   cohortYear: string;
   title?: string;
   eventId?: string;
@@ -300,6 +303,7 @@ export interface AdminStudentDossier {
   id: string;
   fullName: string;
   studentId: string;
+  telegramUserId?: string;
   cohortYear: '1400' | '1401' | '1402' | '1403' | '1404' | '1405' | 'سایر';
   phone: string;
   avatar?: string;

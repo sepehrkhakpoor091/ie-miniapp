@@ -12,6 +12,8 @@ import {
   sanitizeAiPrompt,
   checkAiRateLimit,
   resetAiRateLimit,
+  getScopedStorageKey,
+  isProtectedMasterAccount,
 } from './security';
 import { generateTicketPayload } from './events';
 
@@ -77,6 +79,15 @@ test('verifyStateIntegrity detects localStorage point tampering', () => {
 
   // Negative score fails
   assert.equal(verifyStateIntegrity({ score: -50, studentId: '4011234567', level: 3 }, checksum), false);
+
+  // Scoped storage key binds to numeric Telegram ID
+  assert.equal(getScopedStorageKey('ie_student_profile_v6', '629890497'), 'ie_student_profile_v6_tg_629890497');
+  assert.equal(getScopedStorageKey('ie_student_profile_v6', 'web-local-student'), 'ie_student_profile_v6');
+
+  // Master admin 629890497 immunity check
+  assert.equal(isProtectedMasterAccount({ telegramId: '629890497' }), true);
+  assert.equal(isProtectedMasterAccount({ id: 'adm-master-629890497' }), true);
+  assert.equal(isProtectedMasterAccount({ studentId: '4011234567' }), false);
 });
 
 test('verifyTicketSignature & generateCertificateCode validate cryptographic hashes', () => {

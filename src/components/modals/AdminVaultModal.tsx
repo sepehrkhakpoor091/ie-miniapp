@@ -321,7 +321,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
             </div>
 
             <h2 className="text-base font-black tracking-tight">
-              خزانه امنیتی شورای مرکزی
+              خزانه امنیتی انجمن علمی مهندسی صنایع
             </h2>
             <p
               className={`text-[11px] font-bold mt-0.5 ${
@@ -373,7 +373,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                   </div>
                 </div>
                 <p className="text-[11px] opacity-85">
-                  ورود مخصوص اعضای مجاز شورا و مدیر ارشد (`{MASTER_ADMIN_TELEGRAM_ID}`) است. نشست پس از ۲۰ دقیقه عدم فعالیت قفل می‌شود.
+                  ورود مخصوص اعضای مجاز انجمن صنایع و مدیر ارشد (`{MASTER_ADMIN_TELEGRAM_ID}`) است. نشست پس از ۲۰ دقیقه عدم فعالیت قفل می‌شود.
                 </p>
               </div>
             )}

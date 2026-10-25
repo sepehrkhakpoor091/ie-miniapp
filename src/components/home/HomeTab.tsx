@@ -28,12 +28,12 @@ import { calculateLevelFromScore } from '../../utils/gamification';
 interface HomeTabProps {
   user: UserProfile;
   themeMode: ThemeMode;
-  isSoundActive: boolean;
+  isSoundActive?: boolean;
   announcements?: ChannelAnnouncement[];
   channelUrl?: string;
   featuredEvent?: EventItem;
   onToggleTheme: () => void;
-  onToggleSound: () => void;
+  onToggleSound?: () => void;
   onChangeTab: (tab: TabType) => void;
   onOpenQuickMenu: () => void;
   onOpenAnnouncementsDrawer: (initialTab?: 'channel' | 'about') => void;
@@ -66,12 +66,10 @@ const PixelMiniCloud: React.FC<{ className?: string }> = ({ className = 'w-12 h-
 export const HomeTab: React.FC<HomeTabProps> = ({
   user,
   themeMode,
-  isSoundActive,
   announcements: propAnnouncements,
   channelUrl = DEFAULT_CHANNEL_URL,
   featuredEvent,
   onToggleTheme,
-  onToggleSound,
   onChangeTab,
   onOpenQuickMenu,
   onOpenAnnouncementsDrawer,
@@ -202,7 +200,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
           </button>
 
-          {/* Left Side (in RTL): Theme Toggle, Sound Toggle & Bell Icon */}
+          {/* Left Side (in RTL): Theme Toggle & Bell Icon (Only Day/Night + Bell as requested) */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
@@ -210,31 +208,56 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 playTick();
                 onToggleTheme();
               }}
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-all active:scale-90 shadow-md cursor-pointer shrink-0 group"
               aria-label="تغییر تم روز و شب"
-              title={isNight ? 'حالت روز' : 'حالت شب'}
+              title={isNight ? 'تغییر به حالت روز' : 'تغییر به حالت شب'}
             >
-              <PixelImage
-                filename={isNight ? '36_icon_sun.png' : '35_icon_moon.png'}
-                alt="تغییر تم"
-                className="w-5 h-5 object-contain"
-              />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onToggleSound();
-              }}
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
-              aria-label="قطع و وصل صدا"
-              title={isSoundActive ? 'صدا فعال' : 'بی‌صدا'}
-            >
-              <PixelImage
-                filename={isSoundActive ? '37_icon_sound_on.png' : '38_icon_sound_off.png'}
-                alt="وضعیت صدا"
-                className="w-5 h-5 object-contain"
-              />
+              {isNight ? (
+                /* Night Mode active: Crisp Golden Crescent Moon + Twinkling Stars & Warm Sun Hint */
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="w-5 h-5 sm:w-5.5 sm:h-5.5 text-[#FDE047] drop-shadow-[0_0_6px_rgba(253,224,71,0.45)] transition-transform duration-300 group-hover:rotate-12"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
+                    fill="#FACC15"
+                    stroke="#FEF08A"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M18 4l.6 1.4L20 6l-1.4.6L18 8l-.6-1.4L16 6l1.4-.6L18 4z"
+                    fill="#FFFBEB"
+                  />
+                  <circle cx="14.5" cy="9.5" r="1" fill="#FEF08A" />
+                </svg>
+              ) : (
+                /* Day Mode active: Crisp Radiant Sun with 8 Sunbeams */
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="w-5 h-5 sm:w-5.5 sm:h-5.5 text-[#F59E0B] drop-shadow-[0_0_6px_rgba(245,158,11,0.5)] transition-transform duration-300 group-hover:rotate-45"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="4.5"
+                    fill="#FACC15"
+                    stroke="#FEF08A"
+                    strokeWidth="1.5"
+                  />
+                  <path
+                    d="M12 2.5v2.25M12 19.25v2.25M4.75 12H2.5M21.5 12h-2.25M5.28 5.28l1.6 1.6M17.12 17.12l1.6 1.6M18.72 5.28l-1.6 1.6M6.88 17.12l-1.6 1.6"
+                    stroke="#FDE047"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              )}
             </button>
 
             <button
@@ -245,7 +268,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               }}
               className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#1E293B]/85 hover:bg-[#1E293B] border border-white/15 backdrop-blur-md flex items-center justify-center relative transition-transform active:scale-90 shadow-md cursor-pointer shrink-0"
               aria-label="اطلاعیه‌های کانال"
-              title="اطلاعیه‌های کانال انجمن"
+              title="اطلاعیه‌های کانال انجمن صنایع"
             >
               <PixelImage
                 filename="31_icon_bell.png"

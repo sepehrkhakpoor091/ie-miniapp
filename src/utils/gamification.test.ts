@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  getCohortBattleStats,
   getFilteredLeaderboard,
   redeemLootboxChest,
   SHOWCASE_BADGES,
@@ -83,6 +84,14 @@ test('getFilteredLeaderboard uses ONLY real registered students and recalculates
   const userIn401 = cohort401.find((s) => s.isCurrentUser);
   assert.ok(userIn401);
   assert.equal(userIn401.rank, 2);
+
+  // Cohort battle stats (1400..1405) computed dynamically from real students
+  const battleStats = getCohortBattleStats(MOCK_USER, REAL_BOT_STUDENTS);
+  assert.equal(battleStats.length, 6);
+  const stat1401 = battleStats.find((b) => b.cohortYear === '۱۴۰۱');
+  assert.ok(stat1401);
+  assert.equal(stat1401.studentsCount, 2);
+  assert.equal(stat1401.totalPoints, 410 + 280);
 });
 
 test('redeemLootboxChest enforces anti-tamper checksum and draws prizes by Admin chancePercent', () => {

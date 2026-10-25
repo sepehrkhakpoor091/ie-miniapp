@@ -7,6 +7,7 @@
  */
 
 import {
+  AdminReceiptItem,
   AdminStudentDossier,
   BootstrapResponse,
   ChannelAnnouncement,
@@ -368,10 +369,16 @@ export async function fetchMiniAppBootstrap(
     if (!json) {
       return { ok: false };
     }
+    const rawApprovals = Array.isArray(json.pendingApprovals)
+      ? json.pendingApprovals
+      : Array.isArray(json.receipts)
+      ? json.receipts
+      : undefined;
     return {
       ok: true,
       completedProfile: Boolean(
-        json.completedProfile ??
+        json.completedProfile ||
+          json.profile?.onboardingCompleted ||
           (json.profile &&
             json.profile.studentId &&
             String(json.profile.studentId).trim().length >= 6)
@@ -390,6 +397,8 @@ export async function fetchMiniAppBootstrap(
         : Array.isArray(json.disputes)
         ? json.disputes
         : undefined,
+      pendingApprovals: rawApprovals,
+      receipts: rawApprovals,
     };
   } catch {
     clearTimeout(timer);
@@ -609,6 +618,149 @@ export async function saveLootboxConfigOnBot(
   return {
     ok: true,
     savedAt: res.data?.savedAt || savedAt,
+  };
+}
+
+/**
+ * 10. POST ${BOT_WORKER_BASE_URL}/api/miniapp/upload-kyc
+ * Sends the compressed Base64 JPEG (max width 900px) student ID card image to the Telegram Bot
+ * so it is immediately forwarded to the Admins in Telegram AND queued in pendingApprovals.
+ */
+export async function uploadKycCardToBot(payload: {
+  itemId?: string;
+  studentId: string;
+  studentName: string;
+  cohortYear: string;
+  trackingCode: string;
+  imageBase64: string;
+  telegramUserId?: string;
+}): Promise<{ ok: boolean; itemId: string }> {
+  const tgUser = getRealTelegramUser();
+  const resolvedTgId =
+    payload.telegramUserId ||
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : '');
+  const itemId = payload.itemId || `KYC-${Date.now()}`;
+  const res = await postToMiniAppApi<{ ok: boolean; itemId?: string }>(
+    '/api/miniapp/upload-kyc',
+    {
+      id: itemId,
+      itemId,
+      type: 'kyc',
+      studentId: payload.studentId,
+      studentName: payload.studentName,
+      cohortYear: payload.cohortYear,
+      trackingCode: payload.trackingCode,
+      imageBase64: payload.imageBase64,
+      imageDataUrl: payload.imageBase64,
+      receiptImageUrl: payload.imageBase64,
+      telegramUserId: resolvedTgId,
+      telegramUser: tgUser,
+      submittedAt: new Date().toLocaleTimeString('fa-IR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    }
+  );
+  return {
+    ok: res.ok,
+    itemId: res.data?.itemId || itemId,
+  };
+}
+
+/**
+ * 11. POST ${BOT_WORKER_BASE_URL}/api/miniapp/upload-receipt
+ * Sends the compressed Base64 JPEG (max width 900px) workshop payment receipt image to the Telegram Bot
+ * so it is immediately sent with inline Approve/Reject buttons to Admins in Telegram AND queued in pendingApprovals.
+ */
+export async function uploadPaymentReceiptToBot(payload: {
+  itemId?: string;
+  eventId: string;
+  eventTitle: string;
+  amountTomans: number;
+  trackingCode: string;
+  studentId: string;
+  studentName: string;
+  cohortYear: string;
+  imageBase64: string;
+  telegramUserId?: string;
+}): Promise<{ ok: boolean; itemId: string }> {
+  const tgUser = getRealTelegramUser();
+  const resolvedTgId =
+    payload.telegramUserId ||
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : '');
+  const itemId = payload.itemId || `RCP-${Date.now()}`;
+  const res = await postToMiniAppApi<{ ok: boolean; itemId?: string }>(
+    '/api/miniapp/upload-receipt',
+    {
+      id: itemId,
+      itemId,
+      type: 'receipt',
+      eventId: payload.eventId,
+      eventTitle: payload.eventTitle,
+      title: payload.eventTitle,
+      amount: payload.amountTomans,
+      amountTomans: payload.amountTomans,
+      trackingCode: payload.trackingCode,
+      studentId: payload.studentId,
+      studentName: payload.studentName,
+      cohortYear: payload.cohortYear,
+      imageBase64: payload.imageBase64,
+      imageDataUrl: payload.imageBase64,
+      receiptImageUrl: payload.imageBase64,
+      telegramUserId: resolvedTgId,
+      telegramUser: tgUser,
+      submittedAt: new Date().toLocaleTimeString('fa-IR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    }
+  );
+  return {
+    ok: res.ok,
+    itemId: res.data?.itemId || itemId,
+  };
+}
+
+/**
+ * 12. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-review-item
+ * Called when an Admin clicks "✅ تایید" or "❌ رد" on a receipt or KYC card in AdminPanel Module 2.
+ * Updates the item status in the Telegram Bot KV database and sends an instant notification to the student in Telegram.
+ */
+export async function submitAdminReviewToBot(payload: {
+  item: AdminReceiptItem;
+  decision: 'approved' | 'rejected';
+}): Promise<{ ok: boolean }> {
+  const { item, decision } = payload;
+  const res = await postToMiniAppApi<{ ok: boolean }>(
+    '/api/miniapp/admin-review-item',
+    {
+      id: item.id,
+      itemId: item.id,
+      trackingCode: item.trackingCode,
+      type: item.type,
+      decision,
+      status: decision,
+      action: decision === 'approved' ? 'approve' : 'reject',
+      studentId: item.studentId,
+      studentName: item.studentName,
+      telegramUserId: item.telegramUserId,
+      eventId: item.eventId,
+      eventTitle: item.eventTitle || item.title,
+      amountTomans: item.amountTomans ?? item.amount ?? 0,
+      adminId: MASTER_ADMIN_TELEGRAM_ID,
+      decidedAt: new Date().toISOString(),
+    }
+  );
+  return {
+    ok: res.ok,
   };
 }
 

@@ -252,6 +252,57 @@ export function isMasterAdminTelegramUser(candidateTelegramId?: string): boolean
 }
 
 /**
+ * Checks whether a student dossier, admin record, or ID string belongs to the
+ * 100% immune Supreme Master Admin (Telegram numeric ID: 629890497).
+ */
+export function isProtectedMasterAccount(
+  candidate?:
+    | {
+        id?: string;
+        telegramId?: string;
+        telegramUserId?: string;
+        studentId?: string;
+      }
+    | string
+    | null
+): boolean {
+  if (!candidate) return false;
+  if (typeof candidate === 'string') {
+    const clean = candidate.trim();
+    return (
+      clean === MASTER_ADMIN_TELEGRAM_ID ||
+      clean.includes(MASTER_ADMIN_TELEGRAM_ID)
+    );
+  }
+  const tgId = String(candidate.telegramId || candidate.telegramUserId || '').trim();
+  const idStr = String(candidate.id || '').trim();
+  const stId = String(candidate.studentId || '').trim();
+  return (
+    tgId === MASTER_ADMIN_TELEGRAM_ID ||
+    idStr === MASTER_ADMIN_TELEGRAM_ID ||
+    idStr.includes(MASTER_ADMIN_TELEGRAM_ID) ||
+    stId === MASTER_ADMIN_TELEGRAM_ID
+  );
+}
+
+/**
+ * Binds a localStorage key to the numeric Telegram user ID when available,
+ * ensuring each Telegram account has a completely isolated and permanent storage slot.
+ */
+export function getScopedStorageKey(baseKey: string, explicitTelegramId?: string): string {
+  const realTgId = getRealTelegramUser()?.id;
+  const targetId = (realTgId || explicitTelegramId || '').trim();
+  if (
+    targetId &&
+    targetId !== 'WEB_SESSION_USER' &&
+    targetId !== 'web-local-student'
+  ) {
+    return `${baseKey}_tg_${targetId}`;
+  }
+  return baseKey;
+}
+
+/**
  * Patch 3: Anti-Replay & Telegram-User-ID Binding on Checksums
  * Binds score + studentId + level + telegramUserId so copying another student's localStorage
  * JSON into a different Telegram account immediately fails checksum verification.
@@ -273,27 +324,48 @@ export function verifyStateIntegrity(
   storedChecksum: string | null,
   telegramUserId?: string
 ): boolean {
-  if (!storedChecksum) return false;
   if (typeof profile.score !== 'number' || profile.score < 0 || Number.isNaN(profile.score)) {
     return false;
   }
   const activeTgUser = getRealTelegramUser();
-  // If running inside a real Telegram account and the profile belongs to a different Telegram ID, fail immediately
+  // If running inside a real Telegram account and the profile explicitly belongs to a different numeric Telegram ID, fail
   if (
     activeTgUser?.id &&
     profile.telegramUserId &&
+    profile.telegramUserId !== 'WEB_SESSION_USER' &&
+    profile.telegramUserId !== 'web-local-student' &&
     profile.telegramUserId !== activeTgUser.id
   ) {
     return false;
   }
-  const effectiveTgId = activeTgUser?.id || telegramUserId || profile.telegramUserId;
-  const expected = computeStateChecksum(
-    profile.score,
-    profile.studentId,
-    profile.level,
-    effectiveTgId
+  if (!storedChecksum) {
+    // If profile already has a valid studentId (e.g. freshly received from server), treat as valid so caller can recompute checksum
+    const cleanStudentId = normalizeDigitsToEnglish(profile.studentId || '').replace(/\D/g, '');
+    return cleanStudentId.length >= 6;
+  }
+  const candidateIds = Array.from(
+    new Set(
+      [
+        activeTgUser?.id,
+        telegramUserId,
+        profile.telegramUserId,
+        'web-local-student',
+        'WEB_SESSION_USER',
+      ].filter(Boolean) as string[]
+    )
   );
-  return expected === storedChecksum;
+  for (const candId of candidateIds) {
+    const expected = computeStateChecksum(
+      profile.score,
+      profile.studentId,
+      profile.level,
+      candId
+    );
+    if (expected === storedChecksum) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

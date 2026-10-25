@@ -55,7 +55,7 @@ export const SectionMaintenanceBanner: React.FC<SectionMaintenanceBannerProps> =
           isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
         }`}
       >
-        تیم فنی شورای مرکزی انجمن علمی مهندسی صنایع در حال ارتقای این سرویس می‌باشد. از شکیبایی شما سپاسگزاریم.
+        تیم فنی انجمن علمی مهندسی صنایع در حال ارتقای این سرویس می‌باشد. از شکیبایی شما سپاسگزاریم.
       </p>
     </div>
   );

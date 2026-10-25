@@ -82,12 +82,14 @@ export function buildCandidateUrls(rawName: string): string[] {
 }
 
 /**
- * Converts an uploaded image file into a compact DataURL (max 192x192)
- * so custom student avatars, professor avatars, and medals persist in localStorage cleanly.
+ * Converts an uploaded image file into a compact DataURL.
+ * For avatars/medals (maxDimension <= 256), preserves crisp pixel art PNG.
+ * For KYC cards & payment receipts (maxDimension = 900), outputs compressed JPEG Base64 (max width 900px).
  */
 export function compressImageFileToDataUrl(
   file: File,
-  maxDimension = 192
+  maxDimension = 192,
+  outputMimeType?: 'image/jpeg' | 'image/png'
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -106,9 +108,21 @@ export function compressImageFileToDataUrl(
           canvas.height = Math.max(1, Math.round(img.height * ratio));
           const ctx = canvas.getContext('2d');
           if (ctx) {
-            ctx.imageSmoothingEnabled = false;
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            resolve(canvas.toDataURL('image/png'));
+            const useJpeg =
+              outputMimeType === 'image/jpeg' ||
+              (!outputMimeType && maxDimension >= 400);
+            if (useJpeg) {
+              ctx.fillStyle = '#FFFFFF';
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.85));
+            } else {
+              ctx.imageSmoothingEnabled = false;
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/png'));
+            }
             return;
           }
         } catch {
@@ -274,6 +288,47 @@ const PixelArtVectorFallback: React.FC<{ filename: string; label: string }> = ({
         <rect x="205" y="56" width="70" height="5" fill="#E77F6E" />
         <rect x="205" y="68" width="55" height="5" fill="#D4AB58" />
         <rect x="205" y="80" width="65" height="6" fill="#16576B" />
+      </svg>
+    );
+  }
+
+  if (filename.includes('35_icon_moon')) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" className="w-full h-full p-0.5">
+        <path
+          d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
+          fill="#FACC15"
+          stroke="#FEF08A"
+          strokeWidth="1.5"
+        />
+      </svg>
+    );
+  }
+
+  if (filename.includes('36_icon_sun')) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" className="w-full h-full p-0.5">
+        <circle cx="12" cy="12" r="4.5" fill="#FACC15" stroke="#FEF08A" strokeWidth="1.5" />
+        <path
+          d="M12 2.5v2.25M12 19.25v2.25M4.75 12H2.5M21.5 12h-2.25M5.28 5.28l1.6 1.6M17.12 17.12l1.6 1.6M18.72 5.28l-1.6 1.6M6.88 17.12l-1.6 1.6"
+          stroke="#FDE047"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  if (filename.includes('31_icon_bell')) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" className="w-full h-full p-0.5">
+        <path
+          d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9z"
+          fill="#FACC15"
+          stroke="#FEF08A"
+          strokeWidth="1.5"
+        />
+        <path d="M13.73 21a2 2 0 01-3.46 0" stroke="#FDE047" strokeWidth="2" strokeLinecap="round" />
       </svg>
     );
   }

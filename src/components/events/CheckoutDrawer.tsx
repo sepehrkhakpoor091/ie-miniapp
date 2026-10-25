@@ -19,7 +19,10 @@ import { RollingNumber } from '../ui/RollingNumber';
 import { RealQrCode } from '../ui/RealQrCode';
 import { playCoin, playError, playFanfare, playTick } from '../../utils/soundEngine';
 import { validateUploadedImageFile } from '../../utils/security';
-import { sendQrTicketToTelegramChat } from '../../utils/apiBridge';
+import {
+  sendQrTicketToTelegramChat,
+  uploadPaymentReceiptToBot,
+} from '../../utils/apiBridge';
 import {
   X,
   Copy,
@@ -110,7 +113,8 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
     playTick();
     try {
-      const compressed = await compressImageFileToDataUrl(file, 480);
+      // Compress via Canvas to standard JPEG Base64 (max width 900px)
+      const compressed = await compressImageFileToDataUrl(file, 900, 'image/jpeg');
       setReceiptDataUrl(compressed);
       setReceiptUploaded(true);
     } catch {
@@ -154,20 +158,38 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
       checkedIn: false,
     };
 
+    const receiptItemId = `rcp-${Date.now()}`;
     if (finalPrice > 0 && onSubmitReceipt) {
       onSubmitReceipt({
-        id: `rcp-${Date.now()}`,
+        id: receiptItemId,
         studentId: user.studentId,
         studentName: user.fullName,
+        telegramUserId: user.telegramUserId,
         cohortYear: user.cohortYear,
         type: 'payment_receipt',
         title: `فیش ثبت‌نام ${event.title}`,
         eventId: event.id,
+        eventTitle: event.title,
         amount: finalPrice,
+        amountTomans: finalPrice,
         trackingCode,
         submittedAt: 'همین الان',
         status: 'pending',
         receiptImageUrl: receiptDataUrl || undefined,
+      });
+
+      // Push the compressed Base64 JPEG receipt to the Telegram Bot (`POST /api/miniapp/upload-receipt`)
+      void uploadPaymentReceiptToBot({
+        itemId: receiptItemId,
+        eventId: event.id,
+        eventTitle: event.title,
+        amountTomans: finalPrice,
+        trackingCode,
+        studentId: user.studentId,
+        studentName: user.fullName,
+        cohortYear: user.cohortYear,
+        imageBase64: receiptDataUrl || '',
+        telegramUserId: user.telegramUserId,
       });
     }
 

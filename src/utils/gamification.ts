@@ -285,8 +285,65 @@ export function getFilteredLeaderboard(
   }));
 }
 
-export function getCohortBattleStats(_currentUser?: UserProfile): CohortBattleStat[] {
-  return [];
+export function getCohortBattleStats(
+  currentUser?: UserProfile,
+  realStudents: AdminStudentDossier[] = []
+): CohortBattleStat[] {
+  const allRealStudents = getFilteredLeaderboard('all', currentUser, realStudents);
+
+  const COHORT_META: {
+    cohortYear: string;
+    label: string;
+    colorClass: string;
+  }[] = [
+    {
+      cohortYear: '۱۴۰۰',
+      label: 'ورودی ۱۴۰۰',
+      colorClass: 'from-amber-500 to-yellow-400',
+    },
+    {
+      cohortYear: '۱۴۰۱',
+      label: 'ورودی ۱۴۰۱',
+      colorClass: 'from-emerald-500 to-teal-400',
+    },
+    {
+      cohortYear: '۱۴۰۲',
+      label: 'ورودی ۱۴۰۲',
+      colorClass: 'from-sky-500 to-cyan-400',
+    },
+    {
+      cohortYear: '۱۴۰۳',
+      label: 'ورودی ۱۴۰۳',
+      colorClass: 'from-violet-500 to-indigo-400',
+    },
+    {
+      cohortYear: '۱۴۰۴',
+      label: 'ورودی ۱۴۰۴',
+      colorClass: 'from-rose-500 to-pink-400',
+    },
+    {
+      cohortYear: '۱۴۰۵',
+      label: 'ورودی ۱۴۰۵',
+      colorClass: 'from-orange-500 to-amber-400',
+    },
+  ];
+
+  return COHORT_META.map((meta) => {
+    const members = allRealStudents.filter(
+      (stu) => normalizeCohortComparison(stu.cohortYear) === meta.cohortYear
+    );
+    const totalPoints = members.reduce(
+      (sum, stu) => sum + Math.max(0, Number(stu.score) || 0),
+      0
+    );
+    return {
+      cohortYear: meta.cohortYear,
+      label: meta.label,
+      totalPoints,
+      studentsCount: members.length,
+      colorClass: meta.colorClass,
+    };
+  });
 }
 
 export const DEFAULT_LOOTBOX_CONFIG: LootboxConfig = {

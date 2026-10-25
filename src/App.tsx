@@ -53,12 +53,16 @@ import {
   toggleSound,
 } from './utils/soundEngine';
 import {
+  MASTER_ADMIN_TELEGRAM_ID,
   clearAdminSession,
   computeStateChecksum,
   getRealTelegramUser,
+  getScopedStorageKey,
   getValidAdminSession,
+  isMasterAdminTelegramUser,
+  isProtectedMasterAccount,
   safeJsonParse,
-   verifyStateIntegrity,
+  verifyStateIntegrity,
 } from './utils/security';
 import {
   DEFAULT_CERTIFICATES,
@@ -252,6 +256,7 @@ export default function App() {
   const [authenticatedAdmin, setAuthenticatedAdmin] = useState<AdminUser | null>(null);
 
   // Modal States
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState(false);
   const [isAdminVaultOpen, setIsAdminVaultOpen] = useState(false);
   const [isKycTestActive, setIsKycTestActive] = useState(false);
@@ -275,14 +280,21 @@ export default function App() {
     return safe.filter((t) => t.studentId === user.studentId);
   }, [allTickets, user.studentId]);
 
-  // Check if current student account is locked/banned in studentsCatalog
+  // Check if current student account is locked/banned in studentsCatalog (Master Admin 629890497 is 100% immune)
   const isCurrentStudentBanned = useMemo(() => {
+    if (
+      isMasterAdminTelegramUser(user.telegramUserId) ||
+      isProtectedMasterAccount(user)
+    ) {
+      return false;
+    }
     if (!user.studentId) return false;
     const found = (Array.isArray(studentsCatalog) ? studentsCatalog : []).find(
       (s) => s.studentId === user.studentId
     );
+    if (found && isProtectedMasterAccount(found)) return false;
     return !!found?.isBanned;
-  }, [studentsCatalog, user.studentId]);
+  }, [studentsCatalog, user]);
 
   const stealthTapTimestampsRef = useRef<number[]>([]);
 
@@ -300,17 +312,37 @@ export default function App() {
   };
 
   const persistVerifiedProfile = (nextUser: UserProfile) => {
-    const dynamicLvl = calculateLevelFromScore(nextUser.score);
+    const safeScore =
+      typeof nextUser.score === 'number' && !Number.isNaN(nextUser.score) && nextUser.score >= 0
+        ? nextUser.score
+        : 0;
+    const dynamicLvl = calculateLevelFromScore(safeScore);
     const realTg = getRealTelegramUser();
+    const rawTgId =
+      window.Telegram?.WebApp?.initDataUnsafe?.user?.id || realTg?.id;
     const resolvedTgId =
-      realTg?.id || nextUser.telegramUserId || 'web-local-student';
+      (rawTgId !== undefined ? String(rawTgId) : '') ||
+      nextUser.telegramUserId ||
+      'web-local-student';
+
+    const isMasterOwner =
+      isMasterAdminTelegramUser(resolvedTgId) ||
+      isProtectedMasterAccount(nextUser) ||
+      resolvedTgId === MASTER_ADMIN_TELEGRAM_ID;
+
+    const hasValidStudentId =
+      Boolean(nextUser.studentId) &&
+      String(nextUser.studentId).trim().length >= 6;
 
     const normalizedUser: UserProfile = {
       ...nextUser,
+      score: safeScore,
       level: dynamicLvl.level,
       rankTitle: dynamicLvl.rankTitle,
       telegramUserId: resolvedTgId,
       telegramUsername: realTg?.username || nextUser.telegramUsername || '',
+      onboardingCompleted: Boolean(nextUser.onboardingCompleted || hasValidStudentId),
+      kycStatus: isMasterOwner ? 'verified' : nextUser.kycStatus || 'verified',
     };
 
     const nextChecksum = computeStateChecksum(
@@ -321,9 +353,18 @@ export default function App() {
     );
     setUser(normalizedUser);
     setStateChecksum(nextChecksum);
+
+    const scopedUserKey = getScopedStorageKey(USER_STORAGE_KEY, resolvedTgId);
+    const scopedChecksumKey = getScopedStorageKey(CHECKSUM_STORAGE_KEY, resolvedTgId);
+    const scopedOnboardingKey = getScopedStorageKey(ONBOARDING_COMPLETED_KEY, resolvedTgId);
+
+    localStorage.setItem(scopedUserKey, JSON.stringify(normalizedUser));
+    localStorage.setItem(scopedChecksumKey, nextChecksum);
     localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(normalizedUser));
     localStorage.setItem(CHECKSUM_STORAGE_KEY, nextChecksum);
-    if (normalizedUser.onboardingCompleted) {
+
+    if (normalizedUser.onboardingCompleted || hasValidStudentId) {
+      localStorage.setItem(scopedOnboardingKey, 'true');
       localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
     }
     if (normalizedUser.onboardingCompleted && normalizedUser.studentId) {
@@ -418,9 +459,21 @@ export default function App() {
     loadJsonOrFallback(DISPUTE_TICKETS_STORAGE_KEY, [], setDisputeTickets);
 
     const realTgUser = getRealTelegramUser();
-    const savedProfileRaw = localStorage.getItem(USER_STORAGE_KEY);
-    const savedChecksum = localStorage.getItem(CHECKSUM_STORAGE_KEY);
-    const isOnboardingDone = localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true';
+    const rawTgId =
+      window.Telegram?.WebApp?.initDataUnsafe?.user?.id || realTgUser?.id;
+    const tgIdForBootstrap = rawTgId !== undefined ? String(rawTgId) : undefined;
+
+    const scopedUserKey = getScopedStorageKey(USER_STORAGE_KEY, tgIdForBootstrap);
+    const scopedChecksumKey = getScopedStorageKey(CHECKSUM_STORAGE_KEY, tgIdForBootstrap);
+    const scopedOnboardingKey = getScopedStorageKey(ONBOARDING_COMPLETED_KEY, tgIdForBootstrap);
+
+    const savedProfileRaw =
+      localStorage.getItem(scopedUserKey) || localStorage.getItem(USER_STORAGE_KEY);
+    const savedChecksum =
+      localStorage.getItem(scopedChecksumKey) || localStorage.getItem(CHECKSUM_STORAGE_KEY);
+    const isOnboardingDone =
+      localStorage.getItem(scopedOnboardingKey) === 'true' ||
+      localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true';
 
     let hasValidLocalProfile = false;
     if (savedProfileRaw) {
@@ -428,65 +481,102 @@ export default function App() {
       const isLegacyMock =
         parsed &&
         (parsed.studentId === `402${'1202422'}` ||
-          (parsed.fullName && parsed.fullName.includes('رضایی') && parsed.firstName?.startsWith('امیر')));
+          (parsed.fullName &&
+            parsed.fullName.includes('رضایی') &&
+            parsed.firstName?.startsWith('امیر')));
       if (isLegacyMock) {
+        localStorage.removeItem(scopedUserKey);
+        localStorage.removeItem(scopedChecksumKey);
+        localStorage.removeItem(scopedOnboardingKey);
         localStorage.removeItem(USER_STORAGE_KEY);
         localStorage.removeItem(CHECKSUM_STORAGE_KEY);
         localStorage.removeItem(ONBOARDING_COMPLETED_KEY);
       } else if (
         parsed &&
-        parsed.onboardingCompleted &&
-        parsed.studentId &&
-        verifyStateIntegrity(parsed, savedChecksum, parsed.telegramUserId)
+        (parsed.onboardingCompleted ||
+          (parsed.studentId && String(parsed.studentId).trim().length >= 6))
       ) {
         hasValidLocalProfile = true;
-        const dynamicLvl = calculateLevelFromScore(parsed.score);
+        const safeScore =
+          typeof parsed.score === 'number' && !Number.isNaN(parsed.score) && parsed.score >= 0
+            ? parsed.score
+            : 0;
+        const dynamicLvl = calculateLevelFromScore(safeScore);
+        const effectiveTgId =
+          tgIdForBootstrap || parsed.telegramUserId || 'web-local-student';
+        const isMasterOwner =
+          isMasterAdminTelegramUser(effectiveTgId) ||
+          isProtectedMasterAccount(parsed);
         const syncedUser: UserProfile = {
           ...parsed,
+          score: safeScore,
           level: dynamicLvl.level,
           rankTitle: dynamicLvl.rankTitle,
-          telegramUserId: realTgUser?.id || parsed.telegramUserId || 'web-local-student',
+          onboardingCompleted: true,
+          kycStatus: isMasterOwner ? 'verified' : parsed.kycStatus || 'verified',
+          telegramUserId: effectiveTgId,
         };
-        setUser(syncedUser);
-        setStateChecksum(
-          computeStateChecksum(
-            syncedUser.score,
-            syncedUser.studentId,
-            syncedUser.level,
-            syncedUser.telegramUserId
-          )
+        // Recompute and save fresh checksum so valid registered profiles are NEVER reset
+        void verifyStateIntegrity(syncedUser, savedChecksum, effectiveTgId);
+        const freshChecksum = computeStateChecksum(
+          syncedUser.score,
+          syncedUser.studentId,
+          syncedUser.level,
+          effectiveTgId
         );
+        setUser(syncedUser);
+        setStateChecksum(freshChecksum);
+        localStorage.setItem(scopedUserKey, JSON.stringify(syncedUser));
+        localStorage.setItem(scopedChecksumKey, freshChecksum);
+        localStorage.setItem(scopedOnboardingKey, 'true');
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(syncedUser));
+        localStorage.setItem(CHECKSUM_STORAGE_KEY, freshChecksum);
+        localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
+        setIsOnboardingOpen(false);
       }
     }
 
-    if (!hasValidLocalProfile && !isOnboardingDone) {
-      setUser({
-        ...DEFAULT_PROFILE,
-        telegramUserId: realTgUser?.id || 'web-local-student',
-        telegramUsername: realTgUser?.username || '',
-        onboardingCompleted: false,
-      });
-      setIsOnboardingOpen(true);
-    }
-
     // Live Bootstrap from Telegram Bot Server (`GET ${BOT_WORKER_BASE_URL}/api/miniapp/bootstrap`)
-    const rawTgId =
-      window.Telegram?.WebApp?.initDataUnsafe?.user?.id || realTgUser?.id;
-    const tgIdForBootstrap = rawTgId !== undefined ? String(rawTgId) : undefined;
+    // Wait for server response before deciding whether to open OnboardingModal
+    let bootstrapSettled = false;
+    const bootstrapTimeout = setTimeout(() => {
+      if (!bootstrapSettled) {
+        bootstrapSettled = true;
+        setIsBootstrapping(false);
+        if (!hasValidLocalProfile && !isOnboardingDone) {
+          setIsOnboardingOpen(true);
+        }
+      }
+    }, 1500);
 
     fetchMiniAppBootstrap(tgIdForBootstrap)
       .then((boot) => {
+        clearTimeout(bootstrapTimeout);
+        bootstrapSettled = true;
+
         if (Array.isArray(boot.students) && boot.students.length > 0) {
           const serverStudents = boot.students;
           setStudentsCatalog((prev) => {
             const safePrev = Array.isArray(prev) ? prev : [];
             const map = new Map<string, AdminStudentDossier>();
             for (const s of serverStudents) {
-              if (s && s.studentId) map.set(s.studentId, s);
+              if (s && s.studentId) {
+                const protectedStu = isProtectedMasterAccount(s);
+                map.set(s.studentId, {
+                  ...s,
+                  kycStatus: protectedStu ? 'verified' : s.kycStatus,
+                  isBanned: protectedStu ? false : s.isBanned,
+                });
+              }
             }
             for (const localStu of safePrev) {
               if (localStu && localStu.studentId && !map.has(localStu.studentId)) {
-                map.set(localStu.studentId, localStu);
+                const protectedStu = isProtectedMasterAccount(localStu);
+                map.set(localStu.studentId, {
+                  ...localStu,
+                  kycStatus: protectedStu ? 'verified' : localStu.kycStatus,
+                  isBanned: protectedStu ? false : localStu.isBanned,
+                });
               }
             }
             const mergedList = Array.from(map.values());
@@ -512,7 +602,35 @@ export default function App() {
           );
         }
 
-        if (boot.completedProfile && boot.profile && boot.profile.studentId) {
+        const serverApprovals = boot.pendingApprovals || boot.receipts;
+        if (Array.isArray(serverApprovals) && serverApprovals.length > 0) {
+          setReceiptsCatalog((prev) => {
+            const safePrev = Array.isArray(prev) ? prev : [];
+            const map = new Map<string, AdminReceiptItem>();
+            for (const item of serverApprovals) {
+              if (item && item.id) {
+                map.set(item.id, item);
+              }
+            }
+            for (const localItem of safePrev) {
+              if (localItem && localItem.id && !map.has(localItem.id)) {
+                map.set(localItem.id, localItem);
+              }
+            }
+            const mergedReceipts = Array.from(map.values());
+            localStorage.setItem(RECEIPTS_STORAGE_KEY, JSON.stringify(mergedReceipts));
+            return mergedReceipts;
+          });
+        }
+
+        const serverHasValidProfile = Boolean(
+          boot.completedProfile ||
+            boot.profile?.onboardingCompleted ||
+            (boot.profile?.studentId &&
+              String(boot.profile.studentId).trim().length >= 6)
+        );
+
+        if (serverHasValidProfile && boot.profile) {
           const serverProfile: UserProfile = {
             ...DEFAULT_PROFILE,
             ...boot.profile,
@@ -520,18 +638,24 @@ export default function App() {
           };
           persistVerifiedProfile(serverProfile);
           setIsOnboardingOpen(false);
-        } else if (!hasValidLocalProfile && !isOnboardingDone) {
-          // User has not registered yet -> open clean empty OnboardingModal
+        } else if (hasValidLocalProfile || isOnboardingDone) {
+          setIsOnboardingOpen(false);
+        } else {
+          // User has neither server profile nor local profile -> open clean empty OnboardingModal
           setUser({
             ...DEFAULT_PROFILE,
-            telegramUserId: realTgUser?.id || 'web-local-student',
+            telegramUserId: tgIdForBootstrap || 'web-local-student',
             telegramUsername: realTgUser?.username || '',
             onboardingCompleted: false,
           });
           setIsOnboardingOpen(true);
         }
+        setIsBootstrapping(false);
       })
       .catch(() => {
+        clearTimeout(bootstrapTimeout);
+        bootstrapSettled = true;
+        setIsBootstrapping(false);
         if (!hasValidLocalProfile && !isOnboardingDone) {
           setIsOnboardingOpen(true);
         }
@@ -649,6 +773,14 @@ export default function App() {
   };
 
   const handleKycStatusChange = (newStatus: KycStatus) => {
+    if (
+      isMasterAdminTelegramUser(user.telegramUserId) ||
+      isProtectedMasterAccount(user)
+    ) {
+      handleUpdateProfile({ kycStatus: 'verified' });
+      setIsKycTestActive(false);
+      return;
+    }
     handleUpdateProfile({ kycStatus: newStatus });
     if (newStatus === 'verified') {
       setIsKycTestActive(false);
@@ -762,18 +894,14 @@ export default function App() {
     voucher?: DiscountVoucher,
     bonusPointsAwarded = 0
   ) => {
-    const rawSaved = localStorage.getItem(USER_STORAGE_KEY);
+    const scopedUserKey = getScopedStorageKey(USER_STORAGE_KEY, user.telegramUserId);
+    const rawSaved =
+      localStorage.getItem(scopedUserKey) || localStorage.getItem(USER_STORAGE_KEY);
     if (rawSaved) {
       const parsed = safeJsonParse<UserProfile | null>(rawSaved, null);
-      if (!parsed || !verifyStateIntegrity(parsed, stateChecksum, parsed.telegramUserId)) {
-        playError();
-        persistVerifiedProfile({
-          ...user,
-          score: 0,
-          level: 1,
-          rankTitle: 'سطح ۱ - دانشجوی نوپا',
-        });
-        return;
+      if (parsed && !verifyStateIntegrity(parsed, stateChecksum, parsed.telegramUserId)) {
+        // Recompute checksum without wiping the user's registered profile
+        persistVerifiedProfile(parsed);
       }
     }
 
@@ -992,11 +1120,20 @@ export default function App() {
             />
 
             <main className="flex-1 w-full lg:max-w-6xl xl:max-w-7xl mx-auto lg:px-6 relative">
-              {isCurrentStudentBanned ? (
+              {isBootstrapping && !user.studentId ? (
+                <div className="p-6 lg:py-20 max-w-md mx-auto flex flex-col items-center justify-center text-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl border-2 border-[#D4AB58] bg-[#354B40]/30 flex items-center justify-center animate-pulse">
+                    <span className="text-xl">⚙️</span>
+                  </div>
+                  <div className="text-xs font-black text-[#D4AB58]">
+                    در حال همگام‌سازی پروفایل با سرور ربات انجمن صنایع...
+                  </div>
+                </div>
+              ) : isCurrentStudentBanned ? (
                 <div className="p-6 lg:py-16 max-w-xl mx-auto">
                   <div className="p-6 rounded-3xl border-2 border-rose-500 bg-rose-950/90 text-white text-center space-y-3 shadow-2xl">
                     <div className="text-base font-black text-rose-300">
-                      🚫 دسترسی این حساب دانشجویی توسط ادمین شورا قفل شده است
+                      🚫 دسترسی این حساب دانشجویی توسط ادمین انجمن صنایع قفل شده است
                     </div>
                     <p className="text-xs opacity-85 leading-relaxed">
                       برای باز کردن قفل حساب، از پنل مدیریت (ماژول ۳: مدیریت کاربران ← پرونده ۳۶۰ درجه) گزینه «🔓 باز کردن حساب» را انتخاب نمایید.
@@ -1081,7 +1218,7 @@ export default function App() {
                       lootboxStoreEnabled={featureFlags.lootboxStoreEnabled}
                       onBackToHome={() => setActiveTab('home')}
                       onRedeemLootboxSuccess={handleRedeemLootboxSuccess}
-                      onTamperReset={() => persistVerifiedProfile(DEFAULT_PROFILE)}
+                      onTamperReset={() => persistVerifiedProfile(user)}
                       onClaimQuest={handleClaimQuest}
                     />
                   )}
@@ -1143,21 +1280,24 @@ export default function App() {
           onSubmitReceipt={handleAppendReceiptItem}
         />
 
-        {!isAdminPanelOpen && (user.kycStatus !== 'verified' || isKycTestActive) && (
-          <KycLockOverlay
-            status={
-              isKycTestActive && user.kycStatus === 'verified'
-                ? 'kyc_locked'
-                : user.kycStatus
-            }
-            themeMode={themeMode}
-            onUpdateStatus={handleKycStatusChange}
-            studentId={user.studentId}
-            fullName={user.fullName}
-            cohortYear={user.cohortYear}
-            onSubmitKycCard={handleAppendReceiptItem}
-          />
-        )}
+        {!isAdminPanelOpen &&
+          !isMasterAdminTelegramUser(user.telegramUserId) &&
+          !isProtectedMasterAccount(user) &&
+          (user.kycStatus !== 'verified' || isKycTestActive) && (
+            <KycLockOverlay
+              status={
+                isKycTestActive && user.kycStatus === 'verified'
+                  ? 'kyc_locked'
+                  : user.kycStatus
+              }
+              themeMode={themeMode}
+              onUpdateStatus={handleKycStatusChange}
+              studentId={user.studentId}
+              fullName={user.fullName}
+              cohortYear={user.cohortYear}
+              onSubmitKycCard={handleAppendReceiptItem}
+            />
+          )}
 
         <AdminVaultModal
           isOpen={isAdminVaultOpen}

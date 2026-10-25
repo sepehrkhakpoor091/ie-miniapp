@@ -118,13 +118,13 @@ export const DEFAULT_ISEFUM_ANNOUNCEMENTS: ChannelAnnouncement[] = [
     postId: '2126',
     channelHandle: 'Isefum',
     postUrl: 'https://t.me/Isefum/2126',
-    title: 'آغاز ثبت‌نام کاندیداهای انتخابات شورای مرکزی انجمن علمی مهندسی صنایع',
+    title: 'آغاز ثبت‌نام کاندیداهای انتخابات انجمن علمی مهندسی صنایع',
     snippet: 'فرصت ثبت‌نام دانشجویان علاقه‌مند به فعالیت‌های تیمی، اجرایی و پژوهشی...',
     content:
-      'دانشجویان پرانرژی مهندسی صنایع دانشگاه فردوسی مشهد که علاقه‌مند به حضور در شورای مرکزی انجمن علمی (@Isefum) هستند می‌توانند از طریق کارتابل فرهنگی دانشگاه ثبت‌نام خود را نهایی نمایند.',
+      'دانشجویان پرانرژی مهندسی صنایع دانشگاه فردوسی مشهد که علاقه‌مند به حضور در انجمن علمی مهندسی صنایع (@Isefum) هستند می‌توانند از طریق کارتابل فرهنگی دانشگاه ثبت‌نام خود را نهایی نمایند.',
     timestamp: 'هفته گذشته',
     tag: 'انتخابات',
-    author: 'شورای مرکزی (@Isefum)',
+    author: 'انجمن علمی مهندسی صنایع (@Isefum)',
     views: 1840,
     hasAttachment: false,
   },
@@ -166,7 +166,7 @@ export function inferAnnouncementTag(text: string): string {
   if (t.includes('امتحان') || t.includes('انتخاب واحد') || t.includes('چارت') || t.includes('حذف و اضافه')) {
     return 'آموزشی';
   }
-  if (t.includes('انتخابات') || t.includes('شورا') || t.includes('فراخوان')) return 'فراخوان';
+  if (t.includes('انتخابات') || t.includes('انجمن') || t.includes('فراخوان')) return 'فراخوان';
   return 'اطلاعیه کانال';
 }
 

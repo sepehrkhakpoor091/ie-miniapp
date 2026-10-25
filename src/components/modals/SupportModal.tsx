@@ -263,13 +263,13 @@ export const SupportModal: React.FC<SupportModalProps> = ({
               />
             </div>
             <div>
-              <h3 className="font-black text-sm">پشتیبانی شورا و استعلام گواهینامه</h3>
+              <h3 className="font-black text-sm">گفتگو با انجمن صنایع و استعلام گواهینامه</h3>
               <p
                 className={`text-[11px] font-bold ${
                   isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                 }`}
               >
-                ارتباط مستقیم با اعضای شورای مرکزی انجمن
+                ارتباط مستقیم با اعضای انجمن علمی مهندسی صنایع
               </p>
             </div>
           </div>
@@ -299,7 +299,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
             }`}
           >
             <MessageSquare className="w-4 h-4" />
-            تیکت‌های پشتیبانی شورا
+            گفتگو با انجمن صنایع
           </button>
 
           <button
@@ -334,7 +334,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                 className="p-5 flex-1 overflow-y-auto space-y-4 animate-fade-in"
               >
                 <div className="flex items-center justify-between">
-                  <h4 className="font-black text-sm">ثبت تیکت جدید به شورای مرکزی</h4>
+                  <h4 className="font-black text-sm">ثبت تیکت جدید به انجمن صنایع</h4>
                   <button
                     type="button"
                     onClick={() => setShowNewTicketModal(false)}
@@ -380,7 +380,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                   fullWidth
                   disabled={!newTicketTitle.trim() || !newTicketMessage.trim()}
                 >
-                  ارسال تیکت به شورا
+                  ارسال تیکت به انجمن صنایع
                 </PushButton>
               </form>
             ) : (
@@ -634,7 +634,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                     گواهینامه‌ای با این مشخصات یافت نشد
                   </h4>
                   <p className="text-xs font-medium leading-relaxed">
-                    لطفاً صحت کد وارد شده را بررسی فرمایید یا با پشتیبانی شورا جهت بررسی صدور در تماس باشید.
+                    لطفاً صحت کد وارد شده را بررسی فرمایید یا با پشتیبانی انجمن صنایع جهت بررسی صدور در تماس باشید.
                   </p>
                 </div>
               ))}

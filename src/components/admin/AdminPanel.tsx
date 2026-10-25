@@ -62,6 +62,7 @@ import {
   findCheckedInTicketInLedger,
   generateCertificateCode,
   isMasterAdminTelegramUser,
+  isProtectedMasterAccount,
   recordTicketInCheckedInLedger,
   touchAdminSession,
   validateUploadedImageFile,
@@ -69,6 +70,7 @@ import {
 } from '../../utils/security';
 import {
   saveLootboxConfigOnBot,
+  submitAdminReviewToBot,
   verifyQrCheckInWithBot,
 } from '../../utils/apiBridge';
 import {
@@ -167,7 +169,7 @@ export const DEFAULT_AVATARS_CATALOG: AvatarCatalogItem[] = [
   },
   {
     id: 'av-prof-3',
-    title: 'استاد ارشد شورا',
+    title: 'استاد ارشد انجمن صنایع',
     targetRole: 'professor',
     imageUrl: '08_char_admin.png',
     addedBy: 'پیش‌فرض سامانه',
@@ -681,7 +683,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [dossierTab, setDossierTab] = useState<'overview' | 'payments' | 'chats'>('overview');
   const [customPointsInput, setCustomPointsInput] = useState<number>(25);
   const [customPointsReason, setCustomPointsReason] = useState<string>(
-    'تغییر امتیاز اختصاصی توسط شورای مرکزی'
+    'تغییر امتیاز اختصاصی توسط انجمن علمی مهندسی صنایع'
   );
 
   // ==========================================================================
@@ -758,7 +760,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     {
       id: 'adm-ai-welcome',
       sender: 'looti',
-      text: 'سلام ستون! 🤖 به مرکز فرماندهی هوش مصنوعی مشتی (مخصوص شورای مرکزی) خوش اومدی. هر امری داری از تحلیل ورودی‌ها، استخراج خودکار برنامه اساتید یا ساخت تایمر اعلامیه بگو، روی چشمم، حله رفیق!',
+      text: 'سلام ستون! 🤖 به مرکز فرماندهی هوش مصنوعی مشتی (مخصوص انجمن علمی مهندسی صنایع) خوش اومدی. هر امری داری از تحلیل ورودی‌ها، استخراج خودکار برنامه اساتید یا ساخت تایمر اعلامیه بگو، روی چشمم، حله رفیق!',
       timestamp: 'هم‌اکنون',
       modelUsed: 'gemini-3.8-flash',
     },
@@ -1346,6 +1348,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
     }
 
+    if (decision === 'approved' || decision === 'rejected') {
+      void submitAdminReviewToBot({ item, decision });
+    }
+
     appendLog(
       decision === 'approved'
         ? `تایید و انتقال به پوشه تاییدشده‌ها (${isReceipt ? 'فیش واریزی' : 'کارت دانشجویی KYC'})`
@@ -1358,9 +1364,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     triggerToast(
       decision === 'approved'
-        ? `✅ مورد ${item.studentName} تایید شد و به «پوشه تاییدشده‌های گذشته» منتقل گردید!`
+        ? `✅ مورد ${item.studentName} تایید شد، در ربات تلگرام ثبت گردید و پیام به دانشجو ارسال شد!`
         : decision === 'rejected'
-        ? `❌ مورد ${item.studentName} رد شد و به «پوشه ردشده‌های گذشته» منتقل گردید.`
+        ? `❌ مورد ${item.studentName} رد شد و پیام اطلاع‌رسانی در تلگرام برای دانشجو ارسال گردید.`
         : `🔄 مورد ${item.studentName} به صف «در انتظار بررسی» بازگردانده شد.`
     );
   };
@@ -1428,19 +1434,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       newAvatar?: string;
     }
   ) => {
+    const isProtectedMaster = isProtectedMasterAccount(student);
+    if (
+      isProtectedMaster &&
+      ((change.explicitKycStatus && change.explicitKycStatus !== 'verified') ||
+        change.explicitBanStatus === true)
+    ) {
+      playError();
+      triggerToast(
+        '👑 اکانت مالک و مدیر ارشد کل (629890497) دارای مصونیت ۱۰۰٪ است و غیرقابل محدودسازی می‌باشد!'
+      );
+      return;
+    }
+
     playCoin();
     updateStudentsAndPersist((prev) =>
       prev.map((s) => {
         if (s.id !== student.id) return s;
+        const protectedRow = isProtectedMasterAccount(s);
         const nextScore =
           typeof change.deltaScore === 'number'
             ? Math.max(0, s.score + change.deltaScore)
             : s.score;
-        const nextKyc = change.explicitKycStatus ?? s.kycStatus;
-        const nextBan =
-          typeof change.explicitBanStatus === 'boolean'
-            ? change.explicitBanStatus
-            : s.isBanned;
+        const nextKyc = protectedRow
+          ? 'verified'
+          : change.explicitKycStatus ?? s.kycStatus;
+        const nextBan = protectedRow
+          ? false
+          : typeof change.explicitBanStatus === 'boolean'
+          ? change.explicitBanStatus
+          : s.isBanned;
         const nextAvatar = change.newAvatar ?? s.avatar;
         return {
           ...s,
@@ -1459,7 +1482,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (typeof change.deltaScore === 'number' && change.deltaScore !== 0) {
       const reasonText =
         (change.reason || customPointsReason || '').trim() ||
-        'اعمال تغییر امتیاز توسط ادمین شورا';
+        'اعمال تغییر امتیاز توسط ادمین انجمن صنایع';
       if (isCurrentStudent && onAwardCurrentStudentPoints) {
         onAwardCurrentStudentPoints(change.deltaScore, reasonText);
       }
@@ -1964,7 +1987,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       selectedStudentForBadge === currentUser.studentId &&
       onAwardCurrentStudentPoints
     ) {
-      onAwardCurrentStudentPoints(30, `دریافت نشان «${badgeObj.title}» از شورای مرکزی`);
+      onAwardCurrentStudentPoints(30, `دریافت نشان «${badgeObj.title}» از انجمن علمی مهندسی صنایع`);
     }
 
     const targetStu = (Array.isArray(studentList) ? studentList : []).find(
@@ -1987,7 +2010,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const createdQuest: WeeklyQuest = {
       id: `qst-adm-${Date.now()}`,
       title: newQuestTitle.trim(),
-      description: 'ماموریت ویژه ثبت‌شده توسط شورای مرکزی انجمن علمی',
+      description: 'ماموریت ویژه ثبت‌شده توسط انجمن علمی مهندسی صنایع',
       rewardPoints: Number(newQuestReward) || 40,
       progress: 1,
       maxProgress: 1,
@@ -2008,7 +2031,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     e.preventDefault();
     if (!newAdminName.trim()) {
       playError();
-      triggerToast('لطفاً نام عضو شورا یا ادمین را وارد کنید.');
+      triggerToast('لطفاً نام عضو انجمن صنایع یا ادمین را وارد کنید.');
       return;
     }
     playCoin();
@@ -2159,7 +2182,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <div className="w-11 h-11 rounded-2xl bg-[#192334] border-2 border-[#D4AB58] p-1 flex items-center justify-center shrink-0">
                   <PixelImage
                     filename="08_char_admin.png"
-                    alt="ادمین شورا"
+                    alt="ادمین انجمن صنایع"
                     className="w-9 h-9 object-contain"
                   />
                 </div>
@@ -3116,10 +3139,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-xs font-black">{st.fullName}</span>
+                          {isProtectedMasterAccount(st) && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/25 text-[#D4AB58] border border-[#D4AB58]/60 font-black">
+                              👑 مالک و مدیر ارشد کل (غیرقابل محدودسازی)
+                            </span>
+                          )}
                           <span className="text-[10px] px-2 py-0.5 rounded bg-black/20 font-mono font-bold">
                             {st.studentId}
                           </span>
-                          {st.isBanned ? (
+                          {st.isBanned && !isProtectedMasterAccount(st) ? (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-600 text-white font-black">
                               حساب قفل 🚫
                             </span>
@@ -3135,7 +3163,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           }`}
                         >
                           ورودی {st.cohortYear} • سطح {st.level} • KYC:{' '}
-                          {st.kycStatus === 'verified'
+                          {isProtectedMasterAccount(st) || st.kycStatus === 'verified'
                             ? 'باز و تایید شده ✅'
                             : st.kycStatus === 'kyc_locked'
                             ? 'قفل شده 🔒'
@@ -3153,42 +3181,63 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                   {/* Direct Quick Two-Way Lock/Unlock Bar on Card */}
                   <div className="pt-2 border-t border-current/10 flex flex-wrap items-center justify-between gap-1.5 text-[10px] font-black">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleModifyStudentDossier(st, {
-                          explicitKycStatus:
-                            st.kycStatus === 'verified' ? 'kyc_locked' : 'verified',
-                        })
-                      }
-                      className={`px-2.5 py-1 rounded-lg cursor-pointer ${
-                        st.kycStatus === 'verified'
-                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                          : 'bg-emerald-600 text-white'
-                      }`}
-                    >
-                      {st.kycStatus === 'verified'
-                        ? '🔒 قفل کردن KYC'
-                        : '🔓 باز کردن قفل KYC (تایید)'}
-                    </button>
+                    {isProtectedMasterAccount(st) ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled
+                          className="px-2.5 py-1 rounded-lg bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                        >
+                          🔒 قفل کارت دانشجویی (غیرفعال)
+                        </button>
+                        <button
+                          type="button"
+                          disabled
+                          className="px-2.5 py-1 rounded-lg bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                        >
+                          🔒 مسدودسازی (غیرفعال)
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleModifyStudentDossier(st, {
+                              explicitKycStatus:
+                                st.kycStatus === 'verified' ? 'kyc_locked' : 'verified',
+                            })
+                          }
+                          className={`px-2.5 py-1 rounded-lg cursor-pointer ${
+                            st.kycStatus === 'verified'
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                              : 'bg-emerald-600 text-white'
+                          }`}
+                        >
+                          {st.kycStatus === 'verified'
+                            ? '🔒 قفل کردن KYC'
+                            : '🔓 باز کردن قفل KYC (تایید)'}
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleModifyStudentDossier(st, {
-                          explicitBanStatus: !st.isBanned,
-                        })
-                      }
-                      className={`px-2.5 py-1 rounded-lg cursor-pointer ${
-                        st.isBanned
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-rose-700/80 text-white'
-                      }`}
-                    >
-                      {st.isBanned
-                        ? '🔓 باز کردن حساب (رفع مسدودی)'
-                        : '🚫 قفل کردن حساب کاربری'}
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleModifyStudentDossier(st, {
+                              explicitBanStatus: !st.isBanned,
+                            })
+                          }
+                          className={`px-2.5 py-1 rounded-lg cursor-pointer ${
+                            st.isBanned
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-rose-700/80 text-white'
+                          }`}
+                        >
+                          {st.isBanned
+                            ? '🔓 باز کردن حساب (رفع مسدودی)'
+                            : '🚫 قفل کردن حساب کاربری'}
+                        </button>
+                      </>
+                    )}
 
                     <button
                       type="button"
@@ -3339,109 +3388,154 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                   {/* SECTION B: FULL TWO-WAY LOCK & UNLOCK CONTROLS */}
                   <div className={`p-3.5 rounded-2xl border space-y-2.5 text-xs ${subCardClass}`}>
-                    <div className="font-black">
-                      🔐 کنترل دوطرفه قفل و باز کردن دسترسی‌های کاربر:
+                    <div className="flex items-center justify-between flex-wrap gap-1.5">
+                      <span className="font-black">
+                        🔐 کنترل دوطرفه قفل و باز کردن دسترسی‌های کاربر:
+                      </span>
+                      {isProtectedMasterAccount(activeDossierStudent) && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/25 text-[#D4AB58] border border-[#D4AB58]/60 font-black">
+                          👑 مالک و مدیر ارشد کل (غیرقابل محدودسازی)
+                        </span>
+                      )}
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {/* 1. KYC Lock / Unlock */}
-                      <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-[11px]">وضعیت کارت دانشجویی:</span>
-                          <span
-                            className={`text-[10px] font-black px-2 py-0.5 rounded ${
-                              activeDossierStudent.kycStatus === 'verified'
-                                ? 'bg-emerald-600 text-white'
-                                : 'bg-rose-600 text-white'
-                            }`}
-                          >
-                            {activeDossierStudent.kycStatus === 'verified'
-                              ? 'باز (تاییدشده ✅)'
-                              : 'قفل‌شده 🔒'}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-1.5">
+                    {isProtectedMasterAccount(activeDossierStudent) ? (
+                      <div className="p-3 rounded-xl bg-[#D4AB58]/10 border border-[#D4AB58]/40 space-y-2">
+                        <p className="text-[11px] font-bold text-[#D4AB58]">
+                          این حساب متعلق به مالک اصلی ربات و انجمن (آیدی عددی 629890497) است و دکمه‌های محدودسازی به طور دائمی قفل هستند.
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                           <button
                             type="button"
-                            onClick={() =>
-                              handleModifyStudentDossier(activeDossierStudent, {
-                                explicitKycStatus: 'verified',
-                              })
-                            }
-                            className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
-                              activeDossierStudent.kycStatus === 'verified'
-                                ? 'bg-emerald-700/40 text-emerald-300 border border-emerald-500/40'
-                                : 'bg-emerald-600 text-white shadow'
-                            }`}
+                            disabled
+                            className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
                           >
-                            🔓 باز کردن قفل KYC
+                            🔒 قفل کارت دانشجویی
                           </button>
                           <button
                             type="button"
-                            onClick={() =>
-                              handleModifyStudentDossier(activeDossierStudent, {
-                                explicitKycStatus: 'kyc_locked',
-                              })
-                            }
-                            className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
-                              activeDossierStudent.kycStatus === 'kyc_locked'
-                                ? 'bg-rose-700/40 text-rose-300 border border-rose-500/40'
-                                : 'bg-rose-700 text-white shadow'
-                            }`}
+                            disabled
+                            className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
                           >
-                            🔒 قفل کردن KYC
+                            🔒 مسدودسازی
+                          </button>
+                          <button
+                            type="button"
+                            disabled
+                            className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                          >
+                            🔒 فریز کردن
+                          </button>
+                          <button
+                            type="button"
+                            disabled
+                            className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                          >
+                            🔒 حذف دسترسی
                           </button>
                         </div>
                       </div>
-
-                      {/* 2. Account Ban / Unban */}
-                      <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-[11px]">وضعیت حساب کاربری:</span>
-                          <span
-                            className={`text-[10px] font-black px-2 py-0.5 rounded ${
-                              !activeDossierStudent.isBanned
-                                ? 'bg-emerald-600 text-white'
-                                : 'bg-rose-600 text-white'
-                            }`}
-                          >
-                            {!activeDossierStudent.isBanned ? 'باز و فعال ✅' : 'مسدود 🚫'}
-                          </span>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* 1. KYC Lock / Unlock */}
+                        <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-[11px]">وضعیت کارت دانشجویی:</span>
+                            <span
+                              className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                                activeDossierStudent.kycStatus === 'verified'
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-rose-600 text-white'
+                              }`}
+                            >
+                              {activeDossierStudent.kycStatus === 'verified'
+                                ? 'باز (تاییدشده ✅)'
+                                : 'قفل‌شده 🔒'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleModifyStudentDossier(activeDossierStudent, {
+                                  explicitKycStatus: 'verified',
+                                })
+                              }
+                              className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
+                                activeDossierStudent.kycStatus === 'verified'
+                                  ? 'bg-emerald-700/40 text-emerald-300 border border-emerald-500/40'
+                                  : 'bg-emerald-600 text-white shadow'
+                              }`}
+                            >
+                              🔓 باز کردن قفل KYC
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleModifyStudentDossier(activeDossierStudent, {
+                                  explicitKycStatus: 'kyc_locked',
+                                })
+                              }
+                              className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
+                                activeDossierStudent.kycStatus === 'kyc_locked'
+                                  ? 'bg-rose-700/40 text-rose-300 border border-rose-500/40'
+                                  : 'bg-rose-700 text-white shadow'
+                              }`}
+                            >
+                              🔒 قفل کردن KYC
+                            </button>
+                          </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleModifyStudentDossier(activeDossierStudent, {
-                                explicitBanStatus: false,
-                              })
-                            }
-                            className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
-                              !activeDossierStudent.isBanned
-                                ? 'bg-emerald-700/40 text-emerald-300 border border-emerald-500/40'
-                                : 'bg-emerald-600 text-white shadow'
-                            }`}
-                          >
-                            🔓 باز کردن حساب
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleModifyStudentDossier(activeDossierStudent, {
-                                explicitBanStatus: true,
-                              })
-                            }
-                            className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
-                              activeDossierStudent.isBanned
-                                ? 'bg-rose-700/40 text-rose-300 border border-rose-500/40'
-                                : 'bg-rose-700 text-white shadow'
-                            }`}
-                          >
-                            🚫 قفل/مسدود حساب
-                          </button>
+
+                        {/* 2. Account Ban / Unban */}
+                        <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-[11px]">وضعیت حساب کاربری:</span>
+                            <span
+                              className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                                !activeDossierStudent.isBanned
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-rose-600 text-white'
+                              }`}
+                            >
+                              {!activeDossierStudent.isBanned ? 'باز و فعال ✅' : 'مسدود 🚫'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleModifyStudentDossier(activeDossierStudent, {
+                                  explicitBanStatus: false,
+                                })
+                              }
+                              className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
+                                !activeDossierStudent.isBanned
+                                  ? 'bg-emerald-700/40 text-emerald-300 border border-emerald-500/40'
+                                  : 'bg-emerald-600 text-white shadow'
+                              }`}
+                            >
+                              🔓 باز کردن حساب
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleModifyStudentDossier(activeDossierStudent, {
+                                  explicitBanStatus: true,
+                                })
+                              }
+                              className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
+                                activeDossierStudent.isBanned
+                                  ? 'bg-rose-700/40 text-rose-300 border border-rose-500/40'
+                                  : 'bg-rose-700 text-white shadow'
+                              }`}
+                            >
+                              🚫 قفل/مسدود حساب
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    )}
                   </div>
 
                   {/* SECTION C: ASSIGN STUDENT AVATAR FROM CATALOG */}
@@ -4298,9 +4392,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           ? `${manualAnnContent.trim().slice(0, 82)}...`
                           : manualAnnContent.trim(),
                       content: manualAnnContent.trim(),
-                      timestamp: 'هم‌اکنون (سنجاق شورا)',
+                      timestamp: 'هم‌اکنون (سنجاق انجمن صنایع)',
                       tag: manualAnnTag.trim() || 'اطلاعیه فوری',
-                      author: `شورای مرکزی (@${handle})`,
+                      author: `انجمن علمی مهندسی صنایع (@${handle})`,
                       views: 1,
                       hasAttachment: false,
                       isPinned: true,
@@ -4646,7 +4740,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-[#D4AB58]" />
-                  دستیار مشتی شورای مرکزی (سلام ستون!، روی چشمم، حله رفیق)
+                  دستیار مشتی انجمن علمی مهندسی صنایع (سلام ستون!، روی چشمم، حله رفیق)
                 </span>
                 <select
                   value={aiModelId}
@@ -5597,13 +5691,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               onSubmit={handleAddAdminUser}
               className={`p-4 rounded-2xl border space-y-3 text-xs ${subCardClass}`}
             >
-              <div className="font-black">➕ تعریف عضو شورا / ادمین جدید:</div>
+              <div className="font-black">➕ تعریف عضو انجمن صنایع / ادمین جدید:</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
                   type="text"
                   value={newAdminName}
                   onChange={(e) => setNewAdminName(e.target.value)}
-                  placeholder="نام و سمت عضو شورا"
+                  placeholder="نام و سمت عضو انجمن صنایع"
                   className={`px-3 py-2 rounded-xl border font-bold ${inputClass}`}
                 />
                 <input
@@ -5674,58 +5768,110 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </form>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-              {(Array.isArray(adminList) ? adminList : []).map((adm) => (
-                <div
-                  key={adm.id}
-                  className={`p-3.5 rounded-2xl border space-y-2 text-xs ${subCardClass}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-black">{adm.fullName}</div>
-                      <div className="text-[11px] font-bold opacity-80">{adm.roleLabel}</div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        playSwitch();
-                        const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
-                          a.id === adm.id ? { ...a, isFrozen: !a.isFrozen } : a
-                        );
-                        setAdminList(updated);
-                        onUpdateAdmins?.(updated);
-                        appendLog(
-                          adm.isFrozen
-                            ? 'رفع مسدودیت دسترسی ادمین'
-                            : 'توقف اضطراری دسترسی ادمین (Freeze)',
-                          adm.fullName,
-                          'warning'
-                        );
-                      }}
-                      className={`px-3 py-1.5 rounded-xl font-black text-[11px] cursor-pointer ${
-                        adm.isFrozen
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-rose-700 text-white'
-                      }`}
-                    >
-                      {adm.isFrozen
-                        ? '🔓 باز کردن دسترسی ادمین'
-                        : '❄️ قفل موقت دسترسی ادمین'}
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-1 pt-1">
-                    {PERMISSION_LABELS.map((p) =>
-                      adm.permissions?.[p.key] ? (
-                        <span
-                          key={p.key}
-                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600/20 text-emerald-500 border border-emerald-500/30"
+              {(Array.isArray(adminList) ? adminList : []).map((adm) => {
+                const isProtectedMaster = isProtectedMasterAccount(adm);
+                return (
+                  <div
+                    key={adm.id}
+                    className={`p-3.5 rounded-2xl border space-y-2.5 text-xs ${
+                      isProtectedMaster
+                        ? 'border-[#D4AB58] bg-[#D4AB58]/10'
+                        : subCardClass
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-black">{adm.fullName}</span>
+                          {isProtectedMaster && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58] text-[#101622] font-black">
+                              👑 مالک و مدیر ارشد کل (غیرقابل محدودسازی)
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-bold opacity-80">
+                          {adm.roleLabel} • ID: {adm.telegramId}
+                        </div>
+                      </div>
+                      {!isProtectedMaster && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playSwitch();
+                            const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
+                              a.id === adm.id ? { ...a, isFrozen: !a.isFrozen } : a
+                            );
+                            setAdminList(updated);
+                            onUpdateAdmins?.(updated);
+                            appendLog(
+                              adm.isFrozen
+                                ? 'رفع مسدودیت دسترسی ادمین'
+                                : 'توقف اضطراری دسترسی ادمین (Freeze)',
+                              adm.fullName,
+                              'warning'
+                            );
+                          }}
+                          className={`px-3 py-1.5 rounded-xl font-black text-[11px] cursor-pointer ${
+                            adm.isFrozen
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-rose-700 text-white'
+                          }`}
                         >
-                          {p.label} ✓
-                        </span>
-                      ) : null
+                          {adm.isFrozen
+                            ? '🔓 باز کردن دسترسی ادمین'
+                            : '❄️ فریز کردن'}
+                        </button>
+                      )}
+                    </div>
+
+                    {isProtectedMaster && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          disabled
+                          className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                        >
+                          🔒 قفل کارت دانشجویی
+                        </button>
+                        <button
+                          type="button"
+                          disabled
+                          className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                        >
+                          🔒 مسدودسازی
+                        </button>
+                        <button
+                          type="button"
+                          disabled
+                          className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                        >
+                          🔒 فریز کردن
+                        </button>
+                        <button
+                          type="button"
+                          disabled
+                          className="py-1.5 px-2 rounded-lg text-[10px] font-black bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                        >
+                          🔒 حذف دسترسی
+                        </button>
+                      </div>
                     )}
+
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {PERMISSION_LABELS.map((p) =>
+                        adm.permissions?.[p.key] ? (
+                          <span
+                            key={p.key}
+                            className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600/20 text-emerald-500 border border-emerald-500/30"
+                          >
+                            {p.label} ✓
+                          </span>
+                        ) : null
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
