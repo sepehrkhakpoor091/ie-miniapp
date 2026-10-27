@@ -72,7 +72,7 @@ import {
   INITIAL_WEEKLY_QUESTS,
   calculateLevelFromScore,
 } from './utils/gamification';
-import { EVENTS_DATA } from './utils/events';
+import { EVENTS_DATA, normalizeEvent, normalizeEventsList } from './utils/events';
 import {
   BOT_WORKER_BASE_URL,
   fetchMiniAppBootstrap,
@@ -130,7 +130,7 @@ const RECEIPTS_STORAGE_KEY = 'ie_receipts_catalog_v6';
 const TIMERS_STORAGE_KEY = 'ie_timers_catalog_v5';
 const BADGES_STORAGE_KEY = 'ie_badges_catalog_v5';
 const AVATARS_STORAGE_KEY = 'ie_avatars_catalog_v5';
-const DISCOUNT_RULE_STORAGE_KEY = 'ie_discount_rule_v5';
+const DISCOUNT_RULE_STORAGE_KEY = 'ie_discount_rule_v6';
 const LOOTBOX_CONFIG_STORAGE_KEY = 'ie_lootbox_config_v1';
 const DISPUTE_TICKETS_STORAGE_KEY = 'ie_dispute_tickets_v1';
 const FEATURED_EVENT_STORAGE_KEY = 'ie_featured_event_id_v1';
@@ -196,8 +196,10 @@ export default function App() {
   const [avatarsCatalog, setAvatarsCatalog] =
     useState<AvatarCatalogItem[]>(DEFAULT_AVATARS_CATALOG);
   const [discountRule, setDiscountRule] = useState<DiscountRuleConfig>({
-    pointsStep: 10,
-    discountTomansPerStep: 50000,
+    pointsStep: 20,
+    discountTomansPerStep: 10000,
+    minPoints: 20,
+    maxPoints: 100,
   });
   const [lootboxConfig, setLootboxConfig] =
     useState<LootboxConfig>(DEFAULT_LOOTBOX_CONFIG);
@@ -242,15 +244,16 @@ export default function App() {
   });
 
   const activeFeaturedEvent = useMemo(() => {
-    const safeEvs =
+    const safeEvs = normalizeEventsList(
       Array.isArray(eventsCatalog) && eventsCatalog.length > 0
         ? eventsCatalog
-        : EVENTS_DATA;
-    return (
+        : EVENTS_DATA
+    );
+    const chosen =
       safeEvs.find((e) => e.id === featuredEventId) ||
       safeEvs.find((e) => e.id === 'ev-project-mgmt') ||
-      safeEvs[0]
-    );
+      safeEvs[0];
+    return normalizeEvent(chosen);
   }, [eventsCatalog, featuredEventId]);
 
   // Navigation tab & Authenticated Admin Panel State
@@ -439,7 +442,9 @@ export default function App() {
     loadJsonOrFallback(VOUCHERS_STORAGE_KEY, [], setVouchers);
     loadJsonOrFallback(CERTIFICATES_STORAGE_KEY, DEFAULT_CERTIFICATES, setCertificates);
     loadJsonOrFallback(QUESTS_STORAGE_KEY, INITIAL_WEEKLY_QUESTS, setQuests);
-    loadJsonOrFallback(EVENTS_STORAGE_KEY, EVENTS_DATA, setEventsCatalog);
+    loadJsonOrFallback(EVENTS_STORAGE_KEY, EVENTS_DATA, (loadedEvents) => {
+      setEventsCatalog(normalizeEventsList(loadedEvents));
+    });
     loadJsonOrFallback(PROFESSORS_STORAGE_KEY, PROFESSORS_DATA, setProfessorsCatalog);
     loadJsonOrFallback(ADMINS_STORAGE_KEY, DEFAULT_ADMINS, (loadedAdmins) => {
       const safe = Array.isArray(loadedAdmins) ? loadedAdmins : DEFAULT_ADMINS;
@@ -464,7 +469,12 @@ export default function App() {
     );
     loadJsonOrFallback(
       DISCOUNT_RULE_STORAGE_KEY,
-      { pointsStep: 10, discountTomansPerStep: 50000 },
+      {
+        pointsStep: 20,
+        discountTomansPerStep: 10000,
+        minPoints: 20,
+        maxPoints: 100,
+      },
       setDiscountRule
     );
     loadJsonOrFallback(
@@ -585,17 +595,30 @@ export default function App() {
     // Never allow ?admin=1, ?vault=1, ?kyc=1, or ?onboarding=1 to open security modals.
 
     // Live Channel Sync with https://t.me/Isefum (`GET ${BOT_WORKER_BASE_URL}/api/miniapp/channel-sync?channel=Isefum`)
+    // Continuously pin all displayed channel posts
     const savedChan = getSavedChannelUrl() || DEFAULT_CHANNEL_URL;
     setOfficialChannelUrl(savedChan);
-    syncAnnouncementsFromTelegramChannel(savedChan)
-      .then((res) => {
-        if (Array.isArray(res.announcements) && res.announcements.length > 0) {
-          setAnnouncementsCatalog(res.announcements);
-        }
-      })
-      .catch(() => {
-        setAnnouncementsCatalog(DEFAULT_ISEFUM_ANNOUNCEMENTS);
-      });
+    const syncAndPinChannel = () => {
+      syncAnnouncementsFromTelegramChannel(savedChan)
+        .then((res) => {
+          if (Array.isArray(res.announcements) && res.announcements.length > 0) {
+            setAnnouncementsCatalog(
+              res.announcements.map((a) => ({ ...a, isPinned: true }))
+            );
+          }
+        })
+        .catch(() => {
+          setAnnouncementsCatalog(
+            DEFAULT_ISEFUM_ANNOUNCEMENTS.map((a) => ({ ...a, isPinned: true }))
+          );
+        });
+    };
+    syncAndPinChannel();
+    const channelPinTimer = window.setInterval(syncAndPinChannel, 60000);
+    return () => {
+      clearTimeout(bootstrapTimeout);
+      window.clearInterval(channelPinTimer);
+    };
   }, []);
 
   const applyBootstrapResponse = (
@@ -675,8 +698,53 @@ export default function App() {
     }
 
     if (Array.isArray(boot.events) && boot.events.length > 0) {
-      setEventsCatalog(boot.events);
-      localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(boot.events));
+      setEventsCatalog((prev) => {
+        const localMap = new Map<string, EventItem>();
+        for (const loc of Array.isArray(prev) ? prev : []) {
+          if (loc && loc.id) localMap.set(loc.id, loc);
+        }
+        const mergedBootEvents = boot.events!.map((srvEv) => {
+          const normSrv = normalizeEvent(srvEv);
+          const locEv = localMap.get(normSrv.id);
+          if (!locEv) return normSrv;
+          return normalizeEvent({
+            ...normSrv,
+            allowPointsDiscount:
+              (srvEv as Partial<EventItem>)?.allowPointsDiscount !== undefined
+                ? normSrv.allowPointsDiscount
+                : locEv.allowPointsDiscount,
+            discountPointsStep:
+              (srvEv as Partial<EventItem>)?.discountPointsStep !== undefined
+                ? normSrv.discountPointsStep
+                : locEv.discountPointsStep,
+            discountTomansPerStep:
+              (srvEv as Partial<EventItem>)?.discountTomansPerStep !== undefined
+                ? normSrv.discountTomansPerStep
+                : locEv.discountTomansPerStep,
+            discountMinPoints:
+              (srvEv as Partial<EventItem>)?.discountMinPoints !== undefined
+                ? normSrv.discountMinPoints
+                : locEv.discountMinPoints,
+            discountMaxPoints:
+              (srvEv as Partial<EventItem>)?.discountMaxPoints !== undefined
+                ? normSrv.discountMaxPoints
+                : locEv.discountMaxPoints,
+          });
+        });
+        localStorage.setItem(
+          EVENTS_STORAGE_KEY,
+          JSON.stringify(mergedBootEvents)
+        );
+        return mergedBootEvents;
+      });
+    }
+
+    if (Array.isArray(boot.professors) && boot.professors.length > 0) {
+      setProfessorsCatalog(boot.professors);
+      localStorage.setItem(
+        PROFESSORS_STORAGE_KEY,
+        JSON.stringify(boot.professors)
+      );
     }
 
     if (typeof boot.allowStudentTimers === 'boolean') {
@@ -1272,8 +1340,12 @@ export default function App() {
             featuredEventId={featuredEventId}
             aboutConfig={aboutConfig}
             onUpdateEvents={(nextEvents) => {
-              setEventsCatalog(nextEvents);
-              localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(nextEvents));
+              const normalizedNext = normalizeEventsList(nextEvents);
+              setEventsCatalog(normalizedNext);
+              localStorage.setItem(
+                EVENTS_STORAGE_KEY,
+                JSON.stringify(normalizedNext)
+              );
             }}
             onUpdateFeaturedEventId={(nextId) => {
               setFeaturedEventId(nextId);
@@ -1438,15 +1510,16 @@ export default function App() {
                       onOpenCurriculumModal={() => setIsCurriculumModalOpen(true)}
                       onStealthTap={handleStealthTapGesture}
                       onOpenEventDetails={(clickedEventId) => {
-                        const safeEvs =
+                        const safeEvs = normalizeEventsList(
                           Array.isArray(eventsCatalog) && eventsCatalog.length > 0
                             ? eventsCatalog
-                            : EVENTS_DATA;
+                            : EVENTS_DATA
+                        );
                         const ev =
                           safeEvs.find((e) => e.id === clickedEventId) ||
                           activeFeaturedEvent ||
                           safeEvs[0];
-                        setSelectedEventForCheckout(ev);
+                        setSelectedEventForCheckout(normalizeEvent(ev));
                       }}
                     />
                   )}
@@ -1458,7 +1531,7 @@ export default function App() {
                       registrationEnabled={featureFlags.eventsRegistrationEnabled}
                       onBackToHome={() => setActiveTab('home')}
                       onSelectEventForCheckout={(event) =>
-                        setSelectedEventForCheckout(event)
+                        setSelectedEventForCheckout(normalizeEvent(event))
                       }
                       onTriggerStealthAdmin={() => setIsAdminVaultOpen(true)}
                     />
@@ -1547,6 +1620,10 @@ export default function App() {
           user={user}
           themeMode={themeMode}
           discountRule={{
+            pointsStep: discountRule.pointsStep,
+            discountTomansPerStep: discountRule.discountTomansPerStep,
+            minPoints: discountRule.minPoints,
+            maxPoints: discountRule.maxPoints,
             pointsUnit: discountRule.pointsStep,
             discountToman: discountRule.discountTomansPerStep,
           }}

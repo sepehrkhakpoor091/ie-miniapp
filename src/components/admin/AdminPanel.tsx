@@ -44,7 +44,13 @@ import {
   UserProfile,
   WeeklyQuest,
 } from '../../types';
-import { EVENTS_DATA, generateTicketPayload } from '../../utils/events';
+import {
+  EVENTS_DATA,
+  generateTicketPayload,
+  normalizeEvent,
+  normalizeEventsList,
+  resolveEventPixelImage,
+} from '../../utils/events';
 import {
   DEFAULT_CHANNEL_URL,
   DEFAULT_ISEFUM_ANNOUNCEMENTS,
@@ -75,7 +81,9 @@ import {
   verifyTicketSignature,
 } from '../../utils/security';
 import {
+  saveEventsOnBot,
   saveLootboxConfigOnBot,
+  saveProfessorsOnBot,
   submitAdminReviewToBot,
   toggleStudentTimersOnBot,
   verifyQrCheckInWithBot,
@@ -448,7 +456,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     Array.isArray(students) && students.length > 0 ? students : DEFAULT_STUDENTS
   );
   const [eventList, setEventList] = useState<EventItem[]>(() =>
-    Array.isArray(events) && events.length > 0 ? events : DEFAULT_EVENTS
+    normalizeEventsList(
+      Array.isArray(events) && events.length > 0 ? events : DEFAULT_EVENTS
+    )
   );
   const [receiptList, setReceiptList] = useState<AdminReceiptItem[]>(() =>
     Array.isArray(receipts) && receipts.length > 0 ? receipts : DEFAULT_RECEIPTS
@@ -487,7 +497,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Sync incoming props
   useEffect(() => {
-    if (Array.isArray(events) && events.length > 0) setEventList(events);
+    if (Array.isArray(events) && events.length > 0) {
+      setEventList(normalizeEventsList(events));
+    }
   }, [events]);
 
   useEffect(() => {
@@ -714,6 +726,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [eventCapacityInput, setEventCapacityInput] = useState<number>(40);
   const [eventPointsInput, setEventPointsInput] = useState<number>(50);
   const [eventInstructorInput, setEventInstructorInput] = useState('دکتر محمدرضا رضایی');
+  const [eventAllowDiscountInput, setEventAllowDiscountInput] = useState<boolean>(true);
+  const [eventDiscountStepInput, setEventDiscountStepInput] = useState<number>(
+    propDiscountRule?.pointsStep || 20
+  );
+  const [eventDiscountTomansInput, setEventDiscountTomansInput] = useState<number>(
+    propDiscountRule?.discountTomansPerStep || 10000
+  );
+  const [eventDiscountMinInput, setEventDiscountMinInput] = useState<number>(
+    propDiscountRule?.minPoints || propDiscountRule?.pointsStep || 20
+  );
+  const [eventDiscountMaxInput, setEventDiscountMaxInput] = useState<number>(
+    propDiscountRule?.maxPoints || 100
+  );
 
   const [profNameInput, setProfNameInput] = useState('');
   const [profTitleInput, setProfTitleInput] = useState('استادیار - دانشکده مهندسی صنایع');
@@ -767,12 +792,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [mod6SubTab, setMod6SubTab] = useState<
     'medals' | 'avatars' | 'discounts' | 'lootbox'
   >('lootbox');
-  const [discountRule, setDiscountRule] = useState<DiscountRuleConfig>(
-    propDiscountRule || {
-      pointsStep: 10,
-      discountTomansPerStep: 50000,
-    }
-  );
+  const [discountRule, setDiscountRule] = useState<DiscountRuleConfig>({
+    pointsStep: propDiscountRule?.pointsStep || 20,
+    discountTomansPerStep: propDiscountRule?.discountTomansPerStep || 10000,
+    minPoints: propDiscountRule?.minPoints || propDiscountRule?.pointsStep || 20,
+    maxPoints: propDiscountRule?.maxPoints || 100,
+  });
   const [lootboxDraft, setLootboxDraft] = useState<LootboxConfig>(() =>
     propLootboxConfig &&
     Array.isArray(propLootboxConfig.bronzePrizes) &&
@@ -1618,7 +1643,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   // ==========================================================================
-  // MODULE 4: Save or Create Event & Professor CRUD (with Avatar Selection)
+  // MODULE 4: Save or Create Event & Professor CRUD (Two-Way Sync with Telegram Bot)
   // ==========================================================================
   const handleSaveEvent = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1636,42 +1661,74 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         ? 'بازدید علمی'
         : 'سمینار';
 
-    const imageFilename =
-      eventCategoryInput === 'workshop'
-        ? '14_ev_python.png'
-        : eventCategoryInput === 'visit'
-        ? '15_ev_factory.png'
-        : '16_ev_seminar.png';
+    const imageFilename = resolveEventPixelImage({
+      title: eventTitleInput.trim(),
+      category: eventCategoryInput,
+      categoryLabel,
+    });
+
+    const parsedCap = Number(eventCapacityInput) || 40;
+    const parsedPrice = Number(eventPriceInput) || 0;
+    const parsedPoints = Number(eventPointsInput) || 50;
+    const safeDiscStep = Math.max(1, Number(eventDiscountStepInput) || discountRule.pointsStep || 20);
+    const safeDiscTomans = Math.max(
+      1000,
+      Number(eventDiscountTomansInput) || discountRule.discountTomansPerStep || 10000
+    );
+    const safeDiscMin = Math.max(
+      safeDiscStep,
+      Math.ceil((Number(eventDiscountMinInput) || safeDiscStep) / safeDiscStep) * safeDiscStep
+    );
+    const safeDiscMax = Math.max(
+      safeDiscMin,
+      Math.floor((Number(eventDiscountMaxInput) || safeDiscMin * 5) / safeDiscStep) * safeDiscStep
+    );
 
     if (editingEventId) {
-      const updated = (Array.isArray(eventList) ? eventList : []).map((ev) =>
-        ev.id === editingEventId
-          ? {
-              ...ev,
-              title: eventTitleInput.trim(),
-              category: eventCategoryInput,
-              categoryLabel,
-              date: eventDateInput,
-              time: eventTimeInput,
-              location: eventLocationInput,
-              basePrice: Number(eventPriceInput) || 0,
-              capacityRemaining: Number(eventCapacityInput) || 30,
-              capacityTotal: Math.max(
-                Number(eventCapacityInput) || 30,
-                ev.capacityTotal
-              ),
-              rewardPoints: Number(eventPointsInput) || 40,
-              instructor: eventInstructorInput,
-            }
-          : ev
-      );
+      const updated = (Array.isArray(eventList) ? eventList : []).map((rawEv, idx) => {
+        const ev = normalizeEvent(rawEv, idx);
+        if (ev.id !== editingEventId) return ev;
+        const nextTotalCap = Math.max(parsedCap, ev.capacityTotal || 40);
+        return normalizeEvent(
+          {
+            ...ev,
+            title: eventTitleInput.trim(),
+            category: eventCategoryInput,
+            categoryLabel,
+            date: eventDateInput,
+            time: eventTimeInput,
+            location: eventLocationInput,
+            basePrice: parsedPrice,
+            price: parsedPrice,
+            capacityRemaining: parsedCap,
+            remainingCapacity: parsedCap,
+            capacityTotal: nextTotalCap,
+            totalCapacity: nextTotalCap,
+            capacity: parsedCap,
+            rewardPoints: parsedPoints,
+            points: parsedPoints,
+            instructor: eventInstructorInput,
+            imageFilename: ev.imageFilename || imageFilename,
+            image: ev.image || ev.imageFilename || imageFilename,
+            allowPointsDiscount: parsedPrice > 0 ? eventAllowDiscountInput : false,
+            discountPointsStep: safeDiscStep,
+            discountTomansPerStep: safeDiscTomans,
+            discountMinPoints: safeDiscMin,
+            discountMaxPoints: safeDiscMax,
+          },
+          idx
+        );
+      });
       setEventList(updated);
       onUpdateEvents?.(updated);
-      appendLog('ویرایش کارگاه/رویداد', eventTitleInput.trim(), 'info');
-      triggerToast(`✅ رویداد «${eventTitleInput.trim()}» بروزرسانی شد.`);
+      void saveEventsOnBot(updated);
+      appendLog('ویرایش کارگاه/رویداد و همگام‌سازی با ربات تلگرام', eventTitleInput.trim(), 'info');
+      triggerToast(
+        `✅ رویداد «${eventTitleInput.trim()}» بروزرسانی شد و در دیتابیس ربات تلگرام ذخیره گردید.`
+      );
       setEditingEventId(null);
     } else {
-      const newEv: EventItem = {
+      const newEv: EventItem = normalizeEvent({
         id: `ev-custom-${Date.now()}`,
         title: eventTitleInput.trim(),
         category: eventCategoryInput,
@@ -1679,22 +1736,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         date: eventDateInput,
         time: eventTimeInput,
         location: eventLocationInput,
-        capacityRemaining: Number(eventCapacityInput) || 40,
-        capacityTotal: Number(eventCapacityInput) || 40,
+        capacityRemaining: parsedCap,
+        remainingCapacity: parsedCap,
+        capacityTotal: parsedCap,
+        totalCapacity: parsedCap,
+        capacity: parsedCap,
         rating: 4.9,
         ratingCount: 12,
         imageFilename,
-        basePrice: Number(eventPriceInput) || 0,
-        rewardPoints: Number(eventPointsInput) || 50,
+        image: imageFilename,
+        basePrice: parsedPrice,
+        price: parsedPrice,
+        rewardPoints: parsedPoints,
+        points: parsedPoints,
         instructor: eventInstructorInput || 'استاد مدعو انجمن صنایع',
-        syllabus: ['مبانی کاربردی و استانداردهای صنعتی', 'پروژه عملی و اعطای گواهی معتبر'],
-      };
-      const updated = [newEv, ...(Array.isArray(eventList) ? eventList : [])];
+        allowPointsDiscount: parsedPrice > 0 ? eventAllowDiscountInput : false,
+        discountPointsStep: safeDiscStep,
+        discountTomansPerStep: safeDiscTomans,
+        discountMinPoints: safeDiscMin,
+        discountMaxPoints: safeDiscMax,
+        syllabus: [
+          'آشنایی با مفاهیم پایه و استانداردهای مهندسی صنایع',
+          'کارگاه عملی و حل مسئله پروژه محور',
+          'پرسش و پاسخ و اعطای گواهینامه معتبر انجمن',
+        ],
+      });
+      const updated = [newEv, ...(Array.isArray(eventList) ? eventList : []).map((ev, i) => normalizeEvent(ev, i))];
       setEventList(updated);
       onUpdateEvents?.(updated);
-      appendLog('ایجاد رویداد جدید در تقویم انجمن', newEv.title, 'success');
+      void saveEventsOnBot(updated);
+      appendLog('ایجاد رویداد جدید در تقویم انجمن و ربات تلگرام', newEv.title, 'success');
       triggerToast(
-        `🎯 رویداد جدید «${newEv.title}» ساخته شد و در تب برنامه دانشجویان قرار گرفت!`
+        `🎯 رویداد جدید «${newEv.title}» ساخته شد و هم‌زمان در مینی‌اپ و منوی رویدادهای ربات تلگرام قرار گرفت!`
       );
     }
     setEventTitleInput('');
@@ -1728,8 +1801,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const updated = [newProf, ...(Array.isArray(profList) ? profList : [])];
     setProfList(updated);
     onUpdateProfessors?.(updated);
-    appendLog('افزودن استاد جدید به رادار دانشکده', newProf.name, 'success');
-    triggerToast(`👨‍🏫 پروفایل «${newProf.name}» با آواتار انتخابی به رادار اساتید اضافه شد.`);
+    void saveProfessorsOnBot(updated);
+    appendLog('افزودن استاد جدید به رادار دانشکده و ربات تلگرام', newProf.name, 'success');
+    triggerToast(
+      `👨‍🏫 پروفایل «${newProf.name}» با آواتار انتخابی در مینی‌اپ و ربات تلگرام ذخیره شد.`
+    );
     setProfNameInput('');
   };
 
@@ -1740,7 +1816,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
     setProfList(updated);
     onUpdateProfessors?.(updated);
-    triggerToast('🎭 آواتار استاد در رادار دانشکده بروزرسانی شد.');
+    void saveProfessorsOnBot(updated);
+    triggerToast('🎭 آواتار استاد در رادار دانشکده و ربات تلگرام بروزرسانی شد.');
   };
 
   const handleToggleProfessorOffice = (profId: string) => {
@@ -1750,6 +1827,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
     setProfList(updated);
     onUpdateProfessors?.(updated);
+    void saveProfessorsOnBot(updated);
     const targetProf = updated.find((p) => p.id === profId);
     if (targetProf) {
       appendLog(
@@ -1762,9 +1840,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       triggerToast(
         `${targetProf.isCurrentlyInOffice ? '🟢' : '⚪'} وضعیت حضور ${
           targetProf.name
-        } بروزرسانی شد.`
+        } در مینی‌اپ و ربات تلگرام بروزرسانی شد.`
       );
     }
+  };
+
+  const handleDeleteProfessor = (profId: string, profName: string) => {
+    playError();
+    const updated = (Array.isArray(profList) ? profList : []).filter(
+      (p) => p.id !== profId
+    );
+    setProfList(updated);
+    onUpdateProfessors?.(updated);
+    void saveProfessorsOnBot(updated);
+    appendLog('حذف استاد از رادار دانشکده و ربات تلگرام', profName, 'warning');
+    triggerToast(`🗑 پروفایل «${profName}» حذف شد و با ربات تلگرام همگام گردید.`);
   };
 
   // ==========================================================================
@@ -1834,13 +1924,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     ];
     setProfList(updated);
     onUpdateProfessors?.(updated);
+    void saveProfessorsOnBot(updated);
     const names = parsedProfPreviewList.map((p) => p.name).join('، ');
     appendLog(
       'ثبت نهایی برنامه اساتید استخراج‌شده با هوش مصنوعی',
       names,
       'success'
     );
-    triggerToast(`✅ برنامه «${names}» به لیست رسمی اساتید سایت اضافه شد!`);
+    triggerToast(`✅ برنامه «${names}» به لیست رسمی اساتید سایت و ربات تلگرام اضافه شد!`);
     setParsedProfPreviewList([]);
   };
 
@@ -4046,6 +4137,137 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       />
                     </div>
                   </div>
+                  {/* Per-Workshop Points-to-Discount Slider Configuration */}
+                  <div className="p-3.5 rounded-2xl border border-[#D4AB58]/40 bg-black/20 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="font-black text-[#D4AB58] block">
+                          💎 نوار تبدیل امتیاز به کد تخفیف برای این کارگاه:
+                        </span>
+                        <span className="text-[10px] opacity-80 font-bold">
+                          مشخص کنید دانشجو بتواند امتیازهایش را برای این کارگاه به تخفیف تبدیل کند (به همراه کف، سقف و ضریب)
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playSwitch();
+                          setEventAllowDiscountInput((prev) => !prev);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl font-black text-[11px] cursor-pointer transition-all ${
+                          eventAllowDiscountInput && eventPriceInput > 0
+                            ? 'bg-emerald-600 text-white shadow'
+                            : 'bg-zinc-700 text-zinc-300'
+                        }`}
+                      >
+                        {eventPriceInput <= 0
+                          ? 'کارگاه رایگان است'
+                          : eventAllowDiscountInput
+                          ? '✅ فعال برای این کارگاه'
+                          : '🚫 غیرفعال برای این کارگاه'}
+                      </button>
+                    </div>
+
+                    {eventAllowDiscountInput && eventPriceInput > 0 && (
+                      <div className="space-y-2 pt-2 border-t border-white/10">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          <div>
+                            <span className="text-[10px] font-bold block mb-0.5">
+                              ضریب امتیاز (هر X امتیاز):
+                            </span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              dir="ltr"
+                              value={eventDiscountStepInput}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) =>
+                                setEventDiscountStepInput(
+                                  Math.max(1, parseFlexibleNumberInput(e.target.value, 20))
+                                )
+                              }
+                              className={`w-full px-2.5 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold block mb-0.5">
+                              تخفیف هر ضریب (تومان):
+                            </span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              dir="ltr"
+                              value={eventDiscountTomansInput}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) =>
+                                setEventDiscountTomansInput(
+                                  Math.max(1000, parseFlexibleNumberInput(e.target.value, 10000))
+                                )
+                              }
+                              className={`w-full px-2.5 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold block mb-0.5">
+                              کف امتیاز مجاز (حداقل):
+                            </span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              dir="ltr"
+                              value={eventDiscountMinInput}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) =>
+                                setEventDiscountMinInput(
+                                  Math.max(1, parseFlexibleNumberInput(e.target.value, 20))
+                                )
+                              }
+                              className={`w-full px-2.5 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold block mb-0.5">
+                              سقف امتیاز مجاز (حداکثر):
+                            </span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              dir="ltr"
+                              value={eventDiscountMaxInput}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) =>
+                                setEventDiscountMaxInput(
+                                  Math.max(1, parseFlexibleNumberInput(e.target.value, 100))
+                                )
+                              }
+                              className={`w-full px-2.5 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-[#FCE7A4] font-bold">
+                          <span>پله‌های ضریب تخفیف این کارگاه:</span>
+                          {[1, 2, 3].map((mult) => {
+                            const stepPts = Math.max(1, eventDiscountStepInput || 20);
+                            const pts = Math.max(eventDiscountMinInput || stepPts, stepPts) + (mult - 1) * stepPts;
+                            if (pts > Math.max(eventDiscountMinInput || stepPts, eventDiscountMaxInput || 100)) {
+                              return null;
+                            }
+                            const disc = Math.floor(pts / stepPts) * (eventDiscountTomansInput || 10000);
+                            return (
+                              <span
+                                key={mult}
+                                className="px-2 py-0.5 rounded-lg bg-[#D4AB58]/20 border border-[#D4AB58]/40"
+                              >
+                                {pts.toLocaleString('fa-IR')} امتیاز = {disc.toLocaleString('fa-IR')} ت
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <button
                     type="submit"
                     className="w-full py-2.5 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer flex items-center justify-center gap-1"
@@ -4058,86 +4280,163 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                   {(Array.isArray(eventList) ? eventList : []).map((ev) => {
                     const isFeatured = ev.id === selectedFeaturedEventId;
+                    const isDiscountActive = ev.basePrice > 0 && ev.allowPointsDiscount !== false;
+                    const evStep = ev.discountPointsStep || discountRule.pointsStep || 20;
+                    const evTomans =
+                      ev.discountTomansPerStep || discountRule.discountTomansPerStep || 10000;
+                    const evMin = ev.discountMinPoints || discountRule.minPoints || evStep;
+                    const evMax = ev.discountMaxPoints || discountRule.maxPoints || 100;
                     return (
                       <div
                         key={ev.id}
-                        className={`p-3 rounded-2xl border flex items-center justify-between gap-2 text-xs ${
+                        className={`p-3 rounded-2xl border flex flex-col justify-between gap-2 text-xs ${
                           isFeatured
                             ? 'border-2 border-[#D4AB58] bg-[#D4AB58]/10'
                             : subCardClass
                         }`}
                       >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {isFeatured && (
-                              <span className="px-2 py-0.5 rounded-full bg-[#E77F6E] text-[#101622] text-[10px] font-black">
-                                🌟 رویداد ویژه صفحه اول
-                              </span>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {isFeatured && (
+                                <span className="px-2 py-0.5 rounded-full bg-[#E77F6E] text-[#101622] text-[10px] font-black">
+                                  🌟 رویداد ویژه صفحه اول
+                                </span>
+                              )}
+                              <span className="font-black truncate">{ev.title}</span>
+                            </div>
+                            <div
+                              className={`text-[11px] font-bold mt-0.5 ${
+                                isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                              }`}
+                            >
+                              {ev.date} • ظرفیت: {ev.capacityRemaining}/{ev.capacityTotal} • +
+                              {ev.rewardPoints} امتیاز
+                            </div>
+                            {ev.basePrice > 0 && (
+                              <div className="text-[10px] font-bold text-[#D4AB58] mt-1">
+                                {isDiscountActive
+                                  ? `💎 تخفیف فعال: هر ${evStep.toLocaleString('fa-IR')} امتیاز = ${evTomans.toLocaleString('fa-IR')} ت (کف ${evMin.toLocaleString('fa-IR')} / سقف ${evMax.toLocaleString('fa-IR')})`
+                                  : '🚫 نوار تخفیف امتیازی برای این کارگاه غیرفعال است'}
+                              </div>
                             )}
-                            <span className="font-black truncate">{ev.title}</span>
                           </div>
-                          <div
-                            className={`text-[11px] font-bold mt-0.5 ${
-                              isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
-                            }`}
-                          >
-                            {ev.date} • ظرفیت: {ev.capacityRemaining}/{ev.capacityTotal} • +
-                            {ev.rewardPoints} امتیاز
+                          <div className="flex items-center gap-1 shrink-0">
+                            {ev.basePrice > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  playSwitch();
+                                  const nextAllowed = ev.allowPointsDiscount === false;
+                                  const updated = (Array.isArray(eventList) ? eventList : []).map(
+                                    (item, i) =>
+                                      item.id === ev.id
+                                        ? normalizeEvent(
+                                            { ...item, allowPointsDiscount: nextAllowed },
+                                            i
+                                          )
+                                        : normalizeEvent(item, i)
+                                  );
+                                  setEventList(updated);
+                                  onUpdateEvents?.(updated);
+                                  void saveEventsOnBot(updated);
+                                  triggerToast(
+                                    nextAllowed
+                                      ? `💎 نوار تبدیل امتیاز به تخفیف برای «${ev.title}» فعال شد!`
+                                      : `🚫 نوار تخفیف امتیازی برای «${ev.title}» غیرفعال شد.`
+                                  );
+                                }}
+                                className={`px-2 py-1.5 rounded-xl text-[10px] font-black cursor-pointer ${
+                                  isDiscountActive
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                    : 'bg-zinc-700/60 text-zinc-300'
+                                }`}
+                                title="تغییر وضعیت فعال بودن نوار تخفیف امتیازی این کارگاه"
+                              >
+                                {isDiscountActive ? '💎 تخفیف: فعال' : '🚫 تخفیف: خاموش'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                playCoin();
+                                setSelectedFeaturedEventId(ev.id);
+                                onUpdateFeaturedEventId?.(ev.id);
+                                appendLog('انتخاب رویداد ویژه صفحه اول', ev.title, 'success');
+                                triggerToast(
+                                  `🌟 «${ev.title}» به‌عنوان رویداد ویژه وسط صفحه اول انتخاب شد!`
+                                );
+                              }}
+                              className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black cursor-pointer ${
+                                isFeatured
+                                  ? 'bg-[#D4AB58] text-[#101622]'
+                                  : 'bg-white/10 hover:bg-white/20'
+                              }`}
+                              title="نمایش در کادر رویداد ویژه صفحه اول"
+                            >
+                              {isFeatured ? '🌟 ویژه فعلی' : 'انتخاب ویژه'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                playTick();
+                                setEditingEventId(ev.id);
+                                setEventTitleInput(ev.title);
+                                setEventCategoryInput(ev.category);
+                                setEventDateInput(ev.date);
+                                setEventTimeInput(ev.time);
+                                setEventLocationInput(ev.location);
+                                setEventPriceInput(ev.basePrice);
+                                setEventCapacityInput(ev.capacityRemaining);
+                                setEventPointsInput(ev.rewardPoints);
+                                setEventInstructorInput(ev.instructor);
+                                setEventAllowDiscountInput(ev.allowPointsDiscount !== false);
+                                setEventDiscountStepInput(
+                                  ev.discountPointsStep || discountRule.pointsStep || 20
+                                );
+                                setEventDiscountTomansInput(
+                                  ev.discountTomansPerStep ||
+                                    discountRule.discountTomansPerStep ||
+                                    10000
+                                );
+                                setEventDiscountMinInput(
+                                  ev.discountMinPoints ||
+                                    discountRule.minPoints ||
+                                    ev.discountPointsStep ||
+                                    20
+                                );
+                                setEventDiscountMaxInput(
+                                  ev.discountMaxPoints || discountRule.maxPoints || 100
+                                );
+                              }}
+                              className="p-2 rounded-xl bg-amber-500/20 text-amber-400 cursor-pointer"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                playError();
+                                const updated = (Array.isArray(eventList) ? eventList : [])
+                                  .filter((item) => item.id !== ev.id)
+                                  .map((item, i) => normalizeEvent(item, i));
+                                setEventList(updated);
+                                onUpdateEvents?.(updated);
+                                void saveEventsOnBot(updated);
+                                appendLog(
+                                  'حذف کارگاه/رویداد و همگام‌سازی با ربات تلگرام',
+                                  ev.title,
+                                  'warning'
+                                );
+                                triggerToast(
+                                  `🗑 رویداد «${ev.title}» از مینی‌اپ و ربات تلگرام حذف شد.`
+                                );
+                              }}
+                              className="p-2 rounded-xl bg-rose-500/20 text-rose-400 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              playCoin();
-                              setSelectedFeaturedEventId(ev.id);
-                              onUpdateFeaturedEventId?.(ev.id);
-                              appendLog('انتخاب رویداد ویژه صفحه اول', ev.title, 'success');
-                              triggerToast(
-                                `🌟 «${ev.title}» به‌عنوان رویداد ویژه وسط صفحه اول انتخاب شد!`
-                              );
-                            }}
-                            className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black cursor-pointer ${
-                              isFeatured
-                                ? 'bg-[#D4AB58] text-[#101622]'
-                                : 'bg-white/10 hover:bg-white/20'
-                            }`}
-                            title="نمایش در کادر رویداد ویژه صفحه اول"
-                          >
-                            {isFeatured ? '🌟 ویژه فعلی' : 'انتخاب ویژه'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              playTick();
-                              setEditingEventId(ev.id);
-                              setEventTitleInput(ev.title);
-                              setEventCategoryInput(ev.category);
-                              setEventDateInput(ev.date);
-                              setEventTimeInput(ev.time);
-                              setEventLocationInput(ev.location);
-                              setEventPriceInput(ev.basePrice);
-                              setEventCapacityInput(ev.capacityRemaining);
-                              setEventPointsInput(ev.rewardPoints);
-                              setEventInstructorInput(ev.instructor);
-                            }}
-                            className="p-2 rounded-xl bg-amber-500/20 text-amber-400 cursor-pointer"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              playError();
-                              const updated = eventList.filter((item) => item.id !== ev.id);
-                              setEventList(updated);
-                              onUpdateEvents?.(updated);
-                              triggerToast(`🗑 رویداد «${ev.title}» حذف شد.`);
-                            }}
-                            className="p-2 rounded-xl bg-rose-500/20 text-rose-400 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
                         </div>
                       </div>
                     );
@@ -4438,17 +4737,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             </div>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleProfessorOffice(prof.id)}
-                          className={`px-3 py-1.5 rounded-xl font-black text-[11px] cursor-pointer transition-all shrink-0 ${
-                            prof.isCurrentlyInOffice
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-zinc-700 text-zinc-200'
-                          }`}
-                        >
-                          {prof.isCurrentlyInOffice ? '🟢 حضور در دفتر' : '⚪ خارج از دفتر'}
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleProfessorOffice(prof.id)}
+                            className={`px-3 py-1.5 rounded-xl font-black text-[11px] cursor-pointer transition-all shrink-0 ${
+                              prof.isCurrentlyInOffice
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-zinc-700 text-zinc-200'
+                            }`}
+                          >
+                            {prof.isCurrentlyInOffice ? '🟢 حضور در دفتر' : '⚪ خارج از دفتر'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteProfessor(prof.id, prof.name)}
+                            className="p-1.5 rounded-xl bg-rose-500/20 text-rose-400 cursor-pointer"
+                            title="حذف استاد"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Quick Avatar Switcher for existing professor */}
@@ -5994,59 +6303,268 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             {mod6SubTab === 'discounts' && (
               <div className="space-y-4 animate-fade-in">
-                <div className={`p-4 rounded-2xl border space-y-2.5 text-xs ${subCardClass}`}>
-                  <div className="font-black">
-                    💰 فرمول فعلی: هر {discountRule.pointsStep} امتیاز ={' '}
-                    {discountRule.discountTomansPerStep.toLocaleString('fa-IR')} تومان تخفیف کارگاه
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
+                <div className={`p-4 rounded-2xl border-2 border-[#D4AB58]/50 space-y-3 text-xs ${subCardClass}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <span className="text-[10px] font-bold block mb-1">ضریب امتیاز (گام):</span>
+                      <div className="font-black text-sm text-[#D4AB58]">
+                        💰 تنظیم فرمول، ضریب، کف و سقف نوار تبدیل امتیاز به تخفیف کارگاه‌ها
+                      </div>
+                      <p className="text-[11px] opacity-80 font-bold mt-0.5">
+                        فرمول فعلی: هر {discountRule.pointsStep.toLocaleString('fa-IR')} امتیاز ={' '}
+                        {discountRule.discountTomansPerStep.toLocaleString('fa-IR')} تومان تخفیف (کف:{' '}
+                        {(discountRule.minPoints || discountRule.pointsStep).toLocaleString('fa-IR')} • سقف:{' '}
+                        {(discountRule.maxPoints || 100).toLocaleString('fa-IR')} امتیاز)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div>
+                      <span className="text-[10px] font-bold block mb-1">
+                        ضریب امتیاز (هر چند امتیاز؟):
+                      </span>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
                         value={discountRule.pointsStep}
-                        onChange={(e) =>
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) => {
+                          const step = Math.max(
+                            1,
+                            parseFlexibleNumberInput(e.target.value, 20)
+                          );
                           setDiscountRule((prev) => ({
                             ...prev,
-                            pointsStep: Math.max(1, Number(e.target.value) || 10),
-                          }))
-                        }
-                        className={`w-full px-3 py-1.5 rounded-xl border font-bold ${inputClass}`}
+                            pointsStep: step,
+                          }));
+                        }}
+                        className={`w-full px-3 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
                       />
                     </div>
                     <div>
-                      <span className="text-[10px] font-bold block mb-1">مبلغ تخفیف (تومان):</span>
+                      <span className="text-[10px] font-bold block mb-1">
+                        مبلغ تخفیف هر ضریب (تومان):
+                      </span>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
                         value={discountRule.discountTomansPerStep}
+                        onFocus={(e) => e.currentTarget.select()}
                         onChange={(e) =>
                           setDiscountRule((prev) => ({
                             ...prev,
                             discountTomansPerStep: Math.max(
                               1000,
-                              Number(e.target.value) || 50000
+                              parseFlexibleNumberInput(e.target.value, 10000)
                             ),
                           }))
                         }
-                        className={`w-full px-3 py-1.5 rounded-xl border font-bold ${inputClass}`}
+                        className={`w-full px-3 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold block mb-1">
+                        کف امتیاز مجاز (حداقل):
+                      </span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
+                        value={discountRule.minPoints ?? discountRule.pointsStep}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) =>
+                          setDiscountRule((prev) => ({
+                            ...prev,
+                            minPoints: Math.max(
+                              1,
+                              parseFlexibleNumberInput(e.target.value, prev.pointsStep || 20)
+                            ),
+                          }))
+                        }
+                        className={`w-full px-3 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold block mb-1">
+                        سقف امتیاز مجاز (حداکثر):
+                      </span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
+                        value={discountRule.maxPoints ?? 100}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) =>
+                          setDiscountRule((prev) => ({
+                            ...prev,
+                            maxPoints: Math.max(
+                              1,
+                              parseFlexibleNumberInput(e.target.value, 100)
+                            ),
+                          }))
+                        }
+                        className={`w-full px-3 py-1.5 rounded-xl border text-center font-mono font-bold ${inputClass}`}
                       />
                     </div>
                   </div>
+
+                  {/* Live Step-by-Step Multiplier Preview */}
+                  <div className="p-3 rounded-xl bg-black/25 border border-white/10 space-y-1.5">
+                    <div className="text-[11px] font-black text-[#FCE7A4]">
+                      📊 جدول پله‌های ضریب تخفیف (از کف تا سقف تعیین‌شده):
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(() => {
+                        const step = Math.max(1, discountRule.pointsStep || 20);
+                        const tomans = Math.max(1000, discountRule.discountTomansPerStep || 10000);
+                        const minP = Math.max(
+                          step,
+                          Math.ceil((discountRule.minPoints || step) / step) * step
+                        );
+                        const maxP = Math.max(
+                          minP,
+                          Math.floor((discountRule.maxPoints || step * 5) / step) * step
+                        );
+                        const items: { pts: number; disc: number }[] = [];
+                        for (let p = minP; p <= maxP && items.length < 8; p += step) {
+                          items.push({
+                            pts: p,
+                            disc: Math.floor(p / step) * tomans,
+                          });
+                        }
+                        return items.map((it) => (
+                          <span
+                            key={it.pts}
+                            className="px-2.5 py-1 rounded-lg bg-[#D4AB58]/20 border border-[#D4AB58]/40 text-[10px] font-black text-[#F6F1E7]"
+                          >
+                            {it.pts.toLocaleString('fa-IR')} امتیاز ←{' '}
+                            {it.disc.toLocaleString('fa-IR')} تومان تخفیف
+                          </span>
+                        ));
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Per-Workshop Quick Discount Enable/Disable & Sync */}
+                  <div className="p-3 rounded-xl bg-black/20 border border-white/10 space-y-2">
+                    <div className="text-[11px] font-black text-[#7FB69E]">
+                      🎯 وضعیت فعال بودن نوار تخفیف برای هر کارگاه (به انتخاب ادمین):
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {(Array.isArray(eventList) ? eventList : []).map((ev, idx) => {
+                        const isPaid = ev.basePrice > 0;
+                        const active = isPaid && ev.allowPointsDiscount !== false;
+                        return (
+                          <div
+                            key={ev.id}
+                            className="p-2.5 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-black text-[11px] truncate">{ev.title}</div>
+                              <div className="text-[10px] opacity-75">
+                                {isPaid
+                                  ? `هزینه: ${ev.basePrice.toLocaleString('fa-IR')} تومان`
+                                  : 'رایگان'}
+                              </div>
+                            </div>
+                            {isPaid ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  playSwitch();
+                                  const nextAllowed = ev.allowPointsDiscount === false;
+                                  const updated = (Array.isArray(eventList) ? eventList : []).map(
+                                    (item, i) =>
+                                      item.id === ev.id
+                                        ? normalizeEvent(
+                                            { ...item, allowPointsDiscount: nextAllowed },
+                                            i
+                                          )
+                                        : normalizeEvent(item, i)
+                                  );
+                                  setEventList(updated);
+                                  onUpdateEvents?.(updated);
+                                  void saveEventsOnBot(updated);
+                                  triggerToast(
+                                    nextAllowed
+                                      ? `💎 نوار تخفیف برای «${ev.title}» فعال شد.`
+                                      : `🚫 نوار تخفیف برای «${ev.title}» غیرفعال شد.`
+                                  );
+                                }}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 cursor-pointer ${
+                                  active
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-zinc-700 text-zinc-300'
+                                }`}
+                              >
+                                {active ? '✅ فعال' : '🚫 غیرفعال'}
+                              </button>
+                            ) : (
+                              <span className="text-[10px] opacity-60 font-bold shrink-0">
+                                بدون هزینه
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => {
                       playCoin();
-                      onUpdateDiscountRule?.(discountRule);
+                      const step = Math.max(1, discountRule.pointsStep || 20);
+                      const tomans = Math.max(1000, discountRule.discountTomansPerStep || 10000);
+                      const minP = Math.max(
+                        step,
+                        Math.ceil((discountRule.minPoints || step) / step) * step
+                      );
+                      const maxP = Math.max(
+                        minP,
+                        Math.floor((discountRule.maxPoints || step * 5) / step) * step
+                      );
+                      const normalizedRule: DiscountRuleConfig = {
+                        pointsStep: step,
+                        discountTomansPerStep: tomans,
+                        minPoints: minP,
+                        maxPoints: maxP,
+                      };
+                      setDiscountRule(normalizedRule);
+                      onUpdateDiscountRule?.(normalizedRule);
+
+                      // Also update workshops to use the new default floor/ceiling/multiplier
+                      const updatedEvents = (Array.isArray(eventList) ? eventList : []).map(
+                        (ev, i) =>
+                          normalizeEvent(
+                            {
+                              ...ev,
+                              discountPointsStep: step,
+                              discountTomansPerStep: tomans,
+                              discountMinPoints: minP,
+                              discountMaxPoints: maxP,
+                            },
+                            i
+                          )
+                      );
+                      setEventList(updatedEvents);
+                      onUpdateEvents?.(updatedEvents);
+                      void saveEventsOnBot(updatedEvents);
+
                       appendLog(
-                        'بروزرسانی فرمول تخفیف امتیازی',
-                        `هر ${discountRule.pointsStep} امتیاز = ${discountRule.discountTomansPerStep} تومان`,
+                        'بروزرسانی فرمول، کف و سقف تخفیف امتیازی کارگاه‌ها',
+                        `هر ${step} امتیاز = ${tomans} تومان (کف ${minP} / سقف ${maxP})`,
                         'info'
                       );
-                      triggerToast('✅ فرمول جدید تخفیف امتیازی ذخیره و فعال شد.');
+                      triggerToast(
+                        `✅ فرمول تخفیف (هر ${step.toLocaleString('fa-IR')} امتیاز = ${tomans.toLocaleString('fa-IR')} تومان، کف ${minP.toLocaleString('fa-IR')} و سقف ${maxP.toLocaleString('fa-IR')}) ذخیره و روی کارگاه‌ها اعمال شد!`
+                      );
                     }}
-                    className="w-full py-2 rounded-xl bg-[#D4AB58] text-[#101622] font-black cursor-pointer"
+                    className="w-full py-2.5 rounded-xl bg-[#D4AB58] text-[#101622] font-black cursor-pointer shadow"
                   >
-                    ذخیره ضریب تخفیف
+                    💾 ذخیره ضریب، کف و سقف تخفیف و اعمال روی کارگاه‌ها
                   </button>
                 </div>
 

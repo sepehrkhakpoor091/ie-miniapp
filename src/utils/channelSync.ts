@@ -82,6 +82,7 @@ export const DEFAULT_ISEFUM_ANNOUNCEMENTS: ChannelAnnouncement[] = [
     author: 'تحریریه نشریه (@Isefum)',
     views: 960,
     hasAttachment: true,
+    isPinned: true,
   },
   {
     id: 'isefum-2135',
@@ -97,6 +98,7 @@ export const DEFAULT_ISEFUM_ANNOUNCEMENTS: ChannelAnnouncement[] = [
     author: 'کمیته آموزش (@Isefum)',
     views: 1320,
     hasAttachment: false,
+    isPinned: true,
   },
   {
     id: 'isefum-2131',
@@ -112,6 +114,7 @@ export const DEFAULT_ISEFUM_ANNOUNCEMENTS: ChannelAnnouncement[] = [
     author: 'کمیته روابط عمومی (@Isefum)',
     views: 1150,
     hasAttachment: true,
+    isPinned: true,
   },
   {
     id: 'isefum-2126',
@@ -127,6 +130,7 @@ export const DEFAULT_ISEFUM_ANNOUNCEMENTS: ChannelAnnouncement[] = [
     author: 'انجمن علمی مهندسی صنایع (@Isefum)',
     views: 1840,
     hasAttachment: false,
+    isPinned: true,
   },
 ];
 
@@ -256,6 +260,7 @@ export function parseTelegramChannelHtml(
           author: `کانال رسمی (@${handle})`,
           views,
           hasAttachment: hasMedia,
+          isPinned: true,
         });
       }
     } catch {
@@ -304,12 +309,42 @@ export function parseTelegramChannelHtml(
         author: `کانال رسمی (@${handle})`,
         views: 680,
         hasAttachment: true,
+        isPinned: true,
       });
     }
   }
 
   // Return newest posts first (Telegram /s/ page lists oldest to newest)
   return results.reverse().slice(0, 12);
+}
+
+/**
+ * Ensures all displayed Telegram channel posts remain continuously pinned (`isPinned: true`)
+ * and sorted with pinned items at the top.
+ */
+export function ensureContinuousPinnedAnnouncements(
+  rawItems?: ChannelAnnouncement[]
+): ChannelAnnouncement[] {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    return DEFAULT_ISEFUM_ANNOUNCEMENTS.map((item) => ({ ...item, isPinned: true }));
+  }
+
+  const seenIds = new Set<string>();
+  const normalized: ChannelAnnouncement[] = [];
+
+  for (const item of rawItems) {
+    if (!item || typeof item !== 'object') continue;
+    const dedupKey = String(item.postId || item.id || item.title).trim();
+    if (!dedupKey || seenIds.has(dedupKey)) continue;
+    seenIds.add(dedupKey);
+
+    normalized.push({
+      ...item,
+      isPinned: true,
+    });
+  }
+
+  return normalized;
 }
 
 export function getSavedChannelUrl(): string {
@@ -351,20 +386,21 @@ export function loadStoredAnnouncements(): ChannelAnnouncement[] {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          return ensureContinuousPinnedAnnouncements(parsed);
         }
       }
     }
   } catch {
     // ignore
   }
-  return DEFAULT_ISEFUM_ANNOUNCEMENTS;
+  return ensureContinuousPinnedAnnouncements(DEFAULT_ISEFUM_ANNOUNCEMENTS);
 }
 
 export function saveStoredAnnouncements(items: ChannelAnnouncement[]): void {
   try {
+    const pinnedList = ensureContinuousPinnedAnnouncements(items);
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(SYNCED_ANNOUNCEMENTS_STORAGE_KEY, JSON.stringify(items));
+      localStorage.setItem(SYNCED_ANNOUNCEMENTS_STORAGE_KEY, JSON.stringify(pinnedList));
     }
   } catch {
     // ignore
@@ -379,12 +415,7 @@ import {
 
 /**
  * Fetches live Telegram web preview (`https://t.me/s/${username}`) through a resilient
- * CORS-safe cascade:
- * 1. Live Cloudflare Worker `GET ${BOT_WORKER_BASE_URL}/api/miniapp/channel-sync?channel=${username}` (using secureFetch + X-Telegram-Init-Data)
- * 2. Local backend proxy `/api/miniapp/channel-sync?channel=${username}`
- * 3. AllOrigins JSON wrapper `https://api.allorigins.win/get?url=...`
- * 4. Direct CORS proxy `https://corsproxy.io/?...`
- * Falls back gracefully to existing pinned/stored announcements + realistic @Isefum posts.
+ * CORS-safe cascade and continuously pins all channel posts at the top of the Mini App.
  */
 export async function syncAnnouncementsFromTelegramChannel(
   channelInput?: string
@@ -400,15 +431,18 @@ export async function syncAnnouncementsFromTelegramChannel(
   const telegramPreviewUrl = `https://t.me/s/${handle}`;
 
   const existingStored = loadStoredAnnouncements();
-  const pinnedManualItems = existingStored.filter(
-    (item) => item.isPinned && item.id.startsWith('manual-')
-  );
+  const pinnedManualItems = existingStored
+    .filter((item) => item.isPinned && item.id.startsWith('manual-'))
+    .map((item) => ({ ...item, isPinned: true }));
 
   // 1. Primary Live Cloudflare Worker Endpoint (using secureFetch with X-Telegram-Init-Data)
   const workerRes = await fetchChannelAnnouncementsFromWorker(handle);
   if (workerRes.ok) {
     if (Array.isArray(workerRes.announcements) && workerRes.announcements.length > 0) {
-      const merged = [...pinnedManualItems, ...workerRes.announcements];
+      const merged = ensureContinuousPinnedAnnouncements([
+        ...pinnedManualItems,
+        ...workerRes.announcements.map((a) => ({ ...a, isPinned: true })),
+      ]);
       saveStoredAnnouncements(merged);
       return {
         announcements: merged,
@@ -420,7 +454,10 @@ export async function syncAnnouncementsFromTelegramChannel(
     if (workerRes.html) {
       const parsedWorkerPosts = parseTelegramChannelHtml(workerRes.html, handle);
       if (parsedWorkerPosts.length > 0) {
-        const merged = [...pinnedManualItems, ...parsedWorkerPosts];
+        const merged = ensureContinuousPinnedAnnouncements([
+          ...pinnedManualItems,
+          ...parsedWorkerPosts,
+        ]);
         saveStoredAnnouncements(merged);
         return {
           announcements: merged,
@@ -460,7 +497,10 @@ export async function syncAnnouncementsFromTelegramChannel(
           ? json.posts
           : null;
         if (remoteList && remoteList.length > 0) {
-          const merged = [...pinnedManualItems, ...remoteList];
+          const merged = ensureContinuousPinnedAnnouncements([
+            ...pinnedManualItems,
+            ...remoteList.map((a: ChannelAnnouncement) => ({ ...a, isPinned: true })),
+          ]);
           saveStoredAnnouncements(merged);
           return {
             announcements: merged,
@@ -476,7 +516,10 @@ export async function syncAnnouncementsFromTelegramChannel(
 
       const parsedPosts = parseTelegramChannelHtml(htmlContent, handle);
       if (parsedPosts.length > 0) {
-        const merged = [...pinnedManualItems, ...parsedPosts];
+        const merged = ensureContinuousPinnedAnnouncements([
+          ...pinnedManualItems,
+          ...parsedPosts,
+        ]);
         saveStoredAnnouncements(merged);
         return {
           announcements: merged,
@@ -490,15 +533,19 @@ export async function syncAnnouncementsFromTelegramChannel(
     }
   }
 
-  // Resilient Fallback with updated channelHandle links
+  // Resilient Fallback with updated channelHandle links and continuous pinning
   const hydratedFallback = DEFAULT_ISEFUM_ANNOUNCEMENTS.map((item) => ({
     ...item,
     channelHandle: handle,
     postUrl: `https://t.me/${handle}/${item.postId || '2140'}`,
     author: `کانال رسمی (@${handle})`,
+    isPinned: true,
   }));
 
-  const finalAnnouncements = [...pinnedManualItems, ...hydratedFallback];
+  const finalAnnouncements = ensureContinuousPinnedAnnouncements([
+    ...pinnedManualItems,
+    ...hydratedFallback,
+  ]);
   saveStoredAnnouncements(finalAnnouncements);
 
   return {

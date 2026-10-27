@@ -7,7 +7,12 @@
 
 import React, { useState } from 'react';
 import { EventCategory, EventItem, EventSortOption, ThemeMode } from '../../types';
-import { EVENTS_DATA, filterAndSortEvents } from '../../utils/events';
+import {
+  EVENTS_DATA,
+  filterAndSortEvents,
+  normalizeEvent,
+  normalizeEventsList,
+} from '../../utils/events';
 import { PixelImage } from '../PixelImage';
 import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 import { playTick, playCoin } from '../../utils/soundEngine';
@@ -43,17 +48,20 @@ export const EventsTab: React.FC<EventsTabProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isSortModalOpen, setIsSortModalOpen] = useState(false);
 
-  const safeEvents = Array.isArray(events) && events.length > 0 ? events : EVENTS_DATA;
+  const safeEvents = normalizeEventsList(
+    Array.isArray(events) && events.length > 0 ? events : EVENTS_DATA
+  );
   const categoryFiltered = filterAndSortEvents(safeEvents, selectedCategory, sortOption);
 
-  const displayedEvents = categoryFiltered.filter((ev) => {
+  const displayedEvents = (categoryFiltered || []).filter((rawEv) => {
+    const ev = normalizeEvent(rawEv);
     const q = searchQuery.trim();
     if (!q) return true;
     return (
-      ev.title.includes(q) ||
-      ev.instructor.includes(q) ||
-      ev.location.includes(q) ||
-      ev.categoryLabel.includes(q)
+      (ev.title || '').includes(q) ||
+      (ev.instructor || '').includes(q) ||
+      (ev.location || '').includes(q) ||
+      (ev.categoryLabel || '').includes(q)
     );
   });
 
@@ -141,7 +149,7 @@ export const EventsTab: React.FC<EventsTabProps> = ({
 
         {/* 2. Category Filter Pills */}
         <div className="flex items-center gap-2 mt-3 overflow-x-auto pb-1">
-          {CATEGORIES.map((cat) => {
+          {(CATEGORIES || []).map((cat) => {
             const isActive = selectedCategory === cat.id;
             return (
               <button
@@ -176,75 +184,92 @@ export const EventsTab: React.FC<EventsTabProps> = ({
           />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {displayedEvents.map((event, index) => (
-              <div
-                key={event.id}
-                style={{ animationDelay: `${index * 60}ms` }}
-                className={`rounded-2xl p-3.5 border-2 border-b-[4px] transition-all duration-150 flex items-center gap-3.5 shadow-md ${
-                  isNight
-                    ? 'bg-[#1A2424] border-[#2C3E4C] border-b-[#141C1C] text-[#F6F1E7]'
-                    : 'bg-[#FFFFFF] border-[#C8BFA8] border-b-[#B5AA94] text-[#14201B]'
-                }`}
-              >
-                {/* Left Column: Pixel Art Thumbnail + Star Pill */}
-                <div className="w-[100px] h-[100px] rounded-xl overflow-hidden relative shrink-0 shadow-sm border border-white/10 bg-black/30 flex items-center justify-center">
-                  <PixelImage
-                    filename={event.imageFilename}
-                    alt={event.title}
-                    className="w-full h-full object-cover"
-                  />
+            {(displayedEvents || []).map((rawEvent, index) => {
+              const event = normalizeEvent(rawEvent, index);
+              const totalCap = Number(
+                event.totalCapacity || event.capacityTotal || event.capacity || 40
+              );
+              const remCap = Number(
+                event.remainingCapacity ??
+                  event.capacityRemaining ??
+                  event.capacity ??
+                  totalCap
+              );
+              const rating = Number(event.rating || 4.9).toFixed(1);
 
-                  {/* Star Rating Floating Pill on bottom of thumbnail */}
-                  <div
-                    className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-[#101622]/90 backdrop-blur-sm text-[#F6F1E7] text-[10px] font-extrabold flex items-center gap-1 border border-white/10"
-                    dir="ltr"
-                  >
-                    <svg viewBox="0 0 24 24" className="w-2.5 h-2.5 fill-[#D4AB58]">
-                      <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
-                    </svg>
-                    <span>{event.rating}</span>
-                  </div>
-                </div>
+              return (
+                <div
+                  key={event.id}
+                  onClick={() => {
+                    playTick();
+                    onSelectEventForCheckout(event);
+                  }}
+                  style={{ animationDelay: `${index * 60}ms` }}
+                  className={`rounded-2xl p-3.5 border-2 border-b-[4px] transition-all duration-150 flex items-center gap-3.5 shadow-md cursor-pointer ${
+                    isNight
+                      ? 'bg-[#1A2424] border-[#2C3E4C] border-b-[#141C1C] text-[#F6F1E7]'
+                      : 'bg-[#FFFFFF] border-[#C8BFA8] border-b-[#B5AA94] text-[#14201B]'
+                  }`}
+                >
+                  {/* Left Column: Pixel Art Thumbnail + Star Pill */}
+                  <div className="w-[100px] h-[100px] rounded-xl overflow-hidden relative shrink-0 shadow-sm border border-white/10 bg-black/30 flex items-center justify-center">
+                    <PixelImage
+                      filename={event.imageFilename || event.image || '12_event_python.png'}
+                      alt={event.title}
+                      className="w-full h-full object-cover"
+                    />
 
-                {/* Right Column: Typography + 3D Register Pill */}
-                <div className="flex-1 flex flex-col justify-between min-h-[96px] min-w-0">
-                  <div>
-                    <h3
-                      className={`text-sm font-extrabold leading-snug tracking-tight mb-1 ${
-                        isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'
-                      }`}
-                    >
-                      {event.title}
-                    </h3>
+                    {/* Star Rating Floating Pill on bottom of thumbnail */}
                     <div
-                      className={`text-[11px] font-bold space-y-0.5 ${
-                        isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
-                      }`}
+                      className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-[#101622]/90 backdrop-blur-sm text-[#F6F1E7] text-[10px] font-extrabold flex items-center gap-1 border border-white/10"
+                      dir="ltr"
                     >
-                      <div>{event.date}</div>
-                      <div>ظرفیت: {event.capacityRemaining} نفر</div>
+                      <span className="text-[#D4AB58]">{rating} ★</span>
                     </div>
                   </div>
 
-                  {/* 3D Pushable Register Button */}
-                  <div className="flex justify-end pt-1">
-                    <button
-                      onClick={() => {
-                        playTick();
-                        onSelectEventForCheckout(event);
-                      }}
-                      className={`rounded-full py-1 px-5 text-xs font-black transition-all duration-75 cursor-pointer border-b-[3px] active:translate-y-[2px] active:border-b-[1px] shadow-sm ${
-                        isNight
-                          ? 'bg-[#7FB69E] text-[#101622] hover:bg-[#8EC2AB] border-[#4F7CAC]'
-                          : 'bg-[#354B40] text-[#F6F1E7] hover:bg-[#3E584B] border-[#1F2E27]'
-                      }`}
-                    >
-                      ثبت نام
-                    </button>
+                  {/* Right Column: Typography + 3D Register Pill */}
+                  <div className="flex-1 flex flex-col justify-between min-h-[96px] min-w-0">
+                    <div>
+                      <h3
+                        className={`text-sm font-extrabold leading-snug tracking-tight mb-1 ${
+                          isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'
+                        }`}
+                      >
+                        {event.title}
+                      </h3>
+                      <div
+                        className={`text-[11px] font-bold space-y-0.5 ${
+                          isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                        }`}
+                      >
+                        <div>{event.date}</div>
+                        <div>ظرفیت: {remCap} نفر</div>
+                      </div>
+                    </div>
+
+                    {/* 3D Pushable Register Button */}
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playTick();
+                          onSelectEventForCheckout(event);
+                        }}
+                        className={`rounded-full py-1 px-5 text-xs font-black transition-all duration-75 cursor-pointer border-b-[3px] active:translate-y-[2px] active:border-b-[1px] shadow-sm ${
+                          isNight
+                            ? 'bg-[#7FB69E] text-[#101622] hover:bg-[#8EC2AB] border-[#4F7CAC]'
+                            : 'bg-[#354B40] text-[#F6F1E7] hover:bg-[#3E584B] border-[#1F2E27]'
+                        }`}
+                      >
+                        ثبت نام
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

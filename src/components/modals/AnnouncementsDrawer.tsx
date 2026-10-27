@@ -21,6 +21,7 @@ import {
   buildTelegramChannelUrl,
   DEFAULT_CHANNEL_URL,
   DEFAULT_ISEFUM_ANNOUNCEMENTS,
+  ensureContinuousPinnedAnnouncements,
   normalizeTelegramChannelHandle,
 } from '../../utils/channelSync';
 import { X } from 'lucide-react';
@@ -74,10 +75,7 @@ export const AnnouncementsDrawer: React.FC<AnnouncementsDrawerProps> = ({
         : DEFAULT_ABOUT_CONFIG.committees,
   };
 
-  const items =
-    Array.isArray(propAnnouncements) && propAnnouncements.length > 0
-      ? propAnnouncements
-      : DEFAULT_ISEFUM_ANNOUNCEMENTS;
+  const items = ensureContinuousPinnedAnnouncements(propAnnouncements || []);
 
   const cleanHandle = normalizeTelegramChannelHandle(channelUrl);
   const fullChannelUrl = buildTelegramChannelUrl(cleanHandle);

@@ -113,13 +113,27 @@ export interface EventItem {
   location: string;
   capacityRemaining: number;
   capacityTotal: number;
+  remainingCapacity?: number;
+  totalCapacity?: number;
+  capacity?: number;
   rating: number;
   ratingCount: number;
   imageFilename: string;
+  image?: string;
   basePrice: number; // In Tomans (0 for free)
+  price?: number;
   rewardPoints: number;
+  points?: number;
   instructor: string;
+  description?: string;
   syllabus: string[];
+  tags?: string[];
+  prerequisites?: string[];
+  allowPointsDiscount?: boolean;
+  discountPointsStep?: number;
+  discountTomansPerStep?: number;
+  discountMinPoints?: number;
+  discountMaxPoints?: number;
 }
 
 export interface TicketRecord {
@@ -225,6 +239,7 @@ export interface BootstrapResponse {
   profile?: UserProfile;
   students?: AdminStudentDossier[];
   events?: EventItem[];
+  professors?: Professor[];
   lootboxConfig?: LootboxConfig;
   announcements?: ChannelAnnouncement[];
   disputes?: StudentIdDisputeTicket[];
@@ -393,6 +408,8 @@ export interface AdminAuditLogItem {
 export interface DiscountRuleConfig {
   pointsStep: number;
   discountTomansPerStep: number;
+  minPoints?: number;
+  maxPoints?: number;
 }
 
 export interface FeatureFlags {

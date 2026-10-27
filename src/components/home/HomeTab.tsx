@@ -6,7 +6,7 @@
  * Live @Isefum Telegram Channel Announcements, & 5-Tap Stealth Admin Gesture
  */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AdminStudentDossier,
   ChannelAnnouncement,
@@ -23,9 +23,11 @@ import { playTick, playCoin } from '../../utils/soundEngine';
 import {
   DEFAULT_CHANNEL_URL,
   DEFAULT_ISEFUM_ANNOUNCEMENTS,
+  ensureContinuousPinnedAnnouncements,
   normalizeTelegramChannelHandle,
 } from '../../utils/channelSync';
 import { calculateLevelFromScore } from '../../utils/gamification';
+import { normalizeEvent } from '../../utils/events';
 
 interface HomeTabProps {
   user: UserProfile;
@@ -94,20 +96,39 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
   const dynamicLevel = calculateLevelFromScore(user.score);
 
-  const latestAnnouncements =
+  const pinnedChannelPosts = ensureContinuousPinnedAnnouncements(
     Array.isArray(propAnnouncements) && propAnnouncements.length > 0
-      ? propAnnouncements.slice(0, 2)
-      : DEFAULT_ISEFUM_ANNOUNCEMENTS.slice(0, 2);
+      ? propAnnouncements
+      : DEFAULT_ISEFUM_ANNOUNCEMENTS
+  );
+
+  const latestAnnouncements = pinnedChannelPosts.slice(0, 4);
+  const [activePinnedIdx, setActivePinnedIdx] = useState<number>(0);
+
+  useEffect(() => {
+    if (pinnedChannelPosts.length <= 1) return;
+    const timer = setInterval(() => {
+      setActivePinnedIdx((prev) => (prev + 1) % pinnedChannelPosts.length);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [pinnedChannelPosts.length]);
+
+  const currentPinnedBannerPost =
+    pinnedChannelPosts[activePinnedIdx % Math.max(1, pinnedChannelPosts.length)] ||
+    pinnedChannelPosts[0];
 
   const cleanChannelHandle = normalizeTelegramChannelHandle(channelUrl);
 
-  const activeFeaturedId = featuredEvent?.id || 'ev-project-mgmt';
-  const activeFeaturedTitle = featuredEvent?.title || 'کارگاه مدیریت پروژه';
-  const activeFeaturedDate = featuredEvent?.date || '۲۵ آبان ۱۴۰۴';
-  const activeFeaturedCap =
-    typeof featuredEvent?.capacityRemaining === 'number'
-      ? featuredEvent.capacityRemaining
-      : 45;
+  const normalizedFeatured = featuredEvent ? normalizeEvent(featuredEvent) : null;
+  const activeFeaturedId = normalizedFeatured?.id || 'ev-project-mgmt';
+  const activeFeaturedTitle = normalizedFeatured?.title || 'کارگاه مدیریت پروژه';
+  const activeFeaturedDate = normalizedFeatured?.date || '۲۵ آبان ۱۴۰۴';
+  const activeFeaturedCap = Number(
+    normalizedFeatured?.remainingCapacity ??
+      normalizedFeatured?.capacityRemaining ??
+      normalizedFeatured?.capacity ??
+      45
+  );
 
   return (
     <div className="flex flex-col pb-24 lg:pb-10 select-none w-full">
@@ -593,16 +614,16 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
           </div>
 
-          {/* 5. Recent Announcements Section (Synced with @Isefum) */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
+          {/* 5. Recent Announcements Section (Continuously Pinned with @Isefum) */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3
                   className={`text-sm font-black tracking-tight ${
                     isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'
                   }`}
                 >
-                  اطلاعیه‌های اخیر
+                  📌 پین پیوسته کانال تلگرام
                 </h3>
                 <a
                   href={`https://t.me/${cleanChannelHandle}`}
@@ -634,10 +655,61 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                     isNight ? 'text-[#D4AB58]' : 'text-[#354B40]'
                   }`}
                 >
-                  آرشیو ←
+                  آرشیو کامل ({pinnedChannelPosts.length.toLocaleString('fa-IR')}) ←
                 </button>
               </div>
             </div>
+
+            {/* Live Rotating Pinned Channel Post Bar */}
+            {currentPinnedBannerPost && (
+              <div
+                onClick={() => {
+                  playTick();
+                  onOpenAnnouncementsDrawer();
+                }}
+                className={`p-3 rounded-2xl border-2 border-[#D4AB58]/60 cursor-pointer transition-all flex items-center justify-between gap-3 ${
+                  isNight
+                    ? 'bg-gradient-to-r from-[#1A2636] to-[#162230] text-[#F6F1E7]'
+                    : 'bg-gradient-to-r from-[#FFF9EB] to-[#F3EBD8] text-[#14201B]'
+                }`}
+              >
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <span className="px-2 py-0.5 rounded-lg bg-amber-500/25 text-amber-400 border border-amber-500/40 text-[10px] font-black shrink-0 flex items-center gap-1">
+                    📌 پین پیوسته
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-black truncate">
+                      {currentPinnedBannerPost.title}
+                    </div>
+                    <div
+                      className={`text-[10px] font-bold truncate mt-0.5 ${
+                        isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                      }`}
+                    >
+                      {currentPinnedBannerPost.snippet}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  {pinnedChannelPosts.slice(0, 5).map((p, idx) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        playTick();
+                        setActivePinnedIdx(idx);
+                      }}
+                      className={`h-2 rounded-full transition-all cursor-pointer ${
+                        idx === activePinnedIdx % Math.max(1, pinnedChannelPosts.length)
+                          ? 'w-4 bg-[#D4AB58]'
+                          : 'w-2 bg-current/25'
+                      }`}
+                      aria-label={`پست پین‌شده ${idx + 1}`}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {latestAnnouncements.map((ann, idx) => (
@@ -665,6 +737,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                     />
                   </div>
                   <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 shrink-0">
+                        📌 پین‌شده
+                      </span>
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#D4AB58]/20 text-[#D4AB58] shrink-0">
+                        {ann.tag}
+                      </span>
+                    </div>
                     <h4
                       className={`text-xs font-extrabold truncate ${
                         isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'

@@ -5,13 +5,21 @@
  * and 100% Real Scannable ISO/IEC 18004 QR Ticket Generator
  */
 
-import React, { useRef, useState } from 'react';
-import { AdminReceiptItem, EventItem, ThemeMode, TicketRecord, UserProfile } from '../../types';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AdminReceiptItem,
+  DiscountRuleConfig,
+  EventItem,
+  ThemeMode,
+  TicketRecord,
+  UserProfile,
+} from '../../types';
 import {
   calculateFinalPayable,
-  calculateMaxRedeemablePoints,
   formatToman,
   generateTicketPayload,
+  normalizeEvent,
+  resolveEventDiscountRule,
 } from '../../utils/events';
 import { PixelImage, compressImageFileToDataUrl } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
@@ -42,19 +50,27 @@ interface CheckoutDrawerProps {
   onClose: () => void;
   user: UserProfile;
   themeMode: ThemeMode;
-  discountRule?: { pointsUnit: number; discountToman: number };
+  discountRule?: Partial<DiscountRuleConfig> & {
+    pointsUnit?: number;
+    discountToman?: number;
+  };
   onCompleteRegistration: (ticket: TicketRecord, pointsDeducted: number, pointsEarned: number) => void;
   onSubmitReceipt?: (receipt: AdminReceiptItem) => void;
   onRefreshFromServer?: () => Promise<void> | void;
 }
 
 export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
-  event,
+  event: rawEvent,
   isOpen,
   onClose,
   user,
   themeMode,
-  discountRule = { pointsUnit: 10, discountToman: 50000 },
+  discountRule = {
+    pointsStep: 20,
+    discountTomansPerStep: 10000,
+    minPoints: 20,
+    maxPoints: 100,
+  },
   onCompleteRegistration,
   onSubmitReceipt,
   onRefreshFromServer,
@@ -79,20 +95,45 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   const [telegramPushSent, setTelegramPushSent] = useState(false);
   const [isSendingTelegram, setIsSendingTelegram] = useState(false);
 
-  if (!isOpen || !event) return null;
+  useEffect(() => {
+    setPointsToRedeem(0);
+    setStep('checkout');
+  }, [rawEvent?.id, isOpen]);
 
-  const maxPoints = calculateMaxRedeemablePoints(event.basePrice, user.score);
-  const { discountAmount, finalPrice, pointsUsed } = calculateFinalPayable(
+  if (!isOpen || !rawEvent) return null;
+
+  const event = normalizeEvent(rawEvent);
+  const effectiveRule = resolveEventDiscountRule(event, discountRule);
+
+  const { discountAmount, finalPrice, pointsUsed, discountCode } = calculateFinalPayable(
     event.basePrice,
-    pointsToRedeem
+    pointsToRedeem,
+    discountRule,
+    event
   );
 
-  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseInt(e.target.value, 10);
-    setPointsToRedeem(val);
+  const applySelectedPoints = (rawVal: number) => {
+    const val = Number(rawVal) || 0;
+    let snapped = 0;
+    if (val > 0) {
+      if (val < effectiveRule.minPoints) {
+        snapped = effectiveRule.minPoints;
+      } else {
+        snapped = Math.min(
+          effectiveRule.maxPoints,
+          Math.floor(val / effectiveRule.pointsStep) * effectiveRule.pointsStep
+        );
+      }
+    }
+    setPointsToRedeem(snapped);
     playCoin();
     setIsDiamondShaking(true);
     setTimeout(() => setIsDiamondShaking(false), 300);
+  };
+
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseInt(e.target.value, 10);
+    applySelectedPoints(val);
   };
 
   const handleCopyCard = () => {
@@ -166,6 +207,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
         qrPayload,
         paidAmount: finalPrice,
         discountPointsUsed: pointsUsed,
+        voucherCodeUsed: discountCode || undefined,
         issuedAt: new Date().toLocaleDateString('fa-IR'),
         sentToTelegram: true,
         checkedIn: false,
@@ -208,7 +250,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
       setGeneratedTicket(ticket);
       setStep('success');
-      onCompleteRegistration(ticket, pointsUsed, event.rewardPoints);
+      onCompleteRegistration(ticket, Math.min(user.score, pointsUsed), event.rewardPoints);
 
       // Push the QR ticket once to the live Cloudflare Worker Telegram Bot
       const sendRes = await sendQrTicketToTelegramChat(ticket, user);
@@ -369,38 +411,83 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
               <div className="pt-1.5 border-t border-current/10">
                 <span className="opacity-70 text-[10px] block mb-1">سرفصل‌های کلیدی دوره:</span>
                 <ul className="text-[11px] opacity-85 space-y-0.5 list-disc pr-3">
-                  {event.syllabus.map((s, idx) => (
+                  {(event?.syllabus || []).map((s, idx) => (
                     <li key={idx}>{s}</li>
                   ))}
                 </ul>
               </div>
             </div>
 
-            {/* Point Discount Slider */}
-            {event.basePrice > 0 && maxPoints > 0 && (
-              <div className="p-4 rounded-2xl bg-gradient-to-r from-[#1A2624] to-[#162A35] border border-[#234D5A] text-[#F6F1E7] space-y-3">
-                <div className="flex items-center justify-between text-xs font-bold">
-                  <span className="text-[#D4AB58]">استفاده از امتیاز برای تخفیف:</span>
-                  <span className="text-emerald-400">
-                    {pointsToRedeem} امتیاز = {discountAmount.toLocaleString('fa-IR')} تومان تخفیف
+            {/* Point Discount Slider (Controlled per-workshop & globally by Admin) */}
+            {effectiveRule.enabled && (
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-[#1A2624] to-[#162A35] border-2 border-[#D4AB58]/60 text-[#F6F1E7] space-y-3 shadow-lg">
+                <div className="flex items-center justify-between gap-2 flex-wrap text-xs font-black">
+                  <span className="text-[#D4AB58] flex items-center gap-1.5">
+                    <span>💎 نوار تبدیل امتیاز به کد تخفیف کارگاه:</span>
+                  </span>
+                  <span className="px-2.5 py-1 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-black">
+                    {pointsUsed > 0
+                      ? `${pointsUsed.toLocaleString('fa-IR')} امتیاز = ${discountAmount.toLocaleString('fa-IR')} تومان تخفیف`
+                      : 'نوار را بکشید تا تخفیف اعمال شود'}
                   </span>
                 </div>
 
-                <input
-                  type="range"
-                  min={0}
-                  max={maxPoints}
-                  step={10}
-                  value={pointsToRedeem}
-                  onChange={handleSliderChange}
-                  className="w-full accent-[#D4AB58] cursor-pointer"
-                />
+                {discountCode && (
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#D4AB58]/20 border border-[#D4AB58]/50 text-[11px] font-black">
+                    <span className="text-[#FCE7A4]">🎟 کد تخفیف خودکار اعمال‌شده روی کارگاه:</span>
+                    <span className="font-mono text-[#D4AB58] tracking-wider" dir="ltr">
+                      {discountCode}
+                    </span>
+                  </div>
+                )}
 
-                <div className="flex items-center justify-between text-[10px] text-[#A3C1AD]">
-                  <span>امتیاز در دسترس شما: {user.score} امتیاز</span>
+                <div className="space-y-1.5">
+                  <input
+                    type="range"
+                    min={0}
+                    max={effectiveRule.maxPoints}
+                    step={effectiveRule.pointsStep}
+                    value={pointsToRedeem}
+                    onChange={handleSliderChange}
+                    aria-label="نوار تبدیل امتیاز به تخفیف"
+                    className="w-full h-2.5 rounded-lg accent-[#D4AB58] cursor-pointer"
+                  />
+
+                  {/* Interactive Multiplier Step Pills */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1">
+                    {effectiveRule.steps.map((st) => {
+                      const isActive = pointsUsed === st.points;
+                      return (
+                        <button
+                          key={st.points}
+                          type="button"
+                          onClick={() => applySelectedPoints(st.points)}
+                          className={`px-2.5 py-1 rounded-xl text-[10px] font-black shrink-0 transition-all cursor-pointer border ${
+                            isActive
+                              ? 'bg-[#D4AB58] text-[#101622] border-[#FCE7A4] shadow scale-105'
+                              : 'bg-black/30 text-[#E2ECE7] border-white/15 hover:border-[#D4AB58]/60'
+                          }`}
+                        >
+                          {st.points === 0
+                            ? 'بدون تخفیف (۰)'
+                            : `${st.points.toLocaleString('fa-IR')} امتیاز (${(
+                                st.discountTomans / 1000
+                              ).toLocaleString('fa-IR')} هزار ت)`}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-[#A3C1AD] pt-1 border-t border-white/10 font-bold">
                   <span>
-                    (هر {discountRule.pointsUnit} امتیاز ={' '}
-                    {discountRule.discountToman.toLocaleString('fa-IR')} تومان تخفیف)
+                    ضریب: هر {effectiveRule.pointsStep.toLocaleString('fa-IR')} امتیاز ={' '}
+                    {effectiveRule.discountTomansPerStep.toLocaleString('fa-IR')} تومان تخفیف
+                  </span>
+                  <span>
+                    کف: {effectiveRule.minPoints.toLocaleString('fa-IR')} • سقف:{' '}
+                    {effectiveRule.maxPoints.toLocaleString('fa-IR')} امتیاز (موجودی شما:{' '}
+                    {user.score.toLocaleString('fa-IR')} 💎)
                   </span>
                 </div>
               </div>
@@ -419,7 +506,9 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
               {discountAmount > 0 && (
                 <div className="flex items-center justify-between text-emerald-500 font-bold">
-                  <span>تخفیف کسر شده از امتیازات:</span>
+                  <span>
+                    تخفیف امتیازی ({pointsUsed.toLocaleString('fa-IR')} الماس • کد {discountCode}):
+                  </span>
                   <span>- {discountAmount.toLocaleString('fa-IR')} تومان</span>
                 </div>
               )}

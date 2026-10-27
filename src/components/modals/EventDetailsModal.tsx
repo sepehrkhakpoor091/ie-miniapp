@@ -5,7 +5,8 @@
  */
 
 import React, { useRef, useState } from 'react';
-import { ThemeMode } from '../../types';
+import { EventItem, ThemeMode } from '../../types';
+import { EVENTS_DATA, normalizeEvent } from '../../utils/events';
 import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
 import { playFanfare, playTick } from '../../utils/soundEngine';
@@ -23,6 +24,7 @@ import {
 
 interface EventDetailsModalProps {
   eventId: string | null;
+  event?: EventItem | null;
   isOpen: boolean;
   onClose: () => void;
   themeMode: ThemeMode;
@@ -31,6 +33,7 @@ interface EventDetailsModalProps {
 
 export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
   eventId,
+  event: propEvent,
   isOpen,
   onClose,
   themeMode,
@@ -41,7 +44,17 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const inFlightRequestRef = useRef<boolean>(false);
 
-  if (!isOpen || !eventId) return null;
+  if (!isOpen || (!eventId && !propEvent)) return null;
+
+  const matchedRaw =
+    propEvent ||
+    (EVENTS_DATA || []).find((e) => e.id === eventId) ||
+    EVENTS_DATA[0];
+  const event = normalizeEvent(matchedRaw);
+  const totalCap = Number(event.totalCapacity || event.capacityTotal || event.capacity || 40);
+  const remCap = Number(
+    event.remainingCapacity ?? event.capacityRemaining ?? event.capacity ?? totalCap
+  );
 
   const handleRegister = () => {
     if (inFlightRequestRef.current || isSubmitting || isRegistered) return;
@@ -66,8 +79,8 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
         {/* Banner with Close button */}
         <div className="relative h-44 sm:h-52 w-full flex-shrink-0">
           <PixelImage
-            filename="13_ev_featured.png"
-            alt="کارگاه مدیریت پروژه"
+            filename={event.imageFilename || event.image || '13_ev_featured.png'}
+            alt={event.title}
             className="w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30" />
@@ -83,10 +96,10 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
           </button>
           <div className="absolute bottom-3 right-4 left-4">
             <span className="px-2.5 py-0.5 rounded-full bg-[#E77F6E] text-[#1D2A24] font-black text-[10px]">
-              رویداد ویژه ماه
+              {event.categoryLabel || 'رویداد ویژه ماه'}
             </span>
             <h3 className="text-lg font-bold text-white mt-1 drop-shadow">
-              کارگاه مدیریت و کنترل پروژه کاربردی
+              {event.title}
             </h3>
           </div>
         </div>
@@ -99,38 +112,40 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
               <Calendar className="w-4 h-4 text-[#D4AB58]" />
               <div>
                 <span className="opacity-60 block text-[10px]">تاریخ برگزاری:</span>
-                <span className="font-bold">۲۵ آبان ۱۴۰۴</span>
+                <span className="font-bold">{event.date}</span>
               </div>
             </div>
             <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
               <Clock className="w-4 h-4 text-[#7FB69E]" />
               <div>
                 <span className="opacity-60 block text-[10px]">ساعت:</span>
-                <span className="font-bold">۱۴:۰۰ الی ۱۸:۰۰</span>
+                <span className="font-bold">{event.time}</span>
               </div>
             </div>
             <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
               <MapPin className="w-4 h-4 text-[#E77F6E]" />
               <div>
                 <span className="opacity-60 block text-[10px]">مکان:</span>
-                <span className="font-bold">آمفی‌تئاتر دانشکده صنایع</span>
+                <span className="font-bold">{event.location}</span>
               </div>
             </div>
             <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
               <Users className="w-4 h-4 text-[#91B5BE]" />
               <div>
                 <span className="opacity-60 block text-[10px]">ظرفیت باقیمانده:</span>
-                <span className="font-bold text-emerald-400">۴۵ از ۱۰۰ نفر</span>
+                <span className="font-bold text-emerald-400">ظرفیت: {remCap} نفر</span>
               </div>
             </div>
           </div>
 
-          {/* Description */}
+          {/* Syllabus & Description */}
           <div className="space-y-1.5">
-            <h4 className="font-bold text-sm text-[#D4AB58]">درباره کارگاه:</h4>
-            <p className="opacity-80 leading-relaxed">
-              این کارگاه با هدف آشنایی عمیق دانشجویان مهندسی صنایع با مفاهیم شکست ساختار کار (WBS)، روش مسیر بحرانی (CPM)، تحلیل ارزش کسب‌شده (EVM) و پیاده‌سازی کاربردی در نرم‌افزارهای MSP و پریماورا برگزار می‌گردد.
-            </p>
+            <h4 className="font-bold text-sm text-[#D4AB58]">سرفصل‌ها و درباره کارگاه:</h4>
+            <ul className="space-y-1 text-[11px] opacity-90 pr-3 list-disc">
+              {(event?.syllabus || []).map((item, idx) => (
+                <li key={idx}>{item}</li>
+              ))}
+            </ul>
           </div>
 
           {/* Perks */}
@@ -141,7 +156,7 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
             </h4>
             <ul className="space-y-1 text-[11px] opacity-90 pr-3 list-disc">
               <li>اعطای گواهینامه دوزبانه معتبر انجمن علمی با هولوگرام رسمی</li>
-              <li>دریافت ۵۰ امتیاز مستقیم در لیدربورد مینی‌اپلیکیشن</li>
+              <li>دریافت +{event.rewardPoints} امتیاز مستقیم در لیدربورد مینی‌اپلیکیشن</li>
               <li>فایل ویدیوی ضبط شده و اسلایدهای مدرس دوره</li>
             </ul>
           </div>

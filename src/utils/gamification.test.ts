@@ -21,6 +21,14 @@ import {
   findCheckedInTicketInLedger,
   removeTicketFromCheckedInLedger,
 } from './security';
+import {
+  DEFAULT_EVENT_SYLLABUS,
+  normalizeEvent,
+  resolveEventPixelImage,
+  resolveEventDiscountRule,
+  calculateFinalPayable,
+} from './events';
+import { ensureContinuousPinnedAnnouncements } from './channelSync';
 import { AdminStudentDossier, TicketRecord, UserProfile } from '../types';
 
 const MOCK_USER: UserProfile = {
@@ -240,6 +248,117 @@ test('verifyTicketSignature supports colon and pipe QR formats', () => {
   removeTicketFromCheckedInLedger('TK-777888', signedColon);
   assert.equal(findCheckedInTicketInLedger('TK-777888', signedColon), null);
 });
+
+test('normalizeEvent guarantees syllabus array, numeric capacity, 4.9 rating, and pixel image', () => {
+  // 1. Event from Telegram Bot with undefined syllabus and multiline description
+  const botEvWithDesc = normalizeEvent({
+    id: 'bot-ev-1',
+    title: 'کارگاه مدیریت پروژه با MSP',
+    totalCapacity: 50,
+    remainingCapacity: 32,
+    description: 'ساختار شکست کار WBS\nزمان‌بندی مسیر بحرانی CPM',
+  });
+  assert.equal(Array.isArray(botEvWithDesc.syllabus), true);
+  assert.deepEqual(botEvWithDesc.syllabus, [
+    'ساختار شکست کار WBS',
+    'زمان‌بندی مسیر بحرانی CPM',
+  ]);
+  assert.equal(botEvWithDesc.capacityTotal, 50);
+  assert.equal(botEvWithDesc.capacityRemaining, 32);
+  assert.equal(botEvWithDesc.rating, 4.9);
+  assert.equal(botEvWithDesc.imageFilename, '13_event_factory.png');
+
+  // 2. Completely bare event with no syllabus and no description -> falls back to DEFAULT_EVENT_SYLLABUS
+  const bareEv = normalizeEvent({
+    id: 'bot-ev-2',
+    title: 'کارگاه برنامه‌نویسی پایتون',
+  });
+  assert.equal(Array.isArray(bareEv.syllabus), true);
+  assert.deepEqual(bareEv.syllabus, DEFAULT_EVENT_SYLLABUS);
+  assert.equal(bareEv.capacityTotal, 40);
+  assert.equal(bareEv.capacityRemaining, 40);
+  assert.equal(bareEv.rating, 4.9);
+  assert.equal(bareEv.imageFilename, '12_event_python.png');
+
+  // 3. Automatic pixel image assignment by title/category
+  assert.equal(
+    resolveEventPixelImage({ title: 'مسابقه هوش تجاری PowerBI' }),
+    '14_event_hackathon.png'
+  );
+  assert.equal(
+    resolveEventPixelImage({ title: 'سمینار تخصصی مهندسی صنایع', category: 'seminar' }),
+    '15_event_seminar.png'
+  );
+});
+
+test('workshop points-to-discount slider respects floor, ceiling, step multipliers, and per-workshop toggle', () => {
+  const workshop = normalizeEvent({
+    id: 'ev-custom-discount',
+    title: 'کارگاه تخصصی پایتون',
+    basePrice: 150000,
+    allowPointsDiscount: true,
+    discountPointsStep: 20,
+    discountTomansPerStep: 10000,
+    discountMinPoints: 20,
+    discountMaxPoints: 80,
+  });
+
+  const rule = resolveEventDiscountRule(workshop);
+  assert.equal(rule.enabled, true);
+  assert.equal(rule.pointsStep, 20);
+  assert.equal(rule.discountTomansPerStep, 10000);
+  assert.equal(rule.minPoints, 20);
+  assert.equal(rule.maxPoints, 80);
+  assert.equal(rule.steps.length, 5); // 0, 20, 40, 60, 80
+
+  // 20 points -> 10,000 Tomans discount
+  const calc20 = calculateFinalPayable(150000, 20, undefined, workshop);
+  assert.equal(calc20.pointsUsed, 20);
+  assert.equal(calc20.discountAmount, 10000);
+  assert.equal(calc20.finalPrice, 140000);
+  assert.equal(calc20.discountCode, 'OFF-IE-20P');
+
+  // 40 points -> 20,000 Tomans discount
+  const calc40 = calculateFinalPayable(150000, 40, undefined, workshop);
+  assert.equal(calc40.pointsUsed, 40);
+  assert.equal(calc40.discountAmount, 20000);
+  assert.equal(calc40.finalPrice, 130000);
+  assert.equal(calc40.discountCode, 'OFF-IE-40P');
+
+  // Above ceiling (100 points) -> clamped to maxPoints (80 points = 40,000 Tomans)
+  const calc100 = calculateFinalPayable(150000, 100, undefined, workshop);
+  assert.equal(calc100.pointsUsed, 80);
+  assert.equal(calc100.discountAmount, 40000);
+  assert.equal(calc100.finalPrice, 110000);
+
+  // Disabled per-workshop toggle -> 0 discount
+  const disabledWorkshop = normalizeEvent({
+    ...workshop,
+    allowPointsDiscount: false,
+  });
+  const calcDisabled = calculateFinalPayable(150000, 40, undefined, disabledWorkshop);
+  assert.equal(calcDisabled.pointsUsed, 0);
+  assert.equal(calcDisabled.discountAmount, 0);
+  assert.equal(calcDisabled.finalPrice, 150000);
+
+  // Continuous Telegram channel pinning guarantees all posts have isPinned = true
+  const pinnedList = ensureContinuousPinnedAnnouncements([
+    {
+      id: 'post-1',
+      title: 'اطلاعیه جدید',
+      snippet: 'خلاصه',
+      content: 'متن کامل',
+      timestamp: '۱۴۰۴/۰۸/۲۰',
+      tag: 'اطلاعیه',
+      author: 'کانال رسمی (@Isefum)',
+      views: 100,
+      isPinned: false,
+    },
+  ]);
+  assert.equal(pinnedList.every((p) => p.isPinned === true), true);
+});
+
+
 
 
 

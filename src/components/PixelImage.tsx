@@ -33,6 +33,10 @@ const FILENAME_ALIAS_MAP: Record<string, string> = {
   '22_badge_helmet.png': '22_badge_book.png',
   '23_badge_idea.png': '23_badge_diamond.png',
   '24_badge_trophy.png': '24_badge_crown.png',
+  '12_event_python.png': '14_ev_workshop.png',
+  '13_event_factory.png': '15_ev_visit.png',
+  '14_event_hackathon.png': '17_ev_competition.png',
+  '15_event_seminar.png': '16_ev_seminar.png',
   '14_ev_python.png': '14_ev_workshop.png',
   '15_ev_factory.png': '15_ev_visit.png',
   '10_char_guard.png': '08_char_admin.png',
@@ -333,10 +337,82 @@ const PixelArtVectorFallback: React.FC<{ filename: string; label: string }> = ({
     );
   }
 
+  if (
+    filename.includes('14_ev_workshop') ||
+    filename.includes('18_ev_software') ||
+    filename.includes('python')
+  ) {
+    return (
+      <svg viewBox="0 0 80 80" className="w-full h-full object-cover pixelated" preserveAspectRatio="xMidYMid slice">
+        <rect width="80" height="80" fill="#142334" />
+        <rect x="6" y="10" width="68" height="48" rx="4" fill="#1E334A" stroke="#38BDF8" strokeWidth="2.5" />
+        <rect x="12" y="16" width="56" height="36" fill="#0F172A" />
+        <rect x="18" y="22" width="16" height="4" fill="#38BDF8" />
+        <rect x="18" y="30" width="28" height="4" fill="#FACC15" />
+        <rect x="18" y="38" width="22" height="4" fill="#4ADE80" />
+        <rect x="50" y="24" width="12" height="20" rx="2" fill="#D4AB58" />
+        <rect x="28" y="58" width="24" height="6" fill="#354B40" />
+        <rect x="18" y="64" width="44" height="6" rx="2" fill="#7FB69E" />
+      </svg>
+    );
+  }
+
+  if (
+    filename.includes('15_ev_visit') ||
+    filename.includes('factory')
+  ) {
+    return (
+      <svg viewBox="0 0 80 80" className="w-full h-full object-cover pixelated" preserveAspectRatio="xMidYMid slice">
+        <rect width="80" height="80" fill="#1A2C2A" />
+        <rect x="14" y="18" width="10" height="24" fill="#64748B" />
+        <rect x="30" y="14" width="10" height="28" fill="#64748B" />
+        <circle cx="19" cy="11" r="5" fill="#CBD5E1" opacity="0.8" />
+        <circle cx="35" cy="8" r="6" fill="#CBD5E1" opacity="0.8" />
+        <polygon points="8,42 26,30 26,42 44,30 44,42 72,42 72,70 8,70" fill="#354B40" stroke="#D4AB58" strokeWidth="2" />
+        <rect x="16" y="48" width="10" height="10" fill="#FCE7A4" />
+        <rect x="34" y="48" width="10" height="10" fill="#FCE7A4" />
+        <rect x="52" y="48" width="12" height="22" fill="#D4AB58" />
+      </svg>
+    );
+  }
+
+  if (
+    filename.includes('17_ev_competition') ||
+    filename.includes('hackathon')
+  ) {
+    return (
+      <svg viewBox="0 0 80 80" className="w-full h-full object-cover pixelated" preserveAspectRatio="xMidYMid slice">
+        <rect width="80" height="80" fill="#231934" />
+        <rect x="24" y="16" width="32" height="26" rx="4" fill="#FACC15" stroke="#FEF08A" strokeWidth="2" />
+        <rect x="16" y="20" width="8" height="14" rx="2" fill="#D4AB58" />
+        <rect x="56" y="20" width="8" height="14" rx="2" fill="#D4AB58" />
+        <rect x="35" y="42" width="10" height="12" fill="#D4AB58" />
+        <rect x="22" y="54" width="36" height="10" rx="2" fill="#354B40" stroke="#D4AB58" strokeWidth="2" />
+      </svg>
+    );
+  }
+
+  if (filename.includes('16_ev_seminar') || filename.includes('seminar')) {
+    return (
+      <svg viewBox="0 0 80 80" className="w-full h-full object-cover pixelated" preserveAspectRatio="xMidYMid slice">
+        <rect width="80" height="80" fill="#1C2536" />
+        <rect x="12" y="14" width="56" height="32" rx="3" fill="#354B40" stroke="#D4AB58" strokeWidth="2" />
+        <rect x="20" y="22" width="24" height="5" fill="#FCE7A4" />
+        <rect x="20" y="31" width="38" height="4" fill="#7FB69E" />
+        <circle cx="40" cy="52" r="6" fill="#F5CBA7" />
+        <rect x="30" y="58" width="20" height="16" rx="2" fill="#8C5A32" stroke="#D4AB58" strokeWidth="1.5" />
+      </svg>
+    );
+  }
+
   return (
-    <svg viewBox="0 0 64 64" className="w-full h-full p-2 pixelated">
-      <rect x="8" y="8" width="48" height="48" rx="10" fill="#253247" stroke="#D4AB58" strokeWidth="3" />
-      <polygon points="32,14 37,25 49,26 40,34 43,46 32,40 21,46 24,34 15,26 27,25" fill="#D4AB58" />
+    <svg viewBox="0 0 80 80" className="w-full h-full object-cover pixelated" preserveAspectRatio="xMidYMid slice">
+      <rect width="80" height="80" fill="#162334" />
+      <rect x="10" y="14" width="60" height="44" rx="6" fill="#253247" stroke="#D4AB58" strokeWidth="2.5" />
+      <rect x="18" y="24" width="22" height="5" fill="#7FB69E" />
+      <rect x="18" y="34" width="40" height="5" fill="#FCE7A4" />
+      <rect x="18" y="44" width="30" height="5" fill="#38BDF8" />
+      <rect x="24" y="62" width="32" height="8" rx="3" fill="#354B40" />
     </svg>
   );
 };

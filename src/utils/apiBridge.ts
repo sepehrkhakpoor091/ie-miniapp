@@ -11,12 +11,15 @@ import {
   AdminStudentDossier,
   BootstrapResponse,
   ChannelAnnouncement,
+  EventItem,
   LootboxConfig,
+  Professor,
   StudentIdDisputeTicket,
   SupportTicket,
   TicketRecord,
   UserProfile,
 } from '../types';
+import { normalizeEvent, normalizeEventsList } from './events';
 import {
   BOT_WORKER_BASE_URL as SECURITY_WORKER_BASE_URL,
   MASTER_ADMIN_TELEGRAM_ID,
@@ -443,7 +446,15 @@ export async function fetchMiniAppBootstrap(
       ),
       profile: json.profile,
       students: Array.isArray(json.students) ? json.students : undefined,
-      events: Array.isArray(json.events) ? json.events : undefined,
+      events:
+        Array.isArray(json.events) && json.events.length > 0
+          ? normalizeEventsList(json.events)
+          : undefined,
+      professors: Array.isArray(json.professors)
+        ? json.professors
+        : Array.isArray((json as unknown as Record<string, unknown>).profs)
+        ? ((json as unknown as Record<string, unknown>).profs as Professor[])
+        : undefined,
       lootboxConfig: json.lootboxConfig,
       announcements: Array.isArray(json.announcements) ? json.announcements : undefined,
       disputes: Array.isArray(json.disputes)
@@ -901,4 +912,57 @@ export async function toggleStudentTimersOnBot(
         : allowStudentTimers,
   };
 }
+
+/**
+ * 14. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-save-events
+ * Two-way sync of workshops & events created, edited, or deleted in Mini App AdminPanel
+ * directly to the Telegram Bot KV database (`events:list`).
+ */
+export async function saveEventsOnBot(
+  events: EventItem[]
+): Promise<{ ok: boolean; savedAt: string }> {
+  const savedAt = new Date().toISOString();
+  const normalizedEvents = (Array.isArray(events) ? events : []).map((ev, idx) =>
+    normalizeEvent(ev, idx)
+  );
+  const res = await postToMiniAppApi<{ ok: boolean; savedAt?: string }>(
+    '/api/miniapp/admin-save-events',
+    {
+      events: normalizedEvents,
+      eventsList: normalizedEvents,
+      adminId: MASTER_ADMIN_TELEGRAM_ID,
+      updatedAt: savedAt,
+    }
+  );
+  return {
+    ok: res.ok,
+    savedAt: res.data?.savedAt || savedAt,
+  };
+}
+
+/**
+ * 15. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-save-profs
+ * Two-way sync of professors created, edited, or deleted in Mini App AdminPanel
+ * directly to the Telegram Bot KV database.
+ */
+export async function saveProfessorsOnBot(
+  professors: Professor[]
+): Promise<{ ok: boolean; savedAt: string }> {
+  const savedAt = new Date().toISOString();
+  const safeProfs = Array.isArray(professors) ? professors : [];
+  const res = await postToMiniAppApi<{ ok: boolean; savedAt?: string }>(
+    '/api/miniapp/admin-save-profs',
+    {
+      professors: safeProfs,
+      profs: safeProfs,
+      adminId: MASTER_ADMIN_TELEGRAM_ID,
+      updatedAt: savedAt,
+    }
+  );
+  return {
+    ok: res.ok,
+    savedAt: res.data?.savedAt || savedAt,
+  };
+}
+
 
