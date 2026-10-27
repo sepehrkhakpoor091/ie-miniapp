@@ -11,9 +11,11 @@ import {
   CohortBattleStat,
   DiscountVoucher,
   LeaderboardStudent,
+  LootboxChestConfig,
   LootboxConfig,
   LootboxPrizeItem,
   PointTransaction,
+  QuestConditionType,
   TicketRecord,
   UserProfile,
   WeeklyQuest,
@@ -346,6 +348,32 @@ export function getCohortBattleStats(
   });
 }
 
+/**
+ * Converts Persian/Arabic digits and string inputs into a clean number.
+ * Prevents controlled inputs from getting stuck at 0 when typing Persian digits or clearing.
+ */
+export function parseFlexibleNumberInput(
+  raw: string | number | undefined | null,
+  fallback = 0
+): number {
+  if (raw === undefined || raw === null) {
+    return fallback;
+  }
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? raw : fallback;
+  }
+  const normalized = String(raw || '')
+    .trim()
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[^0-9.-]/g, '');
+  if (!normalized || normalized === '-' || normalized === '.') {
+    return fallback;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export const DEFAULT_LOOTBOX_CONFIG: LootboxConfig = {
   bronzeCost: 50,
   goldCost: 100,
@@ -413,15 +441,93 @@ export const DEFAULT_LOOTBOX_CONFIG: LootboxConfig = {
 };
 
 /**
+ * Normalizes LootboxConfig into an array of customizable chests (`LootboxChestConfig[]`).
+ * Supports any number of Admin-created chests while staying 100% backward-compatible with legacy bronze/gold fields.
+ */
+export function getNormalizedLootboxChests(config?: LootboxConfig): LootboxChestConfig[] {
+  const safeConfig = config || DEFAULT_LOOTBOX_CONFIG;
+  if (Array.isArray(safeConfig.chests) && safeConfig.chests.length > 0) {
+    return safeConfig.chests.map((chest, idx) => ({
+      id: chest.id || `chest-${idx + 1}`,
+      title: chest.title || `صندوقچه شانس ${(idx + 1).toLocaleString('fa-IR')}`,
+      subtitle:
+        chest.subtitle ||
+        'حاوی جوایز مخفی، کدهای تخفیف کارگاه و امتیازات الماس انجمن صنایع',
+      cost: Math.max(1, parseFlexibleNumberInput(chest.cost, 50)),
+      themeColor: chest.themeColor || (idx === 0 ? 'bronze' : idx === 1 ? 'gold' : 'emerald'),
+      iconFilename: chest.iconFilename || '35_icon_gift_box.png',
+      prizes: Array.isArray(chest.prizes) ? chest.prizes : [],
+    }));
+  }
+
+  const bronzePrizes =
+    Array.isArray(safeConfig.bronzePrizes) && safeConfig.bronzePrizes.length > 0
+      ? safeConfig.bronzePrizes
+      : DEFAULT_LOOTBOX_CONFIG.bronzePrizes;
+  const goldPrizes =
+    Array.isArray(safeConfig.goldPrizes) && safeConfig.goldPrizes.length > 0
+      ? safeConfig.goldPrizes
+      : DEFAULT_LOOTBOX_CONFIG.goldPrizes;
+
+  return [
+    {
+      id: 'bronze',
+      title: 'صندوقچه برنزی',
+      subtitle: 'صندوقچه شانسی اقتصادی ویژه دانشجویان مهندسی صنایع',
+      cost: Math.max(1, parseFlexibleNumberInput(safeConfig.bronzeCost, 50)),
+      themeColor: 'bronze',
+      iconFilename: '35_icon_gift_box.png',
+      prizes: bronzePrizes,
+    },
+    {
+      id: 'gold',
+      title: 'صندوقچه طلایی صنایع',
+      subtitle: 'صندوقچه ویژه نخبگان با جوایز اسرارآمیز ارزشمندتر',
+      cost: Math.max(1, parseFlexibleNumberInput(safeConfig.goldCost, 100)),
+      themeColor: 'gold',
+      iconFilename: '35_icon_gift_box.png',
+      prizes: goldPrizes,
+    },
+  ];
+}
+
+/**
+ * Synchronizes an updated array of custom chests back into a full LootboxConfig object.
+ */
+export function syncLootboxConfigWithChests(
+  chests: LootboxChestConfig[],
+  prevConfig?: LootboxConfig
+): LootboxConfig {
+  const safeChests = Array.isArray(chests) ? chests : [];
+  const bronzeChest =
+    safeChests.find((c) => c.id === 'bronze') || safeChests[0];
+  const goldChest =
+    safeChests.find((c) => c.id === 'gold') || safeChests[1] || safeChests[0];
+
+  return {
+    ...(prevConfig || DEFAULT_LOOTBOX_CONFIG),
+    bronzeCost: bronzeChest ? Math.max(1, parseFlexibleNumberInput(bronzeChest.cost, 50)) : 50,
+    goldCost: goldChest ? Math.max(1, parseFlexibleNumberInput(goldChest.cost, 100)) : 100,
+    bronzePrizes: bronzeChest?.prizes || DEFAULT_LOOTBOX_CONFIG.bronzePrizes,
+    goldPrizes: goldChest?.prizes || DEFAULT_LOOTBOX_CONFIG.goldPrizes,
+    chests: safeChests,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
  * Draws a prize strictly according to the Admin's configured win probabilities (`chancePercent`).
  */
 export function drawPrizeByProbability(
   prizes: LootboxPrizeItem[],
   randValue = Math.random()
 ): LootboxPrizeItem {
-  const safePrizes = Array.isArray(prizes) && prizes.length > 0 ? prizes : DEFAULT_LOOTBOX_CONFIG.bronzePrizes;
+  const safePrizes =
+    Array.isArray(prizes) && prizes.length > 0
+      ? prizes
+      : DEFAULT_LOOTBOX_CONFIG.bronzePrizes;
   const totalWeight = safePrizes.reduce(
-    (sum, item) => sum + Math.max(0, Number(item.chancePercent) || 0),
+    (sum, item) => sum + Math.max(0, parseFlexibleNumberInput(item.chancePercent, 0)),
     0
   );
 
@@ -433,7 +539,7 @@ export function drawPrizeByProbability(
   let threshold = clampedRand * totalWeight;
 
   for (const prize of safePrizes) {
-    const weight = Math.max(0, Number(prize.chancePercent) || 0);
+    const weight = Math.max(0, parseFlexibleNumberInput(prize.chancePercent, 0));
     if (threshold < weight) {
       return prize;
     }
@@ -445,8 +551,7 @@ export function drawPrizeByProbability(
 
 /**
  * Lootbox Store Redemption Pure Logic with Anti-Tamper Integrity Verification
- * Supports both `(chestType, user, storedChecksum, deterministicSeed?, lootboxConfig?)`
- * and `(chestType, user, storedChecksum, lootboxConfig?)`.
+ * Supports any custom chest ID as well as legacy 'bronze' | 'gold'.
  */
 export interface LootboxRedeemResult {
   success: boolean;
@@ -460,7 +565,7 @@ export interface LootboxRedeemResult {
 }
 
 export function redeemLootboxChest(
-  chestType: 'bronze' | 'gold',
+  chestIdOrType: string,
   user: Pick<UserProfile, 'score' | 'studentId' | 'level'>,
   storedChecksum: string | null,
   seedOrConfig?: number | LootboxConfig,
@@ -472,10 +577,16 @@ export function redeemLootboxChest(
       ? seedOrConfig
       : explicitConfig) || DEFAULT_LOOTBOX_CONFIG;
 
-  const costPoints =
-    chestType === 'bronze'
-      ? Number(activeConfig.bronzeCost) || 50
-      : Number(activeConfig.goldCost) || 100;
+  const chests = getNormalizedLootboxChests(activeConfig);
+  const matchedChest =
+    chests.find((c) => c.id === chestIdOrType) ||
+    (chestIdOrType === 'gold' ? chests[1] || chests[0] : chests[0]);
+
+  const costPoints = matchedChest
+    ? Math.max(1, parseFlexibleNumberInput(matchedChest.cost, 50))
+    : chestIdOrType === 'gold'
+    ? Number(activeConfig.goldCost) || 100
+    : Number(activeConfig.bronzeCost) || 50;
 
   // 1. Verify anti-tamper state integrity first!
   if (!verifyStateIntegrity(user, storedChecksum)) {
@@ -493,14 +604,21 @@ export function redeemLootboxChest(
     return {
       success: false,
       costPoints: 0,
-      errorReason: `امتیاز شما کافی نیست! برای باز کردن این صندوقچه به ${costPoints.toLocaleString('fa-IR')} امتیاز نیاز دارید.`,
+      errorReason: `امتیاز شما کافی نیست! برای باز کردن «${
+        matchedChest?.title || 'این صندوقچه'
+      }» به ${costPoints.toLocaleString('fa-IR')} امتیاز نیاز دارید.`,
     };
   }
 
   // 3. Draw prize based on Admin's configured probabilities
   const rand = deterministicSeed !== undefined ? deterministicSeed : Math.random();
   const prizePool =
-    chestType === 'bronze' ? activeConfig.bronzePrizes : activeConfig.goldPrizes;
+    matchedChest && Array.isArray(matchedChest.prizes) && matchedChest.prizes.length > 0
+      ? matchedChest.prizes
+      : chestIdOrType === 'gold'
+      ? activeConfig.goldPrizes
+      : activeConfig.bronzePrizes;
+
   const drawnPrize = drawPrizeByProbability(prizePool, rand);
   const rawKind = drawnPrize.rewardType || drawnPrize.type || 'voucher';
 
@@ -514,7 +632,7 @@ export function redeemLootboxChest(
   }
 
   if (rawKind === 'points') {
-    const bonus = Math.max(1, Number(drawnPrize.bonusPoints) || 20);
+    const bonus = Math.max(1, parseFlexibleNumberInput(drawnPrize.bonusPoints, 20));
     return {
       success: true,
       costPoints,
@@ -533,16 +651,22 @@ export function redeemLootboxChest(
     .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
     .match(/(\d+)\s*[%٪]/);
   const discountPercent =
-    Number(drawnPrize.discountPercent) ||
-    (matchedDigits ? Math.min(100, Math.max(5, Number(matchedDigits[1]))) : chestType === 'gold' ? 60 : 30);
+    parseFlexibleNumberInput(drawnPrize.discountPercent ?? 0, 0) ||
+    (matchedDigits
+      ? Math.min(100, Math.max(5, Number(matchedDigits[1])))
+      : chestIdOrType === 'gold'
+      ? 60
+      : 30);
   const maxDiscountTomans =
-    Number(drawnPrize.maxDiscountTomans) ||
-    (discountPercent === 100 ? 250000 : chestType === 'gold' ? 180000 : 100000);
+    parseFlexibleNumberInput(drawnPrize.maxDiscountTomans ?? 0, 0) ||
+    (discountPercent === 100 ? 250000 : chestIdOrType === 'gold' ? 180000 : 100000);
   const title =
     drawnPrize.title ||
     `کد تخفیف ${discountPercent.toLocaleString('fa-IR')}٪ کارگاه‌های انجمن صنایع`;
 
-  const signatureHash = computeSignatureHash(`VOUCHER|${code}|${discountPercent}|${user.studentId}`);
+  const signatureHash = computeSignatureHash(
+    `VOUCHER|${code}|${discountPercent}|${user.studentId}`
+  );
 
   const voucher: DiscountVoucher = {
     id: `vch-${Date.now()}-${suffix}`,
@@ -550,7 +674,7 @@ export function redeemLootboxChest(
     title,
     discountPercent,
     maxDiscountTomans,
-    chestType,
+    chestType: matchedChest?.id || chestIdOrType,
     issuedAt: new Date().toLocaleDateString('fa-IR'),
     isUsed: false,
     signatureHash,
@@ -565,44 +689,112 @@ export function redeemLootboxChest(
   };
 }
 
+/**
+ * Default Quests (ماموریت‌ها) — NEVER pre-completed or auto-claimable for everyone!
+ * Progress is strictly 0 initially and evaluated dynamically against the student's real actions.
+ */
 export const INITIAL_WEEKLY_QUESTS: WeeklyQuest[] = [
   {
     id: 'qst-onboarding',
-    title: 'تکمیل ثبت‌نام اولیه و احراز هویت',
-    description: 'تایید شماره دانشجویی و انتخاب آواتار اختصاصی در پروفایل',
+    title: 'تکمیل ثبت‌نام اولیه و احراز هویت دانشجویی',
+    description: 'ثبت شماره دانشجویی معتبر و انتخاب آواتار اختصاصی در سامانه',
     rewardPoints: 50,
-    progress: 1,
+    progress: 0,
     maxProgress: 1,
-    isClaimed: true,
+    isClaimed: false,
+    conditionType: 'complete_profile',
+  },
+  {
+    id: 'qst-workshops-1',
+    title: 'ثبت‌نام در اولین کارگاه یا رویداد علمی',
+    description: 'ثبت‌نام و دریافت بلیط QR در یکی از رویدادهای در حال برگزاری انجمن صنایع',
+    rewardPoints: 30,
+    progress: 0,
+    maxProgress: 1,
+    isClaimed: false,
+    conditionType: 'register_events',
   },
   {
     id: 'qst-workshops-2',
-    title: 'شرکت در ۲ کارگاه تخصصی این ماه',
-    description: 'ثبت‌نام و حضور در کارگاه‌های پایتون، کنترل پروژه یا شبیه‌سازی',
-    rewardPoints: 40,
-    progress: 2,
+    title: 'شرکت در ۲ کارگاه تخصصی انجمن صنایع',
+    description: 'ثبت‌نام در حداقل ۲ کارگاه یا بازدید علمی در طول ترم جاری',
+    rewardPoints: 50,
+    progress: 0,
     maxProgress: 2,
     isClaimed: false,
+    conditionType: 'register_events',
   },
   {
-    id: 'qst-journal-article',
-    title: 'ارسال یادداشت یا مقاله به نشریه صنایع',
-    description: 'ارسال فایل مقاله علمی-ترویجی به کمیته نشریات انجمن',
-    rewardPoints: 100,
-    progress: 1,
+    id: 'qst-checkin-1',
+    title: 'حضور حضوری و اسکن بارکد QR در کارگاه',
+    description: 'اسکن شدن بلیط QR شما توسط ادمین در محل برگزاری کارگاه یا رویداد',
+    rewardPoints: 60,
+    progress: 0,
     maxProgress: 1,
     isClaimed: false,
-  },
-  {
-    id: 'qst-invite-cohort',
-    title: 'معرفی ۳ هم‌ورودی به ربات تلگرام انجمن',
-    description: 'اشتراک‌گذاری لینک دعوت اختصاصی با دانشجویان مهندسی صنایع',
-    rewardPoints: 30,
-    progress: 2,
-    maxProgress: 3,
-    isClaimed: false,
+    conditionType: 'checkin_events',
   },
 ];
+
+/**
+ * Evaluates each quest's real progress based on the student's actual verified actions.
+ * Prevents quests from granting free points to users who haven't completed them.
+ */
+export function evaluateQuestsProgress(
+  quests: WeeklyQuest[],
+  user: UserProfile,
+  userTickets: TicketRecord[] = []
+): WeeklyQuest[] {
+  const safeQuests =
+    Array.isArray(quests) && quests.length > 0 ? quests : INITIAL_WEEKLY_QUESTS;
+  const safeTickets = Array.isArray(userTickets) ? userTickets : [];
+
+  const isProfileCompleted = Boolean(
+    user &&
+      (user.onboardingCompleted ||
+        (user.studentId && String(user.studentId).trim().length >= 6)) &&
+      user.fullName &&
+      user.fullName !== 'دانشجوی مهندسی صنایع'
+  );
+  const registeredCount = safeTickets.length;
+  const checkedInCount = safeTickets.filter((t) => Boolean(t.checkedIn)).length;
+  const currentScore = Math.max(0, Number(user?.score) || 0);
+
+  return safeQuests.map((q) => {
+    const maxProg = Math.max(1, parseFlexibleNumberInput(q.maxProgress, 1));
+    const condition: QuestConditionType =
+      q.conditionType ||
+      (q.id === 'qst-onboarding'
+        ? 'complete_profile'
+        : q.id.includes('workshop')
+        ? 'register_events'
+        : q.id.includes('checkin') || q.id === 'qst-journal-article'
+        ? 'checkin_events'
+        : q.secretCode
+        ? 'secret_code'
+        : 'register_events');
+
+    let computedProgress = 0;
+    if (condition === 'complete_profile') {
+      computedProgress = isProfileCompleted ? maxProg : 0;
+    } else if (condition === 'register_events') {
+      computedProgress = Math.min(maxProg, registeredCount);
+    } else if (condition === 'checkin_events') {
+      computedProgress = Math.min(maxProg, checkedInCount);
+    } else if (condition === 'reach_score') {
+      computedProgress = Math.min(maxProg, currentScore);
+    } else if (condition === 'secret_code') {
+      computedProgress = q.unlockedByCode ? maxProg : 0;
+    }
+
+    return {
+      ...q,
+      conditionType: condition,
+      maxProgress: maxProg,
+      progress: q.isClaimed ? maxProg : computedProgress,
+    };
+  });
+}
 
 export interface DynamicLevelResult {
   level: 1 | 2 | 3 | 4;

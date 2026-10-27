@@ -120,10 +120,10 @@ const TICKETS_STORAGE_KEY = 'ie_student_tickets_v6';
 const CERTIFICATES_STORAGE_KEY = 'ie_student_certificates_v4';
 const TRANSACTIONS_STORAGE_KEY = 'ie_student_transactions_v6';
 const VOUCHERS_STORAGE_KEY = 'ie_student_vouchers_v6';
-const QUESTS_STORAGE_KEY = 'ie_student_quests_v3';
+const QUESTS_STORAGE_KEY = 'ie_student_quests_v4';
 const EVENTS_STORAGE_KEY = 'ie_events_catalog_v4';
 const PROFESSORS_STORAGE_KEY = 'ie_professors_catalog_v4';
-const ADMINS_STORAGE_KEY = 'ie_admins_catalog_v4';
+const ADMINS_STORAGE_KEY = 'ie_admins_catalog_v5';
 const FEATURE_FLAGS_STORAGE_KEY = 'ie_feature_flags_v4';
 const STUDENTS_STORAGE_KEY = 'ie_students_catalog_v6';
 const RECEIPTS_STORAGE_KEY = 'ie_receipts_catalog_v6';
@@ -209,6 +209,9 @@ export default function App() {
     getSavedChannelUrl()
   );
   const [isSyncingChannel, setIsSyncingChannel] = useState(false);
+  const [serverReferralStats, setServerReferralStats] = useState<
+    { referredCount: number; pointsEarned: number } | undefined
+  >(undefined);
 
   const [featuredEventId, setFeaturedEventId] = useState<string>(() => {
     try {
@@ -258,6 +261,9 @@ export default function App() {
   // Modal States
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState(false);
+  const [profileInitialModal, setProfileInitialModal] = useState<
+    'settings' | 'history' | null
+  >(null);
   const [isAdminVaultOpen, setIsAdminVaultOpen] = useState(false);
   const [isKycTestActive, setIsKycTestActive] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
@@ -435,7 +441,17 @@ export default function App() {
     loadJsonOrFallback(QUESTS_STORAGE_KEY, INITIAL_WEEKLY_QUESTS, setQuests);
     loadJsonOrFallback(EVENTS_STORAGE_KEY, EVENTS_DATA, setEventsCatalog);
     loadJsonOrFallback(PROFESSORS_STORAGE_KEY, PROFESSORS_DATA, setProfessorsCatalog);
-    loadJsonOrFallback(ADMINS_STORAGE_KEY, DEFAULT_ADMINS, setAdminsCatalog);
+    loadJsonOrFallback(ADMINS_STORAGE_KEY, DEFAULT_ADMINS, (loadedAdmins) => {
+      const safe = Array.isArray(loadedAdmins) ? loadedAdmins : DEFAULT_ADMINS;
+      const cleaned = safe.filter(
+        (a) =>
+          a.id !== 'adm-2' &&
+          a.id !== 'adm-3' &&
+          a.telegramId !== '@parnia_ie_edu' &&
+          a.telegramId !== '@kianoosh_fin'
+      );
+      setAdminsCatalog(cleaned.length > 0 ? cleaned : DEFAULT_ADMINS);
+    });
     loadJsonOrFallback(FEATURE_FLAGS_STORAGE_KEY, DEFAULT_FEATURE_FLAGS, setFeatureFlags);
     loadJsonOrFallback(STUDENTS_STORAGE_KEY, DEFAULT_STUDENTS, setStudentsCatalog);
     loadJsonOrFallback(RECEIPTS_STORAGE_KEY, DEFAULT_RECEIPTS, setReceiptsCatalog);
@@ -553,103 +569,7 @@ export default function App() {
       .then((boot) => {
         clearTimeout(bootstrapTimeout);
         bootstrapSettled = true;
-
-        if (Array.isArray(boot.students) && boot.students.length > 0) {
-          const serverStudents = boot.students;
-          setStudentsCatalog((prev) => {
-            const safePrev = Array.isArray(prev) ? prev : [];
-            const map = new Map<string, AdminStudentDossier>();
-            for (const s of serverStudents) {
-              if (s && s.studentId) {
-                const protectedStu = isProtectedMasterAccount(s);
-                map.set(s.studentId, {
-                  ...s,
-                  kycStatus: protectedStu ? 'verified' : s.kycStatus,
-                  isBanned: protectedStu ? false : s.isBanned,
-                });
-              }
-            }
-            for (const localStu of safePrev) {
-              if (localStu && localStu.studentId && !map.has(localStu.studentId)) {
-                const protectedStu = isProtectedMasterAccount(localStu);
-                map.set(localStu.studentId, {
-                  ...localStu,
-                  kycStatus: protectedStu ? 'verified' : localStu.kycStatus,
-                  isBanned: protectedStu ? false : localStu.isBanned,
-                });
-              }
-            }
-            const mergedList = Array.from(map.values());
-            localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(mergedList));
-            return mergedList;
-          });
-        }
-
-        if (boot.lootboxConfig) {
-          setLootboxConfig(boot.lootboxConfig);
-          localStorage.setItem(
-            LOOTBOX_CONFIG_STORAGE_KEY,
-            JSON.stringify(boot.lootboxConfig)
-          );
-        }
-
-        const serverDisputes = boot.disputeTickets || boot.disputes;
-        if (Array.isArray(serverDisputes) && serverDisputes.length > 0) {
-          setDisputeTickets(serverDisputes);
-          localStorage.setItem(
-            DISPUTE_TICKETS_STORAGE_KEY,
-            JSON.stringify(serverDisputes)
-          );
-        }
-
-        const serverApprovals = boot.pendingApprovals || boot.receipts;
-        if (Array.isArray(serverApprovals) && serverApprovals.length > 0) {
-          setReceiptsCatalog((prev) => {
-            const safePrev = Array.isArray(prev) ? prev : [];
-            const map = new Map<string, AdminReceiptItem>();
-            for (const item of serverApprovals) {
-              if (item && item.id) {
-                map.set(item.id, item);
-              }
-            }
-            for (const localItem of safePrev) {
-              if (localItem && localItem.id && !map.has(localItem.id)) {
-                map.set(localItem.id, localItem);
-              }
-            }
-            const mergedReceipts = Array.from(map.values());
-            localStorage.setItem(RECEIPTS_STORAGE_KEY, JSON.stringify(mergedReceipts));
-            return mergedReceipts;
-          });
-        }
-
-        const serverHasValidProfile = Boolean(
-          boot.completedProfile ||
-            boot.profile?.onboardingCompleted ||
-            (boot.profile?.studentId &&
-              String(boot.profile.studentId).trim().length >= 6)
-        );
-
-        if (serverHasValidProfile && boot.profile) {
-          const serverProfile: UserProfile = {
-            ...DEFAULT_PROFILE,
-            ...boot.profile,
-            onboardingCompleted: true,
-          };
-          persistVerifiedProfile(serverProfile);
-          setIsOnboardingOpen(false);
-        } else if (hasValidLocalProfile || isOnboardingDone) {
-          setIsOnboardingOpen(false);
-        } else {
-          // User has neither server profile nor local profile -> open clean empty OnboardingModal
-          setUser({
-            ...DEFAULT_PROFILE,
-            telegramUserId: tgIdForBootstrap || 'web-local-student',
-            telegramUsername: realTgUser?.username || '',
-            onboardingCompleted: false,
-          });
-          setIsOnboardingOpen(true);
-        }
+        applyBootstrapResponse(boot, tgIdForBootstrap, realTgUser?.username, true, hasValidLocalProfile, isOnboardingDone);
         setIsBootstrapping(false);
       })
       .catch(() => {
@@ -677,6 +597,254 @@ export default function App() {
         setAnnouncementsCatalog(DEFAULT_ISEFUM_ANNOUNCEMENTS);
       });
   }, []);
+
+  const applyBootstrapResponse = (
+    boot: Awaited<ReturnType<typeof fetchMiniAppBootstrap>>,
+    tgIdForBootstrap?: string,
+    tgUsername?: string,
+    isInitialMount = false,
+    hasValidLocalProfile = true,
+    isOnboardingDone = true
+  ) => {
+    let latestServerKycStatusForCurrentUser: KycStatus | undefined;
+
+    if (Array.isArray(boot.students) && boot.students.length > 0) {
+      const serverStudents = boot.students;
+      for (const s of serverStudents) {
+        if (s && s.studentId) {
+          const protectedStu = isProtectedMasterAccount(s);
+          const resolvedKyc = protectedStu ? 'verified' : s.kycStatus;
+          if (
+            (user.studentId && s.studentId === user.studentId) ||
+            (tgIdForBootstrap && s.telegramUserId === tgIdForBootstrap)
+          ) {
+            latestServerKycStatusForCurrentUser = resolvedKyc;
+          }
+        }
+      }
+      setStudentsCatalog((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const map = new Map<string, AdminStudentDossier>();
+        for (const s of serverStudents) {
+          if (s && s.studentId) {
+            const protectedStu = isProtectedMasterAccount(s);
+            const resolvedKyc = protectedStu ? 'verified' : s.kycStatus;
+            map.set(s.studentId, {
+              ...s,
+              fullName: s.fullName || 'دانشجوی مهندسی صنایع',
+              phone: s.phone || '',
+              attendedEvents: Array.isArray(s.attendedEvents) ? s.attendedEvents : [],
+              badges: Array.isArray(s.badges) ? s.badges : [],
+              payments: Array.isArray(s.payments) ? s.payments : [],
+              chatLogs: Array.isArray(s.chatLogs) ? s.chatLogs : [],
+              kycStatus: resolvedKyc,
+              isBanned: protectedStu ? false : s.isBanned,
+            });
+          }
+        }
+        for (const localStu of safePrev) {
+          if (localStu && localStu.studentId && !map.has(localStu.studentId)) {
+            const protectedStu = isProtectedMasterAccount(localStu);
+            map.set(localStu.studentId, {
+              ...localStu,
+              fullName: localStu.fullName || 'دانشجوی مهندسی صنایع',
+              phone: localStu.phone || '',
+              attendedEvents: Array.isArray(localStu.attendedEvents)
+                ? localStu.attendedEvents
+                : [],
+              badges: Array.isArray(localStu.badges) ? localStu.badges : [],
+              payments: Array.isArray(localStu.payments) ? localStu.payments : [],
+              chatLogs: Array.isArray(localStu.chatLogs) ? localStu.chatLogs : [],
+              kycStatus: protectedStu ? 'verified' : localStu.kycStatus,
+              isBanned: protectedStu ? false : localStu.isBanned,
+            });
+          }
+        }
+        const mergedList = Array.from(map.values());
+        localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(mergedList));
+        return mergedList;
+      });
+    }
+
+    if (boot.lootboxConfig) {
+      setLootboxConfig(boot.lootboxConfig);
+      localStorage.setItem(
+        LOOTBOX_CONFIG_STORAGE_KEY,
+        JSON.stringify(boot.lootboxConfig)
+      );
+    }
+
+    if (Array.isArray(boot.events) && boot.events.length > 0) {
+      setEventsCatalog(boot.events);
+      localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(boot.events));
+    }
+
+    if (typeof boot.allowStudentTimers === 'boolean') {
+      setFeatureFlags((prev) => {
+        const nextFlags: FeatureFlags = {
+          ...prev,
+          allowStudentTimers: boot.allowStudentTimers,
+        };
+        localStorage.setItem(FEATURE_FLAGS_STORAGE_KEY, JSON.stringify(nextFlags));
+        return nextFlags;
+      });
+    }
+
+    if (boot.referralStats) {
+      setServerReferralStats(boot.referralStats);
+    }
+
+    const serverDisputes = boot.disputeTickets || boot.disputes;
+    if (Array.isArray(serverDisputes) && serverDisputes.length > 0) {
+      setDisputeTickets(serverDisputes);
+      localStorage.setItem(
+        DISPUTE_TICKETS_STORAGE_KEY,
+        JSON.stringify(serverDisputes)
+      );
+    }
+
+    const serverApprovals = boot.pendingApprovals || boot.receipts;
+    if (Array.isArray(serverApprovals) && serverApprovals.length > 0) {
+      for (const item of serverApprovals) {
+        if (item && item.id) {
+          const isKycItem =
+            item.type === 'kyc' || item.type === 'student_card';
+          const belongsToUser =
+            (user.studentId && item.studentId === user.studentId) ||
+            (tgIdForBootstrap && item.telegramUserId === tgIdForBootstrap);
+          if (isKycItem && belongsToUser) {
+            if (item.status === 'approved') {
+              latestServerKycStatusForCurrentUser = 'verified';
+            } else if (item.status === 'rejected') {
+              latestServerKycStatusForCurrentUser = 'kyc_locked';
+            }
+          }
+        }
+      }
+      setReceiptsCatalog((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const map = new Map<string, AdminReceiptItem>();
+        for (const item of serverApprovals) {
+          if (item && item.id) {
+            const resolvedImg =
+              item.receiptImageUrl ||
+              item.imageBase64 ||
+              item.imageDataUrl ||
+              item.photoUrl ||
+              item.imageUrl ||
+              item.fileUrl;
+            const normalizedItem: AdminReceiptItem = {
+              ...item,
+              receiptImageUrl: resolvedImg,
+              imageBase64: item.imageBase64 || resolvedImg,
+            };
+            map.set(item.id, normalizedItem);
+          }
+        }
+        for (const localItem of safePrev) {
+          if (localItem && localItem.id && !map.has(localItem.id)) {
+            map.set(localItem.id, localItem);
+          } else if (localItem && localItem.id && map.has(localItem.id)) {
+            // Preserve local base64 image if server payload omitted the heavy image field on status update
+            const serverVersion = map.get(localItem.id)!;
+            if (!serverVersion.receiptImageUrl && localItem.receiptImageUrl) {
+              map.set(localItem.id, {
+                ...serverVersion,
+                receiptImageUrl: localItem.receiptImageUrl,
+                imageBase64: localItem.imageBase64 || localItem.receiptImageUrl,
+              });
+            }
+          }
+        }
+        const mergedReceipts = Array.from(map.values());
+        localStorage.setItem(RECEIPTS_STORAGE_KEY, JSON.stringify(mergedReceipts));
+        return mergedReceipts;
+      });
+    }
+
+    const serverHasValidProfile = Boolean(
+      boot.completedProfile ||
+        boot.profile?.onboardingCompleted ||
+        (boot.profile?.studentId &&
+          String(boot.profile.studentId).trim().length >= 6)
+    );
+
+    if (serverHasValidProfile && boot.profile) {
+      const resolvedKyc =
+        latestServerKycStatusForCurrentUser ||
+        boot.profile.kycStatus ||
+        user.kycStatus ||
+        'verified';
+      const serverProfile: UserProfile = {
+        ...DEFAULT_PROFILE,
+        ...user,
+        ...boot.profile,
+        kycStatus: resolvedKyc,
+        onboardingCompleted: true,
+      };
+      persistVerifiedProfile(serverProfile);
+      if (resolvedKyc === 'verified') {
+        setIsKycTestActive(false);
+      }
+      setIsOnboardingOpen(false);
+    } else if (latestServerKycStatusForCurrentUser && user.studentId) {
+      persistVerifiedProfile({
+        ...user,
+        kycStatus: latestServerKycStatusForCurrentUser,
+      });
+      if (latestServerKycStatusForCurrentUser === 'verified') {
+        setIsKycTestActive(false);
+      }
+    } else if (isInitialMount) {
+      if (hasValidLocalProfile || isOnboardingDone) {
+        setIsOnboardingOpen(false);
+      } else {
+        setUser({
+          ...DEFAULT_PROFILE,
+          telegramUserId: tgIdForBootstrap || 'web-local-student',
+          telegramUsername: tgUsername || '',
+          onboardingCompleted: false,
+        });
+        setIsOnboardingOpen(true);
+      }
+    }
+  };
+
+  const refreshFromServer = async () => {
+    const realTgUser = getRealTelegramUser();
+    const rawTgId =
+      window.Telegram?.WebApp?.initDataUnsafe?.user?.id ||
+      realTgUser?.id ||
+      user.telegramUserId;
+    const tgIdForBootstrap = rawTgId !== undefined ? String(rawTgId) : undefined;
+    try {
+      const boot = await fetchMiniAppBootstrap(tgIdForBootstrap);
+      applyBootstrapResponse(boot, tgIdForBootstrap, realTgUser?.username, false, true, true);
+    } catch {
+      // Ignore transient network errors during background poll
+    }
+  };
+
+  const handleSyncWithBotServer = refreshFromServer;
+
+  // Live 5-second background polling + window focus/visibility sync so KYC images & bot approvals update immediately
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void refreshFromServer();
+    }, 5000);
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void handleSyncWithBotServer();
+      }
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
+  }, [user.studentId, user.telegramUserId, user.kycStatus]);
 
   const handleSyncTelegramChannel = async (customUrl?: string) => {
     setIsSyncingChannel(true);
@@ -712,10 +880,34 @@ export default function App() {
     setIsSoundActive(active);
   };
 
-  const handleUpdateProfile = (updatedFields: Partial<UserProfile>) => {
+  const handleUpdateProfile = (
+    updatedFields: Partial<UserProfile>,
+    updatedStudentsFromBot?: AdminStudentDossier[],
+    referralCodeUsed?: string
+  ) => {
+    const isAlreadyRegistered = Boolean(
+      user.onboardingCompleted &&
+        user.studentId &&
+        String(user.studentId).trim().length >= 6
+    );
     const isCompletingOnboarding =
-      Boolean(updatedFields.onboardingCompleted) && !user.onboardingCompleted;
-    const merged = { ...user, ...updatedFields };
+      Boolean(updatedFields.onboardingCompleted) && !isAlreadyRegistered;
+
+    // Once registered, lock identity fields (name, studentId, cohortYear, phone) permanently; allow avatar/score/kyc updates
+    const safeUpdatedFields: Partial<UserProfile> = isAlreadyRegistered
+      ? {
+          ...updatedFields,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          fullName: user.fullName,
+          studentId: user.studentId,
+          cohortYear: user.cohortYear,
+          verifiedTelegramPhone: user.verifiedTelegramPhone,
+          onboardingCompleted: true,
+        }
+      : updatedFields;
+
+    const merged = { ...user, ...safeUpdatedFields };
     persistVerifiedProfile(merged);
 
     if (isCompletingOnboarding) {
@@ -727,14 +919,35 @@ export default function App() {
         category: 'onboarding',
         referenceCode: `ONB-${merged.studentId || '402'}`,
       });
+      if (referralCodeUsed && referralCodeUsed.startsWith('REF-')) {
+        appendTransaction({
+          id: `tx-ref-bonus-${Date.now() + 1}`,
+          title: `پاداش هدیه ورود با کد دعوت (${referralCodeUsed})`,
+          amount: 5,
+          date: new Date().toLocaleDateString('fa-IR'),
+          category: 'onboarding',
+          referenceCode: referralCodeUsed,
+        });
+      }
+    }
+
+    if (Array.isArray(updatedStudentsFromBot) && updatedStudentsFromBot.length > 0) {
+      setStudentsCatalog(updatedStudentsFromBot);
+      localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(updatedStudentsFromBot));
+      return;
     }
 
     // Also sync active student in studentsCatalog if they have a valid studentId
     if (merged.studentId) {
+      const cleanRefTargetId = (referralCodeUsed || '')
+        .toUpperCase()
+        .replace(/^REF[-_]/i, '')
+        .trim();
+
       setStudentsCatalog((prev) => {
         const safePrev = Array.isArray(prev) ? prev : [];
         const exists = safePrev.some((s) => s.studentId === merged.studentId);
-        const next = exists
+        const baseList = exists
           ? safePrev.map((s) =>
               s.studentId === merged.studentId
                 ? {
@@ -744,6 +957,7 @@ export default function App() {
                     level: merged.level,
                     kycStatus: merged.kycStatus,
                     avatar: merged.avatar,
+                    referredBy: merged.referredBy || s.referredBy,
                   }
                 : s
             )
@@ -752,6 +966,7 @@ export default function App() {
                 id: `stu-${Date.now()}`,
                 fullName: merged.fullName,
                 studentId: merged.studentId,
+                telegramUserId: merged.telegramUserId,
                 cohortYear: (merged.cohortYear as AdminStudentDossier['cohortYear']) || '1402',
                 phone: merged.verifiedTelegramPhone || '',
                 avatar: merged.avatar,
@@ -763,9 +978,32 @@ export default function App() {
                 badges: ['20_badge_shield.png'],
                 payments: [],
                 chatLogs: [],
+                referralCode: merged.referralCode,
+                referredBy: merged.referredBy,
               },
               ...safePrev,
             ];
+
+        // If completing onboarding with a valid referral code, award +10 points to the referrer student
+        const next =
+          isCompletingOnboarding && cleanRefTargetId
+            ? baseList.map((s) => {
+                const matchesInviter =
+                  s.studentId !== merged.studentId &&
+                  (s.telegramUserId === cleanRefTargetId ||
+                    s.studentId === cleanRefTargetId ||
+                    (s.referralCode &&
+                      s.referralCode.toUpperCase() === `REF-${cleanRefTargetId}`));
+                if (!matchesInviter) return s;
+                return {
+                  ...s,
+                  score: (Number(s.score) || 0) + 10,
+                  referredCount: (Number(s.referredCount) || 0) + 1,
+                  referralPointsEarned: (Number(s.referralPointsEarned) || 0) + 10,
+                };
+              })
+            : baseList;
+
         localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(next));
         return next;
       });
@@ -956,6 +1194,24 @@ export default function App() {
     });
   };
 
+  const handleUnlockSecretQuest = (questId: string, enteredCode: string): boolean => {
+    const safeQuests = Array.isArray(quests) ? quests : [];
+    const target = safeQuests.find((q) => q.id === questId);
+    if (!target) return false;
+    const expected = (target.secretCode || 'IE1404').trim().toLowerCase();
+    if (enteredCode.trim().toLowerCase() !== expected) {
+      return false;
+    }
+    const updatedQuests = safeQuests.map((q) =>
+      q.id === questId
+        ? { ...q, unlockedByCode: true, progress: q.maxProgress || 1 }
+        : q
+    );
+    setQuests(updatedQuests);
+    localStorage.setItem(QUESTS_STORAGE_KEY, JSON.stringify(updatedQuests));
+    return true;
+  };
+
   const handleResetErrorState = () => {
     setIsAdminPanelOpen(false);
     setIsAdminVaultOpen(false);
@@ -1088,6 +1344,7 @@ export default function App() {
             }}
             onUpdateCurrentUserProfile={handleUpdateProfile}
             onCheckInTicket={handleAdminCheckInTicket}
+            onSyncWithBotServer={handleSyncWithBotServer}
             onAwardCurrentStudentPoints={(deltaPoints, reason) => {
               const nextScore = Math.max(0, user.score + deltaPoints);
               handleUpdateProfile({ score: nextScore });
@@ -1165,6 +1422,8 @@ export default function App() {
                       announcements={announcementsCatalog}
                       channelUrl={officialChannelUrl}
                       featuredEvent={activeFeaturedEvent}
+                      realStudents={studentsCatalog}
+                      serverReferralStats={serverReferralStats}
                       onToggleTheme={handleToggleTheme}
                       onToggleSound={handleToggleSound}
                       onChangeTab={setActiveTab}
@@ -1212,6 +1471,7 @@ export default function App() {
                       storedChecksum={stateChecksum}
                       vouchers={vouchers}
                       quests={quests}
+                      userTickets={currentStudentTickets}
                       realStudents={studentsCatalog}
                       lootboxConfig={lootboxConfig}
                       leaderboardEnabled={featureFlags.leaderboardEnabled}
@@ -1220,6 +1480,7 @@ export default function App() {
                       onRedeemLootboxSuccess={handleRedeemLootboxSuccess}
                       onTamperReset={() => persistVerifiedProfile(user)}
                       onClaimQuest={handleClaimQuest}
+                      onUnlockSecretQuest={handleUnlockSecretQuest}
                     />
                   )}
 
@@ -1234,6 +1495,10 @@ export default function App() {
                       vouchers={vouchers}
                       badgesCatalog={badgesCatalog}
                       studentAvatars={avatarsCatalog}
+                      realStudents={studentsCatalog}
+                      serverReferralStats={serverReferralStats}
+                      initialOpenModal={profileInitialModal}
+                      onClearInitialModal={() => setProfileInitialModal(null)}
                       onSelectAvatar={(avatarUrl) => handleUpdateProfile({ avatar: avatarUrl })}
                       onBackToHome={() => setActiveTab('home')}
                       onToggleTheme={handleToggleTheme}
@@ -1262,8 +1527,17 @@ export default function App() {
           isSoundActive={isSoundActive}
           onToggleTheme={handleToggleTheme}
           onToggleSound={handleToggleSound}
-          onOpenKycLock={() => setIsKycTestActive(true)}
-          onOpenOnboarding={() => setIsOnboardingOpen(true)}
+          onEditProfileAvatar={() => {
+            setActiveTab('profile');
+            setProfileInitialModal('settings');
+          }}
+          onOpenActiveEvents={() => {
+            setActiveTab('events');
+          }}
+          onOpenEventHistory={() => {
+            setActiveTab('profile');
+            setProfileInitialModal('history');
+          }}
         />
 
         <CheckoutDrawer
@@ -1278,6 +1552,7 @@ export default function App() {
           }}
           onCompleteRegistration={handleCompleteRegistration}
           onSubmitReceipt={handleAppendReceiptItem}
+          onRefreshFromServer={refreshFromServer}
         />
 
         {!isAdminPanelOpen &&
@@ -1296,6 +1571,7 @@ export default function App() {
               fullName={user.fullName}
               cohortYear={user.cohortYear}
               onSubmitKycCard={handleAppendReceiptItem}
+              onRefreshFromServer={refreshFromServer}
             />
           )}
 
@@ -1305,6 +1581,7 @@ export default function App() {
           admins={adminsCatalog}
           onUnlockSuccess={(matchedAdmin) => {
             setAuthenticatedAdmin(matchedAdmin || null);
+            setIsAdminVaultOpen(false);
             setIsAdminPanelOpen(true);
           }}
           themeMode={themeMode}
@@ -1318,6 +1595,7 @@ export default function App() {
           themeMode={themeMode}
           studentAvatars={avatarsCatalog}
           existingStudents={studentsCatalog}
+          onRefreshFromServer={refreshFromServer}
           onDisputeSubmitted={(ticket) => {
             setDisputeTickets((prev) => {
               const next = [ticket, ...(Array.isArray(prev) ? prev : [])];
@@ -1359,6 +1637,7 @@ export default function App() {
           onClose={() => setIsRemindersModalOpen(false)}
           themeMode={themeMode}
           scheduledTimers={timersCatalog}
+          allowStudentTimers={featureFlags.allowStudentTimers !== false}
         />
 
         <SupportModal

@@ -8,9 +8,10 @@
  * and 100% Real Scannable ISO/IEC 18004 QR Tickets with PNG Download.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
+  AdminStudentDossier,
   AvatarCatalogItem,
   BadgeItem,
   CertificateInfo,
@@ -24,6 +25,7 @@ import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
 import { RollingNumber } from '../ui/RollingNumber';
 import { RealQrCode } from '../ui/RealQrCode';
+import { ReferralInviteCard } from '../ui/ReferralInviteCard';
 import {
   DEFAULT_CERTIFICATES,
   EXTENDED_BADGES,
@@ -51,6 +53,10 @@ interface ProfileTabProps {
   vouchers: DiscountVoucher[];
   badgesCatalog?: BadgeItem[];
   studentAvatars?: AvatarCatalogItem[];
+  realStudents?: AdminStudentDossier[];
+  serverReferralStats?: { referredCount: number; pointsEarned: number };
+  initialOpenModal?: 'settings' | 'history' | null;
+  onClearInitialModal?: () => void;
   onSelectAvatar?: (avatarUrl: string) => void;
   onBackToHome: () => void;
   onToggleTheme: () => void;
@@ -70,6 +76,10 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
   vouchers,
   badgesCatalog,
   studentAvatars,
+  realStudents = [],
+  serverReferralStats,
+  initialOpenModal,
+  onClearInitialModal,
   onSelectAvatar,
   onBackToHome,
   onToggleTheme,
@@ -90,6 +100,21 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
   const [expandedTicketId, setExpandedTicketId] = useState<string | null>(null);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const isRegisteredLocked = Boolean(
+    user.onboardingCompleted && user.studentId && user.studentId.trim().length >= 6
+  );
+
+  useEffect(() => {
+    if (initialOpenModal === 'settings') {
+      setIsSettingsOpen(true);
+      onClearInitialModal?.();
+    } else if (initialOpenModal === 'history') {
+      setHistoryTab('tickets');
+      setIsHistoryDrawerOpen(true);
+      onClearInitialModal?.();
+    }
+  }, [initialOpenModal, onClearInitialModal]);
 
   const dynamicLevel = calculateLevelFromScore(user.score);
   const nextLevelTarget = dynamicLevel.nextLevelAt;
@@ -256,7 +281,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                     onStealthTap();
                   } else {
                     playTick();
-                    onOpenOnboardingEdit();
+                    setIsSettingsOpen(true);
                   }
                 }}
                 className={`w-28 h-28 rounded-full overflow-hidden border-2 relative z-10 cursor-pointer transition-transform active:scale-95 ${
@@ -296,6 +321,21 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
             >
               دانشجوی ورودی {user.cohortYear} • کد دانشجویی: {user.studentId}
             </p>
+
+            <button
+              type="button"
+              onClick={() => {
+                playTick();
+                setIsSettingsOpen(true);
+              }}
+              className={`mt-2.5 px-3.5 py-1.5 rounded-xl border text-[11px] font-black flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer ${
+                isNight
+                  ? 'bg-[#1D2738] border-[#D4AB58]/50 text-[#D4AB58] hover:bg-[#243248]'
+                  : 'bg-[#FFFFFF] border-[#8F6B24] text-[#14201B] hover:bg-[#EAE3D2]'
+              }`}
+            >
+              <span>🎨 ویرایش پروفایل و تغییر آواتار</span>
+            </button>
           </div>
 
           {/* 3. LEVEL 3 PROGRESS BAR & GOLD STAR BADGE ROW */}
@@ -501,6 +541,14 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
               </button>
             </div>
           </div>
+
+          {/* 5B. OFFICIAL REFERRAL CODE & INVITE LINK CARD */}
+          <ReferralInviteCard
+            user={user}
+            themeMode={themeMode}
+            realStudents={realStudents}
+            serverReferralStats={serverReferralStats}
+          />
         </div>
 
         {/* LEFT COLUMN IN RTL: HOLOGRAPHIC BADGES SHOWCASE & REAL QR TICKETS */}
@@ -1238,6 +1286,69 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
               </div>
 
               <div className="space-y-2.5 text-xs">
+                {/* Locked Identity Info vs First-Time Registration */}
+                {isRegisteredLocked ? (
+                  <div
+                    className={`p-3.5 rounded-2xl border space-y-2 ${
+                      isNight
+                        ? 'bg-[#1A2424] border-[#2C3E4C]'
+                        : 'bg-[#FFFFFF] border-[#C8BFA8]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between border-b border-current/10 pb-2">
+                      <span className="font-black text-[#D4AB58]">
+                        🔒 مشخصات هویتی ثبت‌شده (قفل دائمی)
+                      </span>
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded bg-amber-500/20 text-[#D4AB58]">
+                        غیرقابل تغییر
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="p-2 rounded-xl bg-black/20 border border-current/10">
+                        <span className="opacity-70 block text-[10px]">نام و نام خانوادگی:</span>
+                        <span className="font-black">{user.fullName}</span>
+                      </div>
+                      <div className="p-2 rounded-xl bg-black/20 border border-current/10">
+                        <span className="opacity-70 block text-[10px]">شماره دانشجویی:</span>
+                        <span className="font-mono font-black">{user.studentId}</span>
+                      </div>
+                      <div className="p-2 rounded-xl bg-black/20 border border-current/10">
+                        <span className="opacity-70 block text-[10px]">سال ورودی:</span>
+                        <span className="font-black">ورودی {user.cohortYear}</span>
+                      </div>
+                      <div className="p-2 rounded-xl bg-black/20 border border-current/10">
+                        <span className="opacity-70 block text-[10px]">شماره تماس:</span>
+                        <span className="font-mono font-black" dir="ltr">
+                          {user.verifiedTelegramPhone || 'ثبت شده'}
+                        </span>
+                      </div>
+                    </div>
+                    <p
+                      className={`text-[10px] font-bold leading-relaxed ${
+                        isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                      }`}
+                    >
+                      پس از ثبت‌نام اولیه، نام و شماره دانشجویی قفل شده و قابل ویرایش نیستند؛ اما هر زمان بخواهید می‌توانید آواتار پروفایل خود را از کادر بالا تغییر دهید.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSettingsOpen(false);
+                      onOpenOnboardingEdit();
+                    }}
+                    className={`w-full p-3.5 rounded-2xl border flex items-center justify-between font-bold cursor-pointer ${
+                      isNight
+                        ? 'bg-[#1A2424] border-[#2C3E4C] hover:bg-[#223030]'
+                        : 'bg-[#FFFFFF] border-[#C8BFA8] hover:bg-[#EAE3D2]'
+                    }`}
+                  >
+                    <span>🎓 تکمیل ثبت‌نام اولیه دانشجویی</span>
+                    <span>←</span>
+                  </button>
+                )}
+
                 <div className="p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-between">
                   <div>
                     <div className="font-black text-emerald-500">
@@ -1249,22 +1360,6 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                   </div>
                   <span className="text-xs font-black text-emerald-500">امن ✓</span>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSettingsOpen(false);
-                    onOpenOnboardingEdit();
-                  }}
-                  className={`w-full p-3.5 rounded-2xl border flex items-center justify-between font-bold cursor-pointer ${
-                    isNight
-                      ? 'bg-[#1A2424] border-[#2C3E4C] hover:bg-[#223030]'
-                      : 'bg-[#FFFFFF] border-[#C8BFA8] hover:bg-[#EAE3D2]'
-                  }`}
-                >
-                  <span>🎓 ویرایش کامل مشخصات دانشجویی و نام</span>
-                  <span>←</span>
-                </button>
 
                 <button
                   type="button"

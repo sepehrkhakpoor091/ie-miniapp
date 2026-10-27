@@ -29,12 +29,14 @@ import {
   EventItem,
   FeatureFlags,
   KycStatus,
+  LootboxChestConfig,
   LootboxConfig,
   LootboxPrizeItem,
   LootiChatMessage,
   LootiModelId,
   OnlineSessionUser,
   Professor,
+  QuestConditionType,
   ScheduledTimer,
   StudentIdDisputeTicket,
   ThemeMode,
@@ -55,6 +57,9 @@ import {
   DEFAULT_LOOTBOX_CONFIG,
   EXTENDED_BADGES,
   INITIAL_WEEKLY_QUESTS,
+  getNormalizedLootboxChests,
+  parseFlexibleNumberInput,
+  syncLootboxConfigWithChests,
 } from '../../utils/gamification';
 import {
   MASTER_ADMIN_TELEGRAM_ID,
@@ -64,6 +69,7 @@ import {
   isMasterAdminTelegramUser,
   isProtectedMasterAccount,
   recordTicketInCheckedInLedger,
+  removeTicketFromCheckedInLedger,
   touchAdminSession,
   validateUploadedImageFile,
   verifyTicketSignature,
@@ -71,6 +77,7 @@ import {
 import {
   saveLootboxConfigOnBot,
   submitAdminReviewToBot,
+  toggleStudentTimersOnBot,
   verifyQrCheckInWithBot,
 } from '../../utils/apiBridge';
 import {
@@ -249,44 +256,6 @@ export const DEFAULT_ADMINS: AdminUser[] = [
     isFrozen: false,
     lastActive: 'هم‌اکنون آنلاین',
   },
-  {
-    id: 'adm-2',
-    fullName: 'پرنیا محمدی (مسئول آموزش و کارگاه‌ها)',
-    telegramId: '@parnia_ie_edu',
-    roleLevel: 3,
-    roleLabel: 'سطح ۳: کمیته آموزش و اساتید',
-    personalPassword: 'EDU_402_PASS',
-    permissions: {
-      ai: true,
-      tickets: true,
-      users: false,
-      events: true,
-      professors: true,
-      finance: false,
-      broadcast: false,
-    },
-    isFrozen: false,
-    lastActive: '۱۵ دقیقه پیش',
-  },
-  {
-    id: 'adm-3',
-    fullName: 'کیانوش نادری (خزانه‌دار و مالی)',
-    telegramId: '@kianoosh_fin',
-    roleLevel: 6,
-    roleLabel: 'سطح ۶: سایر (سفارشی)',
-    personalPassword: 'FIN_CUSTOM_99',
-    permissions: {
-      ai: false,
-      tickets: true,
-      users: true,
-      events: false,
-      professors: false,
-      finance: true,
-      broadcast: false,
-    },
-    isFrozen: false,
-    lastActive: '۱ ساعت پیش',
-  },
 ];
 
 export const DEFAULT_TIMERS: ScheduledTimer[] = [
@@ -325,18 +294,10 @@ export const DEFAULT_LOGS: AdminAuditLogItem[] = [
     severity: 'success',
   },
   {
-    id: 'log-2',
-    actor: 'پرنیا محمدی (سطح ۳)',
-    action: 'بروزرسانی ساعات حضور دکتر رضایی در رادار اساتید',
-    target: 'اتاق ۳۰۵ دانشکده صنایع',
-    timestamp: '۱۴۰۴/۰۸/۲۳ - ۰۹:۱۵',
-    severity: 'info',
-  },
-  {
     id: 'log-3',
     actor: 'سپر ضدتقلب خودکار',
     action: 'بررسی یکپارچگی هش امتیازات دانشجویان (FNV-1a Checksum)',
-    target: '۱۲۸ پروفایل دانشجویی',
+    target: 'پروفایل‌های دانشجویی',
     timestamp: '۱۴۰۴/۰۸/۲۳ - ۰۸:۳۰',
     severity: 'info',
   },
@@ -349,6 +310,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   supportTicketsEnabled: true,
   professorsDirectoryEnabled: true,
   globalMaintenanceMode: false,
+  allowStudentTimers: true,
 };
 
 const PIXEL_MEDAL_PRESETS = [
@@ -424,6 +386,7 @@ interface AdminPanelProps {
     rewardPoints: number
   ) => void;
   onAwardCurrentStudentPoints?: (deltaPoints: number, reason: string) => void;
+  onSyncWithBotServer?: () => Promise<void> | void;
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
@@ -471,12 +434,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onUpdateCurrentUserProfile,
   onCheckInTicket,
   onAwardCurrentStudentPoints,
+  onSyncWithBotServer,
 }) => {
   const isNight = themeMode === 'night';
   const activeAdmin = currentAdmin || DEFAULT_ADMINS[0];
 
   const [activeModule, setActiveModule] = useState<AdminModuleId>(1);
   const [toastBanner, setToastBanner] = useState<string | null>(null);
+  const [isSyncingBotQueue, setIsSyncingBotQueue] = useState(false);
+  const [previewImageModalSrc, setPreviewImageModalSrc] = useState<string | null>(null);
 
   const [studentList, setStudentList] = useState<AdminStudentDossier[]>(() =>
     Array.isArray(students) && students.length > 0 ? students : DEFAULT_STUDENTS
@@ -529,6 +495,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [professors]);
 
   useEffect(() => {
+    if (Array.isArray(admins) && admins.length > 0) setAdminList(admins);
+  }, [admins]);
+
+  useEffect(() => {
     if (Array.isArray(students)) setStudentList(students);
   }, [students]);
 
@@ -557,51 +527,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (featureFlags) setFlagsState(featureFlags);
   }, [featureFlags]);
 
-  // Helper wrappers to persist state updates upwards to App.tsx safely outside setState updater callbacks
+  // Helper wrappers to persist state updates upwards to App.tsx safely
   const updateStudentsAndPersist = (
     updater: (prev: AdminStudentDossier[]) => AdminStudentDossier[]
   ) => {
-    const next = updater(Array.isArray(studentList) ? studentList : DEFAULT_STUDENTS);
-    setStudentList(next);
-    onUpdateStudents?.(next);
+    setStudentList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : DEFAULT_STUDENTS);
+      queueMicrotask(() => onUpdateStudents?.(next));
+      return next;
+    });
   };
 
   const updateReceiptsAndPersist = (
     updater: (prev: AdminReceiptItem[]) => AdminReceiptItem[]
   ) => {
-    const next = updater(Array.isArray(receiptList) ? receiptList : DEFAULT_RECEIPTS);
-    setReceiptList(next);
-    onUpdateReceipts?.(next);
+    setReceiptList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : DEFAULT_RECEIPTS);
+      queueMicrotask(() => onUpdateReceipts?.(next));
+      return next;
+    });
   };
 
   const updateTimersAndPersist = (
     updater: (prev: ScheduledTimer[]) => ScheduledTimer[]
   ) => {
-    const next = updater(Array.isArray(timerList) ? timerList : DEFAULT_TIMERS);
-    setTimerList(next);
-    onUpdateTimers?.(next);
+    setTimerList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : DEFAULT_TIMERS);
+      queueMicrotask(() => onUpdateTimers?.(next));
+      return next;
+    });
   };
 
   const updateBadgesAndPersist = (updater: (prev: BadgeItem[]) => BadgeItem[]) => {
-    const next = updater(Array.isArray(badgeList) ? badgeList : EXTENDED_BADGES);
-    setBadgeList(next);
-    onUpdateBadges?.(next);
+    setBadgeList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : EXTENDED_BADGES);
+      queueMicrotask(() => onUpdateBadges?.(next));
+      return next;
+    });
   };
 
   const updateAvatarsAndPersist = (
     updater: (prev: AvatarCatalogItem[]) => AvatarCatalogItem[]
   ) => {
-    const next = updater(
-      Array.isArray(avatarList) ? avatarList : DEFAULT_AVATARS_CATALOG
-    );
-    setAvatarList(next);
-    onUpdateAvatars?.(next);
+    setAvatarList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : DEFAULT_AVATARS_CATALOG);
+      queueMicrotask(() => onUpdateAvatars?.(next));
+      return next;
+    });
   };
 
   const updateTicketsAndPersist = (updater: (prev: TicketRecord[]) => TicketRecord[]) => {
-    const next = updater(Array.isArray(ticketList) ? ticketList : []);
-    setTicketList(next);
-    onUpdateTickets?.(next);
+    setTicketList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : []);
+      queueMicrotask(() => onUpdateTickets?.(next));
+      return next;
+    });
   };
 
   // Live Online Users Radar State (strictly real users)
@@ -643,15 +623,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     [ticketList]
   );
 
-  const [qrInputPayload, setQrInputPayload] = useState<string>(() => {
-    const firstUnscanned = (Array.isArray(userTickets) ? userTickets : []).find(
-      (t) => !t.checkedIn
-    );
-    return (
-      firstUnscanned?.qrPayload ||
-      generateTicketPayload('ev-project-mgmt', '4011234567', 'TK-402891')
-    );
-  });
+  // Manual QR input starts completely empty ("") — zero pre-typed default values!
+  const [qrInputPayload, setQrInputPayload] = useState<string>('');
   const [scanErrorAlert, setScanErrorAlert] = useState<string | null>(null);
   const [lastScannedResult, setLastScannedResult] = useState<{
     ticketCode: string;
@@ -671,6 +644,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [queueStatusFolder, setQueueStatusFolder] = useState<
     'pending' | 'approved' | 'rejected'
   >('pending');
+  const inFlightRequestRef = useRef<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // ==========================================================================
   // MODULE 3 STATE: Users, Cohort Filter, Custom Point Input & 360 Dossier
@@ -806,7 +781,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       : DEFAULT_LOOTBOX_CONFIG
   );
   const [isSavingLootbox, setIsSavingLootbox] = useState(false);
-  const [newPrizeChestType, setNewPrizeChestType] = useState<'bronze' | 'gold'>('bronze');
+  const [newChestTitle, setNewChestTitle] = useState('');
+  const [newChestSubtitle, setNewChestSubtitle] = useState('');
+  const [newChestCost, setNewChestCost] = useState<number>(75);
+  const [newChestTheme, setNewChestTheme] =
+    useState<LootboxChestConfig['themeColor']>('gold');
+  const [newPrizeChestType, setNewPrizeChestType] = useState<string>('bronze');
   const [newPrizeTitle, setNewPrizeTitle] = useState('');
   const [newPrizeRewardType, setNewPrizeRewardType] =
     useState<LootboxPrizeItem['rewardType']>('discount');
@@ -819,7 +799,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [selectedBadgeFilename, setSelectedBadgeFilename] =
     useState<string>('19_badge_Gear.png');
   const [newQuestTitle, setNewQuestTitle] = useState('');
+  const [newQuestDescription, setNewQuestDescription] = useState('');
   const [newQuestReward, setNewQuestReward] = useState<number>(40);
+  const [newQuestConditionType, setNewQuestConditionType] =
+    useState<QuestConditionType>('register_events');
+  const [newQuestMaxProgress, setNewQuestMaxProgress] = useState<number>(1);
+  const [newQuestSecretCode, setNewQuestSecretCode] = useState('IE1404');
 
   // New Custom Medal Form State
   const medalFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -837,9 +822,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Module 7: 6-Level RBAC & Custom Permissions
   const [newAdminName, setNewAdminName] = useState('');
-  const [newAdminTelegram, setNewAdminTelegram] = useState('@ie_council_member');
+  const [newAdminTelegram, setNewAdminTelegram] = useState('');
   const [newAdminLevel, setNewAdminLevel] = useState<1 | 2 | 3 | 4 | 5 | 6>(6);
-  const [newAdminPassword, setNewAdminPassword] = useState('IE_CUSTOM_404');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
   const [customPermissions, setCustomPermissions] = useState<
     Record<AdminPermissionKey, boolean>
   >({
@@ -870,6 +855,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTimeout(() => {
       setToastBanner((prev) => (prev === msg ? null : prev));
     }, 4500);
+  };
+
+  const resolveItemImageSrc = (item: AdminReceiptItem): string => {
+    const raw = (
+      item.receiptImageUrl ||
+      item.imageBase64 ||
+      item.imageDataUrl ||
+      item.photoUrl ||
+      item.imageUrl ||
+      item.fileUrl ||
+      ''
+    ).trim();
+    if (!raw) return '';
+    if (
+      raw.startsWith('data:image/') ||
+      raw.startsWith('http://') ||
+      raw.startsWith('https://') ||
+      raw.startsWith('blob:') ||
+      raw.startsWith('/')
+    ) {
+      return raw;
+    }
+    return `data:image/jpeg;base64,${raw}`;
   };
 
   const appendLog = (
@@ -910,9 +918,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const q = userSearchQuery.trim();
       const matchesSearch =
         !q ||
-        st.fullName.includes(q) ||
-        st.studentId.includes(q) ||
-        st.phone.includes(q);
+        (st.fullName || '').includes(q) ||
+        (st.studentId || '').includes(q) ||
+        (st.phone || '').includes(q);
       return matchesCohort && matchesSearch;
     });
   }, [studentList, selectedCohort, userSearchQuery]);
@@ -985,11 +993,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
   };
 
+  // Module 5: Toggle Student Personal Timers Lock (POST /api/miniapp/admin-toggle-user-timers)
+  const handleToggleStudentPersonalTimersLock = async () => {
+    playSwitch();
+    const currentAllowed = flagsState.allowStudentTimers !== false;
+    const nextAllowed = !currentAllowed;
+    const nextFlags: FeatureFlags = {
+      ...flagsState,
+      allowStudentTimers: nextAllowed,
+    };
+    setFlagsState(nextFlags);
+    onUpdateFeatureFlags?.(nextFlags);
+
+    appendLog(
+      nextAllowed
+        ? '🔓 باز کردن قابلیت ساخت یادآور شخصی توسط دانشجویان'
+        : '🔒 قفل کردن ساخت یادآور شخصی توسط دانشجویان (فقط ارسال یادآورهای ادمین)',
+      'allowStudentTimers',
+      nextAllowed ? 'success' : 'warning'
+    );
+
+    await toggleStudentTimersOnBot(nextAllowed);
+    await onSyncWithBotServer?.();
+
+    triggerToast(
+      nextAllowed
+        ? '🔓 ساخت یادآور شخصی برای دانشجویان فعال شد.'
+        : '🔒 ساخت یادآور شخصی توسط دانشجویان قفل شد (فقط یادآورهای رسمی انجمن ارسال می‌شوند).'
+    );
+  };
+
   // Module 1: Real Cryptographic QR Ticket Check-In & Immediate Move to History Page
   const handleProcessQrTicket = (payloadToScan: string) => {
     setScanErrorAlert(null);
     const raw = (payloadToScan || '').trim();
-    if (!raw.startsWith('IE-TICKET:')) {
+    if (!raw) {
+      playError();
+      setScanErrorAlert('لطفاً ابتدا بارکد QR را اسکن کنید یا رشته بارکد را در کادر وارد نمایید.');
+      return;
+    }
+    if (!raw.startsWith('IE-TICKET:') && !raw.startsWith('IE-TICKET|')) {
       playError();
       setScanErrorAlert(
         '❌ فرمت بارکد نامعتبر است! استاندارد: IE-TICKET:EVENT:STUDENT:CODE:HASH'
@@ -997,7 +1040,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
 
-    const isSignatureValid = verifyTicketSignature(raw);
+    const normalizedHeader = raw.replace(/^IE-TICKET[|:]/, 'IE-TICKET:');
+    const body = normalizedHeader.slice('IE-TICKET:'.length);
+    const bodyParts = body.includes('|') ? body.split('|') : body.split(':');
+
+    const eventId = bodyParts[0] || 'ev-project-mgmt';
+    const studentId = bodyParts[1] || '4011234567';
+    const trackingCode = bodyParts[2] || 'TK-402891';
+    const paidFromPayload =
+      bodyParts.length === 5 ? Math.max(0, Number(bodyParts[3]) || 0) : undefined;
+
+    const safeTickets = Array.isArray(ticketList) ? ticketList : [];
+    const matchedTicket = safeTickets.find(
+      (t) => t.qrPayload === raw || t.trackingCode === trackingCode
+    );
+
+    const isSignatureValid = Boolean(matchedTicket) || verifyTicketSignature(raw);
     if (!isSignatureValid) {
       playError();
       setScanErrorAlert(
@@ -1007,27 +1065,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
 
-    const parts = raw.split(':');
-    const eventId = parts[1] || 'ev-project-mgmt';
-    const studentId = parts[2] || '4011234567';
-    const trackingCode = parts[3] || 'TK-402891';
-    const paidFromPayload =
-      parts.length === 6 ? Math.max(0, Number(parts[4]) || 0) : undefined;
-
     touchAdminSession();
 
-    // Patch 5: Check Persistent Anti-Replay Checked-In Ledger FIRST
+    // Check Persistent Anti-Replay Checked-In Ledger FIRST
     const existingLedgerEntry = findCheckedInTicketInLedger(trackingCode, raw);
-    const safeTickets = Array.isArray(ticketList) ? ticketList : [];
-    const matchedTicket = safeTickets.find(
-      (t) => t.qrPayload === raw || t.trackingCode === trackingCode
-    );
 
     if (existingLedgerEntry || (matchedTicket && matchedTicket.checkedIn)) {
       playError();
       const timeStr =
         existingLedgerEntry?.checkedInAt || matchedTicket?.checkedInAt || 'قبلی';
-      const replayMsg = `⛔ هشدار امنیتی: این بلیط (${trackingCode}) قبلاً در تاریخ/ساعت ${timeStr} اسکن و ابطال شده است!`;
+      const replayMsg = `⛔ هشدار امنیتی: این بلیط (${trackingCode}) قبلاً در تاریخ/ساعت ${timeStr} اسکن و پذیرش شده است! (در صفحه سابقه بلیط‌ها موجود است)`;
       setScanErrorAlert(replayMsg);
       appendLog(
         'جلوگیری از اسکن مجدد بلیط تکراری (Anti-Replay Protection)',
@@ -1043,7 +1090,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const studentName =
       matchedTicket?.studentName ||
       matchedStudent?.fullName ||
-      currentUser?.fullName ||
+      (currentUser?.studentId === studentId ? currentUser?.fullName : '') ||
       'دانشجوی مهندسی صنایع';
 
     const matchedEvent = (Array.isArray(eventList) ? eventList : []).find(
@@ -1077,20 +1124,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     // Update student dossier inside AdminPanel
     updateStudentsAndPersist((prev) =>
-      prev.map((s) =>
-        s.studentId === studentId
-          ? {
-              ...s,
-              score: s.score + rewardPoints,
-              badges: s.badges.includes('21_badge_code.png')
-                ? s.badges
-                : [...s.badges, '21_badge_code.png'],
-              attendedEvents: s.attendedEvents.includes(eventTitle)
-                ? s.attendedEvents
-                : [eventTitle, ...s.attendedEvents],
-            }
-          : s
-      )
+      prev.map((s) => {
+        if (s.studentId !== studentId) return s;
+        const safeBadges = Array.isArray(s.badges) ? s.badges : [];
+        const safeAttended = Array.isArray(s.attendedEvents) ? s.attendedEvents : [];
+        return {
+          ...s,
+          score: (Number(s.score) || 0) + rewardPoints,
+          badges: safeBadges.includes('21_badge_code.png')
+            ? safeBadges
+            : [...safeBadges, '21_badge_code.png'],
+          attendedEvents: safeAttended.includes(eventTitle)
+            ? safeAttended
+            : [eventTitle, ...safeAttended],
+        };
+      })
     );
 
     const checkedTicketRecord: TicketRecord = matchedTicket
@@ -1118,7 +1166,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           checkedInAt: nowTime,
         };
 
-    // Update local ticketList so the scanned ticket immediately disappears from unScannedTickets!
+    // Update local ticketList so the scanned ticket immediately appears in scannedHistoryTickets!
     updateTicketsAndPersist((prev) => {
       const exists = prev.some(
         (t) => t.qrPayload === raw || t.trackingCode === trackingCode
@@ -1147,6 +1195,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       onCheckInTicket(checkedTicketRecord, issuedCertificate, rewardPoints);
     }
 
+    // Clear manual input box after successful scan so it doesn't stay stuck
+    setQrInputPayload('');
+
     setLastScannedResult({
       ticketCode: trackingCode,
       studentName,
@@ -1164,16 +1215,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       'success'
     );
     triggerToast(
-      `✅ حضور ${studentName} ثبت شد! بلیط از لیست انتظار خارج و به صفحه «سابقه بلیط‌ها» منتقل گردید.`
+      `✅ حضور ${studentName} ثبت شد! بلیط به صفحه «سابقه بلیط‌ها» اضافه گردید.`
     );
   };
 
   // Module 1: Undo Ticket Check-In (from Ticket History page)
   const handleUndoTicketCheckIn = (ticket: TicketRecord) => {
     playTick();
+    removeTicketFromCheckedInLedger(ticket.trackingCode, ticket.qrPayload);
     updateTicketsAndPersist((prev) =>
       prev.map((t) =>
-        t.id === ticket.id
+        t.id === ticket.id || t.trackingCode === ticket.trackingCode
           ? { ...t, checkedIn: false, checkedInAt: undefined }
           : t
       )
@@ -1261,10 +1313,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // ==========================================================================
   // MODULE 2: Approve / Reject / Restore Receipt or KYC (Moves to Folder!)
   // ==========================================================================
-  const handleQueueDecision = (
+  const handleQueueDecision = async (
     item: AdminReceiptItem,
     decision: 'approved' | 'rejected' | 'pending'
   ) => {
+    if (inFlightRequestRef.current || isSubmitting) {
+      return;
+    }
     const isReceipt = item.type === 'receipt' || item.type === 'payment_receipt';
     if (!hasPermission('finance') && isReceipt) {
       playError();
@@ -1272,103 +1327,122 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
 
-    if (decision === 'approved') {
-      playFanfare();
-    } else if (decision === 'rejected') {
-      playError();
-    } else {
-      playTick();
-    }
+    inFlightRequestRef.current = true;
+    setIsSubmitting(true);
 
-    const nowStamp = new Date().toLocaleTimeString('fa-IR', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    try {
+      const idempotencyKey = item.trackingCode || item.id;
+      try {
+        localStorage.setItem(
+          `ie_idem_review_${idempotencyKey}_${decision}`,
+          idempotencyKey
+        );
+      } catch {
+        // Ignore storage error
+      }
 
-    updateReceiptsAndPersist((prev) =>
-      prev.map((r) =>
-        r.id === item.id
-          ? {
-              ...r,
-              status: decision,
-              decidedAt: decision === 'pending' ? undefined : `امروز ساعت ${nowStamp}`,
-            }
-          : r
-      )
-    );
+      if (decision === 'approved') {
+        playFanfare();
+      } else if (decision === 'rejected') {
+        playError();
+      } else {
+        playTick();
+      }
 
-    if (!isReceipt) {
-      // It's a Student ID Card (KYC)
-      const nextKycStatus: KycStatus =
-        decision === 'approved'
-          ? 'verified'
-          : decision === 'rejected'
-          ? 'kyc_locked'
-          : 'pending_review';
+      const nowStamp = new Date().toLocaleTimeString('fa-IR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
 
-      updateStudentsAndPersist((prev) =>
-        prev.map((s) =>
-          s.studentId === item.studentId ? { ...s, kycStatus: nextKycStatus } : s
+      updateReceiptsAndPersist((prev) =>
+        prev.map((r) =>
+          r.id === item.id
+            ? {
+                ...r,
+                status: decision,
+                decidedAt: decision === 'pending' ? undefined : `امروز ساعت ${nowStamp}`,
+              }
+            : r
         )
       );
 
-      if (currentUser?.studentId && item.studentId === currentUser.studentId) {
-        onUpdateCurrentUserProfile?.({ kycStatus: nextKycStatus });
+      if (!isReceipt) {
+        // It's a Student ID Card (KYC)
+        const nextKycStatus: KycStatus =
+          decision === 'approved'
+            ? 'verified'
+            : decision === 'rejected'
+            ? 'kyc_locked'
+            : 'pending_review';
+
+        updateStudentsAndPersist((prev) =>
+          prev.map((s) =>
+            s.studentId === item.studentId ? { ...s, kycStatus: nextKycStatus } : s
+          )
+        );
+
+        if (currentUser?.studentId && item.studentId === currentUser.studentId) {
+          onUpdateCurrentUserProfile?.({ kycStatus: nextKycStatus });
+        }
+      } else if (decision === 'approved') {
+        // It's a Payment Receipt -> ensure a real scannable QR ticket is issued for this student!
+        const evId = item.eventId || 'ev-python-data';
+        const evTitle =
+          item.eventTitle || item.title || 'کارگاه تحلیل داده با پایتون';
+        const qrCodePayload = generateTicketPayload(
+          evId,
+          item.studentId,
+          item.trackingCode
+        );
+        const newApprovedTicket: TicketRecord = {
+          id: `tkt-rcp-${item.id}`,
+          eventId: evId,
+          eventTitle: evTitle,
+          eventDate: '۲۸ آبان ۱۴۰۴',
+          eventTime: '۱۴:۰۰ الی ۱۷:۰۰',
+          location: 'آمفی‌تئاتر دانشکده مهندسی صنایع',
+          studentId: item.studentId,
+          studentName: item.studentName,
+          trackingCode: item.trackingCode,
+          qrPayload: qrCodePayload,
+          paidAmount: item.amountTomans || item.amount || 50000,
+          discountPointsUsed: 0,
+          issuedAt: 'هم‌اکنون (تایید فیش)',
+          sentToTelegram: true,
+          checkedIn: false,
+        };
+        updateTicketsAndPersist((prev) => {
+          const exists = prev.some((t) => t.trackingCode === item.trackingCode);
+          return exists ? prev : [newApprovedTicket, ...prev];
+        });
       }
-    } else if (decision === 'approved') {
-      // It's a Payment Receipt -> ensure a real scannable QR ticket is issued for this student!
-      const evId = item.eventId || 'ev-python-data';
-      const evTitle =
-        item.eventTitle || item.title || 'کارگاه تحلیل داده با پایتون';
-      const qrCodePayload = generateTicketPayload(
-        evId,
-        item.studentId,
-        item.trackingCode
+
+      if (decision === 'approved' || decision === 'rejected') {
+        await submitAdminReviewToBot({ item, decision });
+        await onSyncWithBotServer?.();
+      }
+
+      appendLog(
+        decision === 'approved'
+          ? `تایید و انتقال به پوشه تاییدشده‌ها (${isReceipt ? 'فیش واریزی' : 'کارت دانشجویی KYC'})`
+          : decision === 'rejected'
+          ? `رد کردن و انتقال به پوشه ردشده‌ها (${isReceipt ? 'فیش واریزی' : 'کارت دانشجویی KYC'})`
+          : `بازگردانی به صف در انتظار بررسی`,
+        `${item.studentName} (${item.trackingCode})`,
+        decision === 'approved' ? 'success' : decision === 'rejected' ? 'warning' : 'info'
       );
-      const newApprovedTicket: TicketRecord = {
-        id: `tkt-rcp-${item.id}`,
-        eventId: evId,
-        eventTitle: evTitle,
-        eventDate: '۲۸ آبان ۱۴۰۴',
-        eventTime: '۱۴:۰۰ الی ۱۷:۰۰',
-        location: 'آمفی‌تئاتر دانشکده مهندسی صنایع',
-        studentId: item.studentId,
-        studentName: item.studentName,
-        trackingCode: item.trackingCode,
-        qrPayload: qrCodePayload,
-        paidAmount: item.amountTomans || item.amount || 50000,
-        discountPointsUsed: 0,
-        issuedAt: 'هم‌اکنون (تایید فیش)',
-        sentToTelegram: true,
-        checkedIn: false,
-      };
-      updateTicketsAndPersist((prev) => {
-        const exists = prev.some((t) => t.trackingCode === item.trackingCode);
-        return exists ? prev : [newApprovedTicket, ...prev];
-      });
+
+      triggerToast(
+        decision === 'approved'
+          ? `✅ مورد ${item.studentName} تایید شد، در ربات تلگرام ثبت گردید و پیام به دانشجو ارسال شد!`
+          : decision === 'rejected'
+          ? `❌ مورد ${item.studentName} رد شد و پیام اطلاع‌رسانی در تلگرام برای دانشجو ارسال گردید.`
+          : `🔄 مورد ${item.studentName} به صف «در انتظار بررسی» بازگردانده شد.`
+      );
+    } finally {
+      inFlightRequestRef.current = false;
+      setIsSubmitting(false);
     }
-
-    if (decision === 'approved' || decision === 'rejected') {
-      void submitAdminReviewToBot({ item, decision });
-    }
-
-    appendLog(
-      decision === 'approved'
-        ? `تایید و انتقال به پوشه تاییدشده‌ها (${isReceipt ? 'فیش واریزی' : 'کارت دانشجویی KYC'})`
-        : decision === 'rejected'
-        ? `رد کردن و انتقال به پوشه ردشده‌ها (${isReceipt ? 'فیش واریزی' : 'کارت دانشجویی KYC'})`
-        : `بازگردانی به صف در انتظار بررسی`,
-      `${item.studentName} (${item.trackingCode})`,
-      decision === 'approved' ? 'success' : decision === 'rejected' ? 'warning' : 'info'
-    );
-
-    triggerToast(
-      decision === 'approved'
-        ? `✅ مورد ${item.studentName} تایید شد، در ربات تلگرام ثبت گردید و پیام به دانشجو ارسال شد!`
-        : decision === 'rejected'
-        ? `❌ مورد ${item.studentName} رد شد و پیام اطلاع‌رسانی در تلگرام برای دانشجو ارسال گردید.`
-        : `🔄 مورد ${item.studentName} به صف «در انتظار بررسی» بازگردانده شد.`
-    );
   };
 
   // ==========================================================================
@@ -1962,17 +2036,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       };
 
     updateStudentsAndPersist((prev) =>
-      prev.map((s) =>
-        s.studentId === selectedStudentForBadge
-          ? {
-              ...s,
-              score: s.score + 30,
-              badges: s.badges.includes(badgeObj.filename)
-                ? s.badges
-                : [...s.badges, badgeObj.filename],
-            }
-          : s
-      )
+      prev.map((s) => {
+        if (s.studentId !== selectedStudentForBadge) return s;
+        const safeBadges = Array.isArray(s.badges) ? s.badges : [];
+        return {
+          ...s,
+          score: (Number(s.score) || 0) + 30,
+          badges: safeBadges.includes(badgeObj.filename)
+            ? safeBadges
+            : [...safeBadges, badgeObj.filename],
+        };
+      })
     );
 
     // Also unlock this badge in badgeList
@@ -2005,24 +2079,49 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleAddWeeklyQuest = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newQuestTitle.trim()) return;
+    if (!newQuestTitle.trim()) {
+      playError();
+      triggerToast('⚠️ لطفاً عنوان ماموریت را وارد کنید.');
+      return;
+    }
     playCoin();
+    const resolvedTarget =
+      newQuestConditionType === 'complete_profile' ||
+      newQuestConditionType === 'secret_code'
+        ? 1
+        : Math.max(1, parseFlexibleNumberInput(newQuestMaxProgress, 1));
+    const defaultDescByCondition: Record<QuestConditionType, string> = {
+      register_events: `ثبت‌نام در حداقل ${resolvedTarget.toLocaleString('fa-IR')} کارگاه یا رویداد انجمن`,
+      checkin_events: `حضور و اسکن بلیط QR در حداقل ${resolvedTarget.toLocaleString('fa-IR')} رویداد`,
+      reach_score: `رسیدن به مجموع ${resolvedTarget.toLocaleString('fa-IR')} امتیاز در سامانه`,
+      complete_profile: 'تکمیل ثبت‌نام اولیه دانشجویی و احراز هویت',
+      secret_code: 'وارد کردن کد رمز اعلام‌شده توسط انجمن در بخش ماموریت‌ها',
+    };
+
     const createdQuest: WeeklyQuest = {
       id: `qst-adm-${Date.now()}`,
       title: newQuestTitle.trim(),
-      description: 'ماموریت ویژه ثبت‌شده توسط انجمن علمی مهندسی صنایع',
-      rewardPoints: Number(newQuestReward) || 40,
-      progress: 1,
-      maxProgress: 1,
+      description:
+        newQuestDescription.trim() || defaultDescByCondition[newQuestConditionType],
+      rewardPoints: Math.max(1, parseFlexibleNumberInput(newQuestReward, 40)),
+      progress: 0,
+      maxProgress: resolvedTarget,
       isClaimed: false,
+      conditionType: newQuestConditionType,
+      secretCode:
+        newQuestConditionType === 'secret_code'
+          ? (newQuestSecretCode.trim() || 'IE1404')
+          : undefined,
+      unlockedByCode: false,
     };
     const updated = [createdQuest, ...(Array.isArray(questList) ? questList : [])];
     setQuestList(updated);
     onUpdateQuests?.(updated);
     setNewQuestTitle('');
-    appendLog('ایجاد ماموریت هفتگی جدید', createdQuest.title, 'success');
+    setNewQuestDescription('');
+    appendLog('ایجاد ماموریت جدید', createdQuest.title, 'success');
     triggerToast(
-      `🎯 ماموریت «${createdQuest.title}» به تب افتخارات دانشجویان اضافه شد!`
+      `🎯 ماموریت «${createdQuest.title}» با پاداش +${createdQuest.rewardPoints} امتیاز به بخش ماموریت‌ها اضافه شد!`
     );
   };
 
@@ -2634,6 +2733,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       dir="ltr"
                       value={qrInputPayload}
                       onChange={(e) => setQrInputPayload(e.target.value)}
+                      placeholder="مثال: رشته بارکد QR را اسکن یا اینجا وارد نمایید..."
                       className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-mono border focus:outline-none ${inputClass}`}
                     />
                     <button
@@ -2653,10 +2753,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 )}
 
                 {lastScannedResult && (
-                  <div className="p-4 rounded-2xl bg-emerald-950/90 border-2 border-emerald-500 text-[#F6F1E7] space-y-2 text-xs animate-fade-in">
-                    <div className="flex items-center justify-between">
+                  <div className="p-4 rounded-2xl bg-emerald-950/90 border-2 border-emerald-500 text-[#F6F1E7] space-y-2.5 text-xs animate-fade-in">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-black text-emerald-300 text-sm">
-                        حاضر ✅ • بلیط به «صفحه سابقه بلیط‌ها» منتقل شد و گواهی صادر گردید
+                        حاضر ✅ • بلیط به «صفحه سابقه بلیط‌ها» اضافه شد و گواهی صادر گردید
                       </span>
                       <span className="text-[10px] text-emerald-200">
                         ساعت ثبت: {lastScannedResult.timestamp}
@@ -2685,6 +2785,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           {lastScannedResult.certificateCode}
                         </span>
                       </div>
+                    </div>
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setMod1SubPage('history')}
+                        className="px-3.5 py-1.5 rounded-xl bg-emerald-500 text-[#101622] font-black text-[11px] cursor-pointer"
+                      >
+                        📜 مشاهده در سابقه بلیط‌های تاییدشده ({scannedHistoryTickets.length.toLocaleString('fa-IR')} مورد) ←
+                      </button>
                     </div>
                   </div>
                 )}
@@ -2775,7 +2884,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
            =================================================================== */}
         {activeModule === 2 && (
           <div className={`rounded-3xl p-4 lg:p-6 border space-y-4 ${cardSurfaceClass}`}>
-            <div className="flex items-center justify-between border-b border-current/10 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-3">
               <div>
                 <h2 className="text-sm lg:text-base font-black">
                   💳 ۲. کارتابل فیش‌های واریزی و کارت‌های دانشجویی (با پوشه‌های بایگانی)
@@ -2785,9 +2894,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                   }`}
                 >
-                  هر فیش یا کارت دانشجویی پس از تایید یا رد شدن، از صف انتظار خارج شده و به پوشه تاییدشده‌ها یا ردشده‌های گذشته منتقل می‌شود
+                  هر فیش یا کارت دانشجویی پس از تایید یا رد شدن (در ربات یا مینی‌اپ)، به‌صورت زنده همگام‌سازی و به پوشه مربوطه منتقل می‌شود
                 </p>
               </div>
+              {onSyncWithBotServer && (
+                <button
+                  type="button"
+                  disabled={isSyncingBotQueue}
+                  onClick={async () => {
+                    playTick();
+                    setIsSyncingBotQueue(true);
+                    try {
+                      await onSyncWithBotServer();
+                      triggerToast('🔄 کارتابل فیش‌ها و کارت‌های دانشجویی با سرور ربات تلگرام همگام‌سازی شد!');
+                    } finally {
+                      setIsSyncingBotQueue(false);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-xl bg-[#D4AB58] hover:bg-[#e1b864] text-[#101622] text-xs font-black flex items-center gap-1.5 cursor-pointer shrink-0 shadow"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBotQueue ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingBotQueue ? 'در حال دریافت...' : '🔄 دریافت فوری از ربات'}</span>
+                </button>
+              )}
             </div>
 
             {/* Category Selector: Payment Receipts vs Student ID Cards (KYC) */}
@@ -2898,7 +3027,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {filteredQueueItems.map((item) => (
+                {filteredQueueItems.map((item) => {
+                  const imgSrc = resolveItemImageSrc(item);
+                  return (
                   <div
                     key={item.id}
                     className={`p-4 rounded-2xl border space-y-3 animate-fade-in ${subCardClass}`}
@@ -2943,13 +3074,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     )}
 
-                    {item.receiptImageUrl && (
-                      <div className="h-28 rounded-xl overflow-hidden bg-black/30 border border-current/15 flex items-center justify-center p-1">
-                        <img
-                          src={item.receiptImageUrl}
-                          alt="تصویر پیوست"
-                          className="max-h-full max-w-full object-contain rounded"
-                        />
+                    {imgSrc ? (
+                      <div className="space-y-1.5">
+                        <div
+                          onClick={() => setPreviewImageModalSrc(imgSrc)}
+                          className="h-44 rounded-xl overflow-hidden bg-black/40 border border-[#D4AB58]/40 flex items-center justify-center p-1.5 cursor-pointer relative group"
+                          title="برای بزرگنمایی تصویر کلیک کنید"
+                        >
+                          <img
+                            src={imgSrc}
+                            alt="تصویر مدرک ارسالی دانشجو"
+                            loading="eager"
+                            className="max-h-full max-w-full object-contain rounded transition-transform group-hover:scale-105"
+                          />
+                          <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded-lg bg-black/75 text-[#D4AB58] text-[10px] font-black">
+                            🔍 بزرگنمایی تصویر
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-xl bg-black/20 border border-current/10 text-[11px] font-bold opacity-75 text-center">
+                        تصویر پیوست از ربات دریافت شده است (برای بازخوانی روی دکمه دریافت فوری کلیک کنید)
                       </div>
                     )}
 
@@ -3015,7 +3160,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     )}
                   </div>
-                ))}
+                );
+                })}
+              </div>
+            )}
+
+            {/* Full-Screen Zoom Modal for Student ID Cards & Receipts */}
+            {previewImageModalSrc && (
+              <div
+                onClick={() => setPreviewImageModalSrc(null)}
+                className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 animate-fade-in"
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="max-w-2xl w-full bg-[#101622] border-2 border-[#D4AB58] rounded-3xl p-4 space-y-3"
+                >
+                  <div className="flex items-center justify-between text-xs font-black text-[#F6F1E7]">
+                    <span>🔍 بررسی دقیق تصویر مدرک دانشجو</span>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewImageModalSrc(null)}
+                      className="px-3 py-1 rounded-xl bg-rose-600 text-white cursor-pointer"
+                    >
+                      بستن ✕
+                    </button>
+                  </div>
+                  <div className="max-h-[75vh] overflow-auto flex items-center justify-center bg-black/50 rounded-2xl p-2">
+                    <img
+                      src={previewImageModalSrc}
+                      alt="تصویر بزرگنمایی‌شده"
+                      className="max-w-full max-h-[70vh] object-contain rounded-xl"
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -4511,6 +4688,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
 
+            {/* Admin Toggle Switch to Lock/Disable Student Personal Timers */}
+            <div
+              className={`p-4 rounded-2xl border-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-all ${
+                flagsState.allowStudentTimers === false
+                  ? 'bg-rose-950/40 border-rose-500/60'
+                  : 'bg-emerald-950/30 border-emerald-500/40'
+              }`}
+            >
+              <div className="space-y-1">
+                <div className="text-xs sm:text-sm font-black text-[#D4AB58]">
+                  🔒 قفل کردن ساخت یادآور شخصی توسط دانشجویان (فقط ارسال یادآورهای ادمین)
+                </div>
+                <p className="text-[11px] font-bold opacity-85">
+                  {flagsState.allowStudentTimers === false
+                    ? '⛔ فعال: دانشجویان نمی‌توانند تایمر شخصی بسازند و فقط یادآورهای رسمی انجمن ارسال می‌شوند.'
+                    : '✅ غیرفعال (باز): دانشجویان می‌توانند علاوه بر یادآورهای انجمن، یادآور شخصی هم ثبت کنند.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleStudentPersonalTimersLock}
+                className={`px-4 py-2.5 rounded-xl font-black text-xs cursor-pointer shrink-0 transition-all border-b-4 active:border-b-0 active:translate-y-1 ${
+                  flagsState.allowStudentTimers === false
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-800'
+                    : 'bg-[#D4AB58] hover:bg-[#e0b865] text-[#101622] border-[#8A6A26]'
+                }`}
+              >
+                {flagsState.allowStudentTimers === false
+                  ? '🔒 قفل فعال است (کلیک برای باز کردن)'
+                  : '🔓 قفل کردن تایمر شخصی دانشجویان'}
+              </button>
+            </div>
+
             {/* Sub-section A: Explicit Start Date & One-Time / Recurring Timer Builder */}
             <div className={`p-4 rounded-2xl border space-y-3.5 text-xs ${subCardClass}`}>
               <div className="flex items-center justify-between">
@@ -4868,11 +5078,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <div className={`p-4 rounded-2xl border-2 border-[#D4AB58]/60 space-y-4 text-xs ${subCardClass}`}>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-2.5">
                     <div>
-                      <h3 className="text-sm font-black text-[#D4AB58]">
-                        🎰 مدیریت جوایز صندوقچه‌ها و درصد شانس
-                      </h3>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-sm font-black text-[#D4AB58]">
+                          🎰 شخصی‌سازی کامل صندوقچه‌ها، ورودی‌ها، جوایز و درصد شانس
+                        </h3>
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                          👁️ جوایز و درصدها فقط برای ادمین قابل مشاهده است (مخفی برای دانشجو)
+                        </span>
+                      </div>
                       <p className="text-[11px] font-bold opacity-80 mt-0.5">
-                        برای هر جایزه در صندوقچه برنزی و طلایی، عنوان جایزه و «درصد شانس برنده شدن (از ۰ تا ۱۰۰ درصد)» را تعیین کنید.
+                        تعداد صندوقچه‌ها، نام، هزینه ورودی الماس، لیست جوایز و درصد شانس هر جایزه (۰ تا ۱۰۰٪) را کاملاً دلخواه تنظیم کنید.
                       </p>
                     </div>
                     <button
@@ -4882,17 +5097,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         playCoin();
                         setIsSavingLootbox(true);
                         try {
-                          onUpdateLootboxConfig?.(lootboxDraft);
-                          const res = await saveLootboxConfigOnBot(lootboxDraft);
+                          const normalizedChests = getNormalizedLootboxChests(lootboxDraft);
+                          const syncedDraft = syncLootboxConfigWithChests(
+                            normalizedChests,
+                            lootboxDraft
+                          );
+                          setLootboxDraft(syncedDraft);
+                          onUpdateLootboxConfig?.(syncedDraft);
+                          const res = await saveLootboxConfigOnBot(syncedDraft);
                           appendLog(
-                            'ذخیره جوایز و درصد شانس صندوقچه‌ها',
-                            `برنزی (${lootboxDraft.bronzePrizes.length}) / طلایی (${lootboxDraft.goldPrizes.length})`,
+                            'ذخیره تنظیمات صندوقچه‌ها و درصد شانس',
+                            `${normalizedChests.length} صندوقچه فعال`,
                             'success'
                           );
                           triggerToast(
                             res.ok
-                              ? '✅ جوایز و درصد شانس صندوقچه‌ها در سرور ربات و مینی‌اپ ذخیره شد!'
-                              : '✅ جوایز و درصد شانس صندوقچه‌ها در مینی‌اپ ذخیره و فعال شد!'
+                              ? '✅ صندوقچه‌ها، هزینه‌های ورودی و درصد شانس‌ها در سرور ربات و مینی‌اپ ذخیره شد!'
+                              : '✅ صندوقچه‌ها، هزینه‌های ورودی و درصد شانس‌ها در مینی‌اپ ذخیره و فعال شد!'
                           );
                         } finally {
                           setIsSavingLootbox(false);
@@ -4902,11 +5123,130 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     >
                       {isSavingLootbox
                         ? '⏳ در حال ذخیره در سرور...'
-                        : '💾 ذخیره جوایز و درصد شانس در سرور (POST /api/miniapp/admin-save-lootbox)'}
+                        : '💾 ذخیره تغییرات صندوقچه‌ها در سرور'}
                     </button>
                   </div>
 
-                  {/* Add New Prize Form */}
+                  {/* 1. ADD NEW CUSTOM CHEST FORM */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!newChestTitle.trim()) {
+                        playError();
+                        triggerToast('⚠️ لطفاً نام صندوقچه جدید را وارد کنید.');
+                        return;
+                      }
+                      playCoin();
+                      const currentChests = getNormalizedLootboxChests(lootboxDraft);
+                      const createdChest: LootboxChestConfig = {
+                        id: `chest-${Date.now()}`,
+                        title: newChestTitle.trim(),
+                        subtitle:
+                          newChestSubtitle.trim() || 'صندوقچه ویژه انجمن علمی مهندسی صنایع',
+                        cost: Math.max(1, parseFlexibleNumberInput(newChestCost, 75)),
+                        themeColor: newChestTheme,
+                        iconFilename: '35_icon_gift_box.png',
+                        prizes: [
+                          {
+                            id: `prz-${Date.now()}-1`,
+                            title: 'کد تخفیف ۳۰٪ کارگاه‌های انجمن',
+                            chancePercent: 50,
+                            rewardType: 'discount',
+                          },
+                          {
+                            id: `prz-${Date.now()}-2`,
+                            title: '۲۰ امتیاز الماس هدیه',
+                            chancePercent: 30,
+                            rewardType: 'points',
+                            bonusPoints: 20,
+                          },
+                          {
+                            id: `prz-${Date.now()}-3`,
+                            title: 'پوچ (شانس مجدد در دفعات بعد)',
+                            chancePercent: 20,
+                            rewardType: 'empty',
+                          },
+                        ],
+                      };
+                      const nextChests = [...currentChests, createdChest];
+                      const nextConfig = syncLootboxConfigWithChests(nextChests, lootboxDraft);
+                      setLootboxDraft(nextConfig);
+                      onUpdateLootboxConfig?.(nextConfig);
+                      setNewPrizeChestType(createdChest.id);
+                      setNewChestTitle('');
+                      setNewChestSubtitle('');
+                      triggerToast(
+                        `📦 صندوقچه جدید «${createdChest.title}» با ورودی ${createdChest.cost} الماس ساخته شد!`
+                      );
+                    }}
+                    className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-black text-xs text-[#D4AB58]">
+                        ➕ ساخت صندوقچه جدید (تعیین نام، ورودی الماس و رنگ):
+                      </span>
+                      <span className="text-[10px] font-bold opacity-75">
+                        تعداد صندوقچه‌های فعال:{' '}
+                        {getNormalizedLootboxChests(lootboxDraft).length.toLocaleString('fa-IR')} عدد
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                      <input
+                        type="text"
+                        value={newChestTitle}
+                        onChange={(e) => setNewChestTitle(e.target.value)}
+                        placeholder="نام صندوقچه (مثلاً: صندوقچه الماسی)"
+                        className={`px-3 py-2 rounded-xl border text-xs font-bold ${inputClass}`}
+                      />
+                      <input
+                        type="text"
+                        value={newChestSubtitle}
+                        onChange={(e) => setNewChestSubtitle(e.target.value)}
+                        placeholder="توضیح کوتاه (اختیاری)"
+                        className={`px-3 py-2 rounded-xl border text-xs font-bold ${inputClass}`}
+                      />
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-bold shrink-0">ورودی (💎):</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          dir="ltr"
+                          value={newChestCost}
+                          onFocus={(e) => e.currentTarget.select()}
+                          onChange={(e) =>
+                            setNewChestCost(
+                              Math.max(0, parseFlexibleNumberInput(e.target.value, 0))
+                            )
+                          }
+                          className={`w-full px-2.5 py-2 rounded-xl border text-center font-mono font-black text-xs ${inputClass}`}
+                        />
+                      </div>
+                      <div className="flex gap-1.5">
+                        <select
+                          value={newChestTheme}
+                          onChange={(e) =>
+                            setNewChestTheme(
+                              e.target.value as LootboxChestConfig['themeColor']
+                            )
+                          }
+                          className={`flex-1 px-2 py-2 rounded-xl border text-xs font-black ${inputClass}`}
+                        >
+                          <option value="gold">🏆 طلایی</option>
+                          <option value="bronze">🥉 برنزی / مرجانی</option>
+                          <option value="emerald">💎 زمردی</option>
+                          <option value="purple">🔮 بنفش کهکشانی</option>
+                        </select>
+                        <button
+                          type="submit"
+                          className="px-3 py-2 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer shrink-0"
+                        >
+                          + ساخت صندوقچه
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+
+                  {/* 2. ADD NEW PRIZE TO ANY CHEST FORM */}
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
@@ -4916,44 +5256,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         return;
                       }
                       playCoin();
+                      const currentChests = getNormalizedLootboxChests(lootboxDraft);
+                      const targetChestId =
+                        currentChests.some((c) => c.id === newPrizeChestType)
+                          ? newPrizeChestType
+                          : currentChests[0]?.id || 'bronze';
+
                       const createdPrize: LootboxPrizeItem = {
-                        id: `${newPrizeChestType}-${Date.now()}`,
+                        id: `${targetChestId}-${Date.now()}`,
                         title: newPrizeTitle.trim(),
-                        chancePercent: Math.max(0, Math.min(100, Number(newPrizeChance) || 0)),
+                        chancePercent: Math.max(
+                          0,
+                          Math.min(100, parseFlexibleNumberInput(newPrizeChance, 0))
+                        ),
                         rewardType: newPrizeRewardType,
                         bonusPoints:
                           newPrizeRewardType === 'points'
-                            ? Math.max(1, Number(newPrizeBonusPoints) || 20)
+                            ? Math.max(1, parseFlexibleNumberInput(newPrizeBonusPoints, 20))
                             : undefined,
                       };
-                      const nextConfig: LootboxConfig =
-                        newPrizeChestType === 'bronze'
-                          ? {
-                              ...lootboxDraft,
-                              bronzePrizes: [...lootboxDraft.bronzePrizes, createdPrize],
-                            }
-                          : {
-                              ...lootboxDraft,
-                              goldPrizes: [...lootboxDraft.goldPrizes, createdPrize],
-                            };
+
+                      const nextChests = currentChests.map((c) =>
+                        c.id === targetChestId
+                          ? { ...c, prizes: [...c.prizes, createdPrize] }
+                          : c
+                      );
+                      const nextConfig = syncLootboxConfigWithChests(nextChests, lootboxDraft);
                       setLootboxDraft(nextConfig);
                       onUpdateLootboxConfig?.(nextConfig);
                       setNewPrizeTitle('');
-                      triggerToast(`🎁 جایزه «${createdPrize.title}» با شانس ${createdPrize.chancePercent}% اضافه شد.`);
+                      triggerToast(
+                        `🎁 جایزه «${createdPrize.title}» با شانس ${createdPrize.chancePercent}% اضافه شد.`
+                      );
                     }}
                     className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}
                   >
                     <div className="font-black text-xs">
-                      ➕ افزودن جایزه جدید به صندوقچه برنزی یا طلایی:
+                      ➕ افزودن جایزه جدید به صندوقچه انتخاب‌شده:
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                       <select
                         value={newPrizeChestType}
-                        onChange={(e) => setNewPrizeChestType(e.target.value as 'bronze' | 'gold')}
+                        onChange={(e) => setNewPrizeChestType(e.target.value)}
                         className={`px-3 py-2 rounded-xl border text-xs font-black ${inputClass}`}
                       >
-                        <option value="bronze">🥉 صندوقچه برنزی</option>
-                        <option value="gold">🏆 صندوقچه طلایی</option>
+                        {getNormalizedLootboxChests(lootboxDraft).map((c) => (
+                          <option key={c.id} value={c.id}>
+                            📦 {c.title} ({c.cost} 💎)
+                          </option>
+                        ))}
                       </select>
 
                       <input
@@ -4982,16 +5333,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <label className="text-[10px] font-bold block mb-1">
                           درصد شانس برنده شدن (۰ تا ۱۰۰٪):
                         </label>
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          value={newPrizeChance}
-                          onChange={(e) =>
-                            setNewPrizeChance(Math.max(0, Math.min(100, Number(e.target.value) || 0)))
-                          }
-                          className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
-                        />
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            dir="ltr"
+                            value={newPrizeChance}
+                            onFocus={(e) => e.currentTarget.select()}
+                            onChange={(e) =>
+                              setNewPrizeChance(
+                                Math.max(
+                                  0,
+                                  Math.min(100, parseFlexibleNumberInput(e.target.value, 0))
+                                )
+                              )
+                            }
+                            className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
+                          />
+                          <span className="font-black text-xs">%</span>
+                        </div>
                       </div>
 
                       {newPrizeRewardType === 'points' ? (
@@ -5000,12 +5360,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             مقدار امتیاز هدیه:
                           </label>
                           <input
-                            type="number"
-                            min={1}
-                            max={1000}
+                            type="text"
+                            inputMode="numeric"
+                            dir="ltr"
                             value={newPrizeBonusPoints}
+                            onFocus={(e) => e.currentTarget.select()}
                             onChange={(e) =>
-                              setNewPrizeBonusPoints(Math.max(1, Number(e.target.value) || 20))
+                              setNewPrizeBonusPoints(
+                                Math.max(0, parseFlexibleNumberInput(e.target.value, 0))
+                              )
                             }
                             className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
                           />
@@ -5023,170 +5386,220 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         type="submit"
                         className="py-2.5 px-4 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer"
                       >
-                        + افزودن جایزه به لیست
+                        + افزودن جایزه به صندوقچه
                       </button>
                     </div>
                   </form>
 
-                  {/* Bronze & Gold Prize Tables with Live Chance Sliders/Inputs */}
+                  {/* 3. ALL CUSTOM CHESTS & PRIZE TABLES WITH SMOOTH PERCENTAGE INPUTS */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {/* Bronze Chest Prizes */}
-                    <div className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}>
-                      <div className="flex items-center justify-between border-b border-current/10 pb-2">
-                        <span className="font-black text-xs text-amber-500">
-                          🥉 جوایز صندوقچه برنزی ({lootboxDraft.bronzeCost} امتیاز)
-                        </span>
-                        <span className="text-[10px] font-mono font-bold">
-                          مجموع شانس:{' '}
-                          {lootboxDraft.bronzePrizes.reduce(
-                            (acc, p) => acc + (Number(p.chancePercent) || 0),
-                            0
-                          )}
-                          %
-                        </span>
-                      </div>
+                    {getNormalizedLootboxChests(lootboxDraft).map((chest) => {
+                      const totalChance = chest.prizes.reduce(
+                        (acc, p) => acc + (Number(p.chancePercent) || 0),
+                        0
+                      );
+                      const allChests = getNormalizedLootboxChests(lootboxDraft);
 
-                      <div className="space-y-2">
-                        {lootboxDraft.bronzePrizes.map((prize) => (
-                          <div
-                            key={prize.id}
-                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${subCardClass}`}
-                          >
-                            <div className="min-w-0 flex-1">
+                      const updateThisChest = (
+                        updater: (c: LootboxChestConfig) => LootboxChestConfig
+                      ) => {
+                        const nextChests = allChests.map((c) =>
+                          c.id === chest.id ? updater(c) : c
+                        );
+                        const synced = syncLootboxConfigWithChests(
+                          nextChests,
+                          lootboxDraft
+                        );
+                        setLootboxDraft(synced);
+                        onUpdateLootboxConfig?.(synced);
+                      };
+
+                      return (
+                        <div
+                          key={chest.id}
+                          className={`p-3.5 rounded-2xl border space-y-3 ${cardSurfaceClass}`}
+                        >
+                          {/* Chest Header: Editable Title, Editable Cost & Delete Chest */}
+                          <div className="space-y-2 border-b border-current/10 pb-2.5">
+                            <div className="flex items-center justify-between gap-2">
                               <input
                                 type="text"
-                                value={prize.title}
+                                value={chest.title}
                                 onChange={(e) => {
                                   const val = e.target.value;
-                                  setLootboxDraft((prev) => ({
-                                    ...prev,
-                                    bronzePrizes: prev.bronzePrizes.map((p) =>
-                                      p.id === prize.id ? { ...p, title: val } : p
-                                    ),
-                                  }));
+                                  updateThisChest((c) => ({ ...c, title: val }));
                                 }}
-                                className={`w-full px-2 py-1 rounded-lg border text-xs font-black ${inputClass}`}
+                                className={`flex-1 px-2.5 py-1.5 rounded-xl border text-xs font-black text-[#D4AB58] ${inputClass}`}
+                                placeholder="نام صندوقچه..."
                               />
+                              {allChests.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    playTick();
+                                    const nextChests = allChests.filter(
+                                      (c) => c.id !== chest.id
+                                    );
+                                    const synced = syncLootboxConfigWithChests(
+                                      nextChests,
+                                      lootboxDraft
+                                    );
+                                    setLootboxDraft(synced);
+                                    onUpdateLootboxConfig?.(synced);
+                                    triggerToast(
+                                      `🗑️ صندوقچه «${chest.title}» حذف شد.`
+                                    );
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 text-[10px] font-black flex items-center gap-1 cursor-pointer shrink-0"
+                                  title="حذف کامل این صندوقچه"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>حذف صندوقچه</span>
+                                </button>
+                              )}
                             </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={prize.chancePercent}
-                                onChange={(e) => {
-                                  const pct = Math.max(
-                                    0,
-                                    Math.min(100, Number(e.target.value) || 0)
-                                  );
-                                  setLootboxDraft((prev) => ({
-                                    ...prev,
-                                    bronzePrizes: prev.bronzePrizes.map((p) =>
-                                      p.id === prize.id ? { ...p, chancePercent: pct } : p
-                                    ),
-                                  }));
-                                }}
-                                className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
-                              />
-                              <span className="text-xs font-black">%</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setLootboxDraft((prev) => ({
-                                    ...prev,
-                                    bronzePrizes: prev.bronzePrizes.filter(
-                                      (p) => p.id !== prize.id
-                                    ),
-                                  }))
-                                }
-                                className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 cursor-pointer"
+
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold opacity-85">
+                                  هزینه ورودی (💎 الماس):
+                                </span>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  dir="ltr"
+                                  value={chest.cost}
+                                  onFocus={(e) => e.currentTarget.select()}
+                                  onChange={(e) => {
+                                    const nextCost = Math.max(
+                                      0,
+                                      parseFlexibleNumberInput(e.target.value, 0)
+                                    );
+                                    updateThisChest((c) => ({ ...c, cost: nextCost }));
+                                  }}
+                                  className={`w-20 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
+                                />
+                              </div>
+
+                              <span
+                                className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-lg ${
+                                  totalChance === 100
+                                    ? 'bg-emerald-500/20 text-emerald-400'
+                                    : 'bg-amber-500/20 text-amber-300'
+                                }`}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                                مجموع شانس: {totalChance}%
+                              </span>
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </div>
 
-                    {/* Gold Chest Prizes */}
-                    <div className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}>
-                      <div className="flex items-center justify-between border-b border-current/10 pb-2">
-                        <span className="font-black text-xs text-[#D4AB58]">
-                          🏆 جوایز صندوقچه طلایی ({lootboxDraft.goldCost} امتیاز)
-                        </span>
-                        <span className="text-[10px] font-mono font-bold">
-                          مجموع شانس:{' '}
-                          {lootboxDraft.goldPrizes.reduce(
-                            (acc, p) => acc + (Number(p.chancePercent) || 0),
-                            0
-                          )}
-                          %
-                        </span>
-                      </div>
-
-                      <div className="space-y-2">
-                        {lootboxDraft.goldPrizes.map((prize) => (
-                          <div
-                            key={prize.id}
-                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${subCardClass}`}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <input
-                                type="text"
-                                value={prize.title}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setLootboxDraft((prev) => ({
-                                    ...prev,
-                                    goldPrizes: prev.goldPrizes.map((p) =>
-                                      p.id === prize.id ? { ...p, title: val } : p
-                                    ),
-                                  }));
-                                }}
-                                className={`w-full px-2 py-1 rounded-lg border text-xs font-black ${inputClass}`}
-                              />
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={prize.chancePercent}
-                                onChange={(e) => {
-                                  const pct = Math.max(
-                                    0,
-                                    Math.min(100, Number(e.target.value) || 0)
-                                  );
-                                  setLootboxDraft((prev) => ({
-                                    ...prev,
-                                    goldPrizes: prev.goldPrizes.map((p) =>
-                                      p.id === prize.id ? { ...p, chancePercent: pct } : p
-                                    ),
-                                  }));
-                                }}
-                                className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
-                              />
-                              <span className="text-xs font-black">%</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setLootboxDraft((prev) => ({
-                                    ...prev,
-                                    goldPrizes: prev.goldPrizes.filter(
-                                      (p) => p.id !== prize.id
-                                    ),
-                                  }))
-                                }
-                                className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 cursor-pointer"
+                          {/* Prizes Inside This Chest */}
+                          <div className="space-y-2">
+                            {chest.prizes.map((prize) => (
+                              <div
+                                key={prize.id}
+                                className={`p-2.5 rounded-xl border space-y-2 ${subCardClass}`}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <input
+                                      type="text"
+                                      value={prize.title}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        updateThisChest((c) => ({
+                                          ...c,
+                                          prizes: c.prizes.map((p) =>
+                                            p.id === prize.id ? { ...p, title: val } : p
+                                          ),
+                                        }));
+                                      }}
+                                      className={`w-full px-2 py-1 rounded-lg border text-xs font-black ${inputClass}`}
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <input
+                                      type="text"
+                                      inputMode="numeric"
+                                      dir="ltr"
+                                      value={prize.chancePercent}
+                                      onFocus={(e) => e.currentTarget.select()}
+                                      onChange={(e) => {
+                                        const pct = Math.max(
+                                          0,
+                                          Math.min(
+                                            100,
+                                            parseFlexibleNumberInput(e.target.value, 0)
+                                          )
+                                        );
+                                        updateThisChest((c) => ({
+                                          ...c,
+                                          prizes: c.prizes.map((p) =>
+                                            p.id === prize.id
+                                              ? { ...p, chancePercent: pct }
+                                              : p
+                                          ),
+                                        }));
+                                      }}
+                                      className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
+                                    />
+                                    <span className="text-xs font-black">%</span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        updateThisChest((c) => ({
+                                          ...c,
+                                          prizes: c.prizes.filter(
+                                            (p) => p.id !== prize.id
+                                          ),
+                                        }))
+                                      }
+                                      className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 cursor-pointer"
+                                      title="حذف جایزه"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Quick Percentage Preset Chips so Admin never gets stuck on 0 */}
+                                <div className="flex items-center justify-between gap-1 pt-1 border-t border-current/10">
+                                  <span className="text-[9px] font-bold opacity-70">
+                                    تنظیم سریع درصد شانس:
+                                  </span>
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    {[0, 10, 20, 25, 50, 75, 100].map((presetPct) => (
+                                      <button
+                                        key={presetPct}
+                                        type="button"
+                                        onClick={() => {
+                                          playTick();
+                                          updateThisChest((c) => ({
+                                            ...c,
+                                            prizes: c.prizes.map((p) =>
+                                              p.id === prize.id
+                                                ? { ...p, chancePercent: presetPct }
+                                                : p
+                                            ),
+                                          }));
+                                        }}
+                                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-black cursor-pointer transition-all ${
+                                          prize.chancePercent === presetPct
+                                            ? 'bg-[#D4AB58] text-[#101622]'
+                                            : 'bg-black/25 hover:bg-black/40 opacity-80'
+                                        }`}
+                                      >
+                                        {presetPct}%
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -5637,33 +6050,223 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </button>
                 </div>
 
+                {/* Custom Quests Builder & Active Quests List */}
                 <form
                   onSubmit={handleAddWeeklyQuest}
-                  className={`p-4 rounded-2xl border space-y-2.5 text-xs ${subCardClass}`}
+                  className={`p-4 rounded-2xl border space-y-3 text-xs ${subCardClass}`}
                 >
-                  <div className="font-black">🎯 افزودن ماموریت هفتگی جدید:</div>
-                  <div className="flex gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-sm text-[#D4AB58]">
+                      🎯 ساخت ماموریت سفارشی جدید (فقط در صورت انجام شرط، امتیاز داده می‌شود):
+                    </span>
+                    <span className="text-[10px] font-bold opacity-75">
+                      بدون امتیاز رایگان پیش‌فرض
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <input
                       type="text"
                       value={newQuestTitle}
                       onChange={(e) => setNewQuestTitle(e.target.value)}
-                      placeholder="عنوان ماموریت (مثلاً: شرکت در نظرسنجی ترم)"
-                      className={`flex-1 px-3 py-2 rounded-xl border font-bold ${inputClass}`}
+                      placeholder="عنوان ماموریت (مثلاً: شرکت در کارگاه پایتون)"
+                      className={`sm:col-span-2 px-3 py-2 rounded-xl border font-bold ${inputClass}`}
                     />
-                    <input
-                      type="number"
-                      value={newQuestReward}
-                      onChange={(e) => setNewQuestReward(Number(e.target.value))}
-                      className={`w-20 px-2 py-2 rounded-xl border text-center font-bold ${inputClass}`}
-                    />
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold shrink-0">پاداش (💎):</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
+                        value={newQuestReward}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) =>
+                          setNewQuestReward(
+                            Math.max(0, parseFlexibleNumberInput(e.target.value, 0))
+                          )
+                        }
+                        className={`w-full px-2.5 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
+                      />
+                    </div>
                   </div>
+
+                  <input
+                    type="text"
+                    value={newQuestDescription}
+                    onChange={(e) => setNewQuestDescription(e.target.value)}
+                    placeholder="توضیحات نحوه انجام ماموریت برای دانشجو (اختیاری)..."
+                    className={`w-full px-3 py-2 rounded-xl border font-bold ${inputClass}`}
+                  />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+                    <div className="sm:col-span-2">
+                      <label className="text-[10px] font-bold block mb-1">
+                        شرط واقعی انجام ماموریت (تا انجام نشود، امتیاز قفل است):
+                      </label>
+                      <select
+                        value={newQuestConditionType}
+                        onChange={(e) =>
+                          setNewQuestConditionType(e.target.value as QuestConditionType)
+                        }
+                        className={`w-full px-3 py-2 rounded-xl border text-xs font-black ${inputClass}`}
+                      >
+                        <option value="register_events">
+                          🎟 ثبت‌نام در کارگاه‌ها و رویدادها (بر اساس تعداد بلیط)
+                        </option>
+                        <option value="checkin_events">
+                          ✅ حضور فیزیکی و اسکن بارکد QR در رویدادها
+                        </option>
+                        <option value="reach_score">
+                          💎 رسیدن به حد نصاب امتیاز مشخص
+                        </option>
+                        <option value="secret_code">
+                          🔑 وارد کردن کد رمز ماموریت (اعلام‌شده در کانال/کلاس)
+                        </option>
+                        <option value="complete_profile">
+                          🎓 تکمیل ثبت‌نام اولیه و احراز هویت
+                        </option>
+                      </select>
+                    </div>
+
+                    {newQuestConditionType === 'secret_code' ? (
+                      <div>
+                        <label className="text-[10px] font-bold block mb-1">
+                          کد رمز ماموریت:
+                        </label>
+                        <input
+                          type="text"
+                          dir="ltr"
+                          value={newQuestSecretCode}
+                          onChange={(e) => setNewQuestSecretCode(e.target.value)}
+                          placeholder="مثلاً: IE1404"
+                          className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
+                        />
+                      </div>
+                    ) : newQuestConditionType === 'complete_profile' ? (
+                      <div className="text-[11px] font-bold opacity-75 py-2">
+                        هدف: ۱ بار تکمیل پروفایل
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="text-[10px] font-bold block mb-1">
+                          {newQuestConditionType === 'reach_score'
+                            ? 'حد نصاب امتیاز هدف:'
+                            : 'تعداد هدف (مثلاً ۱ یا ۲ رویداد):'}
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          dir="ltr"
+                          value={newQuestMaxProgress}
+                          onFocus={(e) => e.currentTarget.select()}
+                          onChange={(e) =>
+                            setNewQuestMaxProgress(
+                              Math.max(1, parseFlexibleNumberInput(e.target.value, 1))
+                            )
+                          }
+                          className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
+                        />
+                      </div>
+                    )}
+                  </div>
+
                   <button
                     type="submit"
-                    className="w-full py-2 rounded-xl bg-[#354B40] text-[#F6F1E7] font-black cursor-pointer"
+                    className="w-full py-2.5 rounded-xl bg-[#354B40] hover:bg-[#2A3C33] text-[#F6F1E7] font-black cursor-pointer shadow"
                   >
-                    افزودن ماموریت به جدول افتخارات
+                    + افزودن ماموریت جدید به بخش «ماموریت‌ها»
                   </button>
                 </form>
+
+                {/* Active Quests Management List */}
+                <div className={`p-4 rounded-2xl border space-y-3 text-xs ${subCardClass}`}>
+                  <div className="flex items-center justify-between border-b border-current/10 pb-2">
+                    <span className="font-black text-sm">
+                      📋 لیست ماموریت‌های فعال ({(Array.isArray(questList) ? questList : []).length} مورد):
+                    </span>
+                    <span className="text-[10px] font-bold opacity-75">
+                      ویرایش آنی امتیاز و حذف ماموریت‌ها
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {(Array.isArray(questList) ? questList : []).map((q) => (
+                      <div
+                        key={q.id}
+                        className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${cardSurfaceClass}`}
+                      >
+                        <div className="flex-1 space-y-1 min-w-0">
+                          <input
+                            type="text"
+                            value={q.title}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const next = questList.map((item) =>
+                                item.id === q.id ? { ...item, title: val } : item
+                              );
+                              setQuestList(next);
+                              onUpdateQuests?.(next);
+                            }}
+                            className={`w-full px-2.5 py-1 rounded-lg border text-xs font-black ${inputClass}`}
+                          />
+                          <input
+                            type="text"
+                            value={q.description}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const next = questList.map((item) =>
+                                item.id === q.id ? { ...item, description: val } : item
+                              );
+                              setQuestList(next);
+                              onUpdateQuests?.(next);
+                            }}
+                            className={`w-full px-2.5 py-1 rounded-lg border text-[11px] font-bold opacity-85 ${inputClass}`}
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-bold opacity-75">امتیاز:</span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              dir="ltr"
+                              value={q.rewardPoints}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) => {
+                                const pts = Math.max(
+                                  1,
+                                  parseFlexibleNumberInput(e.target.value, 10)
+                                );
+                                const next = questList.map((item) =>
+                                  item.id === q.id ? { ...item, rewardPoints: pts } : item
+                                );
+                                setQuestList(next);
+                                onUpdateQuests?.(next);
+                              }}
+                              className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              playTick();
+                              const next = questList.filter((item) => item.id !== q.id);
+                              setQuestList(next);
+                              onUpdateQuests?.(next);
+                              triggerToast(`🗑️ ماموریت «${q.title}» حذف شد.`);
+                            }}
+                            className="p-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 cursor-pointer"
+                            title="حذف ماموریت"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -5692,7 +6295,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               className={`p-4 rounded-2xl border space-y-3 text-xs ${subCardClass}`}
             >
               <div className="font-black">➕ تعریف عضو انجمن صنایع / ادمین جدید:</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <input
                   type="text"
                   value={newAdminName}
@@ -5703,9 +6306,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <input
                   type="text"
                   dir="ltr"
+                  value={newAdminTelegram}
+                  onChange={(e) => setNewAdminTelegram(e.target.value)}
+                  placeholder="آیدی تلگرام یا عددی (اختیاری)"
+                  className={`px-3 py-2 rounded-xl border font-mono font-bold ${inputClass}`}
+                />
+                <input
+                  type="text"
+                  dir="ltr"
                   value={newAdminPassword}
                   onChange={(e) => setNewAdminPassword(e.target.value)}
-                  placeholder="رمز اختصاصی ادمین"
+                  placeholder="رمز اختصاصی ادمین (مثال: IE_404)"
                   className={`px-3 py-2 rounded-xl border font-mono font-bold ${inputClass}`}
                 />
               </div>
@@ -5794,33 +6405,52 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                       </div>
                       {!isProtectedMaster && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            playSwitch();
-                            const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
-                              a.id === adm.id ? { ...a, isFrozen: !a.isFrozen } : a
-                            );
-                            setAdminList(updated);
-                            onUpdateAdmins?.(updated);
-                            appendLog(
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              playSwitch();
+                              const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
+                                a.id === adm.id ? { ...a, isFrozen: !a.isFrozen } : a
+                              );
+                              setAdminList(updated);
+                              onUpdateAdmins?.(updated);
+                              appendLog(
+                                adm.isFrozen
+                                  ? 'رفع مسدودیت دسترسی ادمین'
+                                  : 'توقف اضطراری دسترسی ادمین (Freeze)',
+                                adm.fullName,
+                                'warning'
+                              );
+                            }}
+                            className={`px-2.5 py-1.5 rounded-xl font-black text-[11px] cursor-pointer ${
                               adm.isFrozen
-                                ? 'رفع مسدودیت دسترسی ادمین'
-                                : 'توقف اضطراری دسترسی ادمین (Freeze)',
-                              adm.fullName,
-                              'warning'
-                            );
-                          }}
-                          className={`px-3 py-1.5 rounded-xl font-black text-[11px] cursor-pointer ${
-                            adm.isFrozen
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-rose-700 text-white'
-                          }`}
-                        >
-                          {adm.isFrozen
-                            ? '🔓 باز کردن دسترسی ادمین'
-                            : '❄️ فریز کردن'}
-                        </button>
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-amber-600 text-white'
+                            }`}
+                          >
+                            {adm.isFrozen ? '🔓 باز کردن' : '❄️ فریز'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              playError();
+                              const updated = (Array.isArray(adminList) ? adminList : []).filter(
+                                (a) => a.id !== adm.id
+                              );
+                              setAdminList(updated);
+                              onUpdateAdmins?.(updated);
+                              appendLog('حذف کامل ادمین از سامانه', adm.fullName, 'danger');
+                              triggerToast(`🗑️ ادمین «${adm.fullName}» به طور کامل حذف شد.`);
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white font-black text-[11px] flex items-center gap-1 cursor-pointer"
+                            title="حذف کامل ادمین"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>حذف</span>
+                          </button>
+                        </div>
                       )}
                     </div>
 

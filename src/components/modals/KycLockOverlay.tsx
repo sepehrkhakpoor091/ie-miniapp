@@ -32,6 +32,7 @@ interface KycLockOverlayProps {
   fullName?: string;
   cohortYear?: string;
   onSubmitKycCard?: (item: AdminReceiptItem) => void;
+  onRefreshFromServer?: () => Promise<void> | void;
 }
 
 export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
@@ -41,10 +42,12 @@ export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
   fullName = 'دانشجوی مهندسی صنایع',
   cohortYear = '۱۴۰۲',
   onSubmitKycCard,
+  onRefreshFromServer,
 }) => {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
 
   // 100% Permanent Immunity for Chief Admin (Telegram ID: 629890497) or already verified accounts
   if (
@@ -114,6 +117,7 @@ export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
       submittedAt: 'همین الان',
       status: 'pending',
       receiptImageUrl: selectedImage,
+      imageBase64: selectedImage,
     });
     onUpdateStatus('pending_review');
     playFanfare();
@@ -166,11 +170,37 @@ export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
             <div>
               <h3 className="font-bold text-sm text-[#91B5BE]">مدارک شما در صف بررسی انجمن علمی مهندسی صنایع قرار دارد</h3>
               <p className="text-xs text-zinc-300 mt-1 leading-relaxed">
-                تصویر کارت دانشجویی شما با موفقیت دریافت و به کارتابل ادمین در ربات تلگرام و مینی‌اپ ارسال شد. پس از تطبیق شماره دانشجویی توسط ادمین انجمن صنایع، حساب شما به صورت خودکار فعال خواهد شد.
+                تصویر کارت دانشجویی شما با موفقیت دریافت و به کارتابل ادمین در ربات تلگرام و مینی‌اپ ارسال شد. به محض تایید توسط ادمین (در ربات یا مینی‌اپ)، حساب شما به صورت خودکار و آنی فعال می‌شود.
               </p>
             </div>
+            {onRefreshFromServer && (
+              <PushButton
+                variant="gold"
+                size="sm"
+                fullWidth
+                disabled={isCheckingStatus}
+                onClick={async () => {
+                  playTick();
+                  setIsCheckingStatus(true);
+                  try {
+                    await onRefreshFromServer();
+                  } finally {
+                    setIsCheckingStatus(false);
+                  }
+                }}
+                icon={
+                  <RefreshCw
+                    className={`w-4 h-4 ${isCheckingStatus ? 'animate-spin' : ''}`}
+                  />
+                }
+              >
+                {isCheckingStatus
+                  ? 'در حال استعلام آنی از ربات...'
+                  : '🔄 بررسی فوری وضعیت تایید از سرور ربات'}
+              </PushButton>
+            )}
             <div className="pt-2 border-t border-white/10">
-              <span className="text-[11px] text-zinc-400">وضعیت: در انتظار تایید انجمن علمی مهندسی صنایع (@Isefum)</span>
+              <span className="text-[11px] text-zinc-400">وضعیت: همگام‌سازی زنده با ربات انجمن علمی مهندسی صنایع (@Isefum)</span>
             </div>
           </div>
         ) : (

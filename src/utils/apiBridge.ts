@@ -29,6 +29,44 @@ import {
 export const BOT_WORKER_BASE_URL =
   'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev';
 export const BOT_API_URL_STORAGE_KEY = 'ie_bot_api_base_url_v1';
+export const IDEMPOTENCY_STORAGE_KEY = 'ie_idempotency_keys_v1';
+
+const inMemoryIdempotencySet = new Set<string>();
+
+export function hasIdempotencyKeyBeenSent(idempotencyKey: string): boolean {
+  const cleanKey = (idempotencyKey || '').trim();
+  if (!cleanKey) return false;
+  if (inMemoryIdempotencySet.has(cleanKey)) return true;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(IDEMPOTENCY_STORAGE_KEY);
+      const map = safeJsonParse<Record<string, string>>(raw, {});
+      if (map && map[cleanKey]) {
+        inMemoryIdempotencySet.add(cleanKey);
+        return true;
+      }
+    }
+  } catch {
+    // Ignore storage error
+  }
+  return false;
+}
+
+export function markIdempotencyKeyAsSent(idempotencyKey: string): void {
+  const cleanKey = (idempotencyKey || '').trim();
+  if (!cleanKey) return;
+  inMemoryIdempotencySet.add(cleanKey);
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(IDEMPOTENCY_STORAGE_KEY);
+      const map = safeJsonParse<Record<string, string>>(raw, {});
+      map[cleanKey] = new Date().toISOString();
+      window.localStorage.setItem(IDEMPOTENCY_STORAGE_KEY, JSON.stringify(map));
+    }
+  } catch {
+    // Ignore storage error
+  }
+}
 
 export function getBotApiBaseUrl(): string {
   try {
@@ -146,7 +184,23 @@ export async function syncUserProfileToBot(
 export async function sendQrTicketToTelegramChat(
   ticket: TicketRecord,
   user: UserProfile
-): Promise<{ ok: boolean; deliveredToTelegram: boolean; message: string }> {
+): Promise<{ ok: boolean; deliveredToTelegram: boolean; message: string; skippedDuplicate?: boolean }> {
+  const idempotencyKey = (ticket.trackingCode || ticket.id || '').trim();
+  const scopedActionKey = `send-ticket:${idempotencyKey}`;
+
+  if (idempotencyKey && hasIdempotencyKeyBeenSent(scopedActionKey)) {
+    return {
+      ok: true,
+      deliveredToTelegram: true,
+      skippedDuplicate: true,
+      message: `کارت ورود و بارکد QR (${ticket.trackingCode}) قبلاً به چت تلگرام شما ارسال شده است.`,
+    };
+  }
+  if (idempotencyKey) {
+    markIdempotencyKeyAsSent(scopedActionKey);
+    markIdempotencyKeyAsSent(idempotencyKey);
+  }
+
   const realTgUser = getRealTelegramUser();
   const resolvedTelegramUserId =
     realTgUser?.id ||
@@ -160,6 +214,8 @@ export async function sendQrTicketToTelegramChat(
     deliveredToTelegram?: boolean;
     message?: string;
   }>('/api/miniapp/send-ticket', {
+    idempotencyKey,
+    trackingCode: ticket.trackingCode,
     ticket,
     studentId: user.studentId,
     studentName: user.fullName,
@@ -348,13 +404,15 @@ export async function fetchMiniAppBootstrap(
         ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
         : '');
 
+    const ts = Date.now();
     const query = resolvedTgId
-      ? `?telegramUserId=${encodeURIComponent(resolvedTgId)}`
-      : '';
+      ? `?telegramUserId=${encodeURIComponent(resolvedTgId)}&ts=${ts}`
+      : `?ts=${ts}`;
     const url = `${getBotApiBaseUrl()}/api/miniapp/bootstrap${query}`;
 
     const response = await secureFetch(url, {
       method: 'GET',
+      cache: 'no-store',
       headers: {
         'X-Telegram-Init-Data': getTelegramInitDataRaw(),
       },
@@ -385,6 +443,7 @@ export async function fetchMiniAppBootstrap(
       ),
       profile: json.profile,
       students: Array.isArray(json.students) ? json.students : undefined,
+      events: Array.isArray(json.events) ? json.events : undefined,
       lootboxConfig: json.lootboxConfig,
       announcements: Array.isArray(json.announcements) ? json.announcements : undefined,
       disputes: Array.isArray(json.disputes)
@@ -399,6 +458,9 @@ export async function fetchMiniAppBootstrap(
         : undefined,
       pendingApprovals: rawApprovals,
       receipts: rawApprovals,
+      allowStudentTimers:
+        typeof json.allowStudentTimers === 'boolean' ? json.allowStudentTimers : undefined,
+      referralStats: json.referralStats,
     };
   } catch {
     clearTimeout(timer);
@@ -413,15 +475,21 @@ export async function fetchMiniAppBootstrap(
  */
 export async function registerStudentProfileOnBot(
   profile: UserProfile,
-  existingStudents: AdminStudentDossier[] = []
+  existingStudents: AdminStudentDossier[] = [],
+  referralCode?: string
 ): Promise<{
   ok: boolean;
   errorCode?: 'DUPLICATE_STUDENT_ID' | string;
   error?: string;
   profile?: UserProfile;
   students?: AdminStudentDossier[];
+  referralBonusAwarded?: number;
 }> {
   const cleanStudentId = (profile.studentId || '').trim();
+  const cleanReferralCode = (referralCode || profile.referredBy || '')
+    .trim()
+    .toUpperCase()
+    .replace(/^REF_/i, 'REF-');
   const tgUser = getRealTelegramUser();
   const resolvedTelegramId =
     tgUser?.id ||
@@ -464,6 +532,21 @@ export async function registerStudentProfileOnBot(
     };
   }
 
+  const selfRefCode = resolvedTelegramId ? `REF-${resolvedTelegramId}`.toUpperCase() : '';
+  const isValidReferral =
+    Boolean(cleanReferralCode) &&
+    cleanReferralCode.startsWith('REF-') &&
+    cleanReferralCode.length > 4 &&
+    cleanReferralCode !== selfRefCode;
+
+  const referralBonusAwarded = isValidReferral ? 5 : 0;
+  const enrichedProfile: UserProfile = {
+    ...profile,
+    score: profile.score + referralBonusAwarded,
+    referralCode: resolvedTelegramId ? `REF-${resolvedTelegramId}` : profile.referralCode,
+    referredBy: isValidReferral ? cleanReferralCode : undefined,
+  };
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 6500);
   try {
@@ -474,14 +557,16 @@ export async function registerStudentProfileOnBot(
         'X-Telegram-Init-Data': getTelegramInitDataRaw(),
       },
       body: JSON.stringify({
-        profile,
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-        fullName: profile.fullName,
+        profile: enrichedProfile,
+        firstName: enrichedProfile.firstName,
+        lastName: enrichedProfile.lastName,
+        fullName: enrichedProfile.fullName,
         studentId: cleanStudentId,
-        cohortYear: profile.cohortYear,
-        phone: profile.verifiedTelegramPhone,
-        avatar: profile.avatar,
+        cohortYear: enrichedProfile.cohortYear,
+        phone: enrichedProfile.verifiedTelegramPhone,
+        avatar: enrichedProfile.avatar,
+        referralCode: isValidReferral ? cleanReferralCode : undefined,
+        referredBy: isValidReferral ? cleanReferralCode : undefined,
         telegramUserId: resolvedTelegramId,
         telegramUser: tgUser,
         timestamp: new Date().toISOString(),
@@ -524,8 +609,9 @@ export async function registerStudentProfileOnBot(
 
     return {
       ok: true,
-      profile: parsed?.profile || profile,
+      profile: parsed?.profile || enrichedProfile,
       students: Array.isArray(parsed?.students) ? parsed?.students : undefined,
+      referralBonusAwarded,
     };
   } catch {
     clearTimeout(timer);
@@ -540,7 +626,8 @@ export async function registerStudentProfileOnBot(
     }
     return {
       ok: true,
-      profile,
+      profile: enrichedProfile,
+      referralBonusAwarded,
     };
   }
 }
@@ -687,7 +774,20 @@ export async function uploadPaymentReceiptToBot(payload: {
   cohortYear: string;
   imageBase64: string;
   telegramUserId?: string;
-}): Promise<{ ok: boolean; itemId: string }> {
+}): Promise<{ ok: boolean; itemId: string; skippedDuplicate?: boolean }> {
+  const idempotencyKey = (payload.trackingCode || payload.itemId || '').trim();
+  const scopedActionKey = `upload-receipt:${idempotencyKey}`;
+  if (idempotencyKey && hasIdempotencyKeyBeenSent(scopedActionKey)) {
+    return {
+      ok: true,
+      itemId: payload.itemId || `RCP-${idempotencyKey}`,
+      skippedDuplicate: true,
+    };
+  }
+  if (idempotencyKey) {
+    markIdempotencyKeyAsSent(scopedActionKey);
+  }
+
   const tgUser = getRealTelegramUser();
   const resolvedTgId =
     payload.telegramUserId ||
@@ -702,6 +802,7 @@ export async function uploadPaymentReceiptToBot(payload: {
     {
       id: itemId,
       itemId,
+      idempotencyKey,
       type: 'receipt',
       eventId: payload.eventId,
       eventTitle: payload.eventTitle,
@@ -737,13 +838,26 @@ export async function uploadPaymentReceiptToBot(payload: {
 export async function submitAdminReviewToBot(payload: {
   item: AdminReceiptItem;
   decision: 'approved' | 'rejected';
-}): Promise<{ ok: boolean }> {
+}): Promise<{ ok: boolean; skippedDuplicate?: boolean }> {
   const { item, decision } = payload;
+  const idempotencyKey = (item.trackingCode || item.id || '').trim();
+  const scopedActionKey = `admin-review:${idempotencyKey}:${decision}`;
+  if (idempotencyKey && hasIdempotencyKeyBeenSent(scopedActionKey)) {
+    return {
+      ok: true,
+      skippedDuplicate: true,
+    };
+  }
+  if (idempotencyKey) {
+    markIdempotencyKeyAsSent(scopedActionKey);
+  }
+
   const res = await postToMiniAppApi<{ ok: boolean }>(
     '/api/miniapp/admin-review-item',
     {
       id: item.id,
       itemId: item.id,
+      idempotencyKey,
       trackingCode: item.trackingCode,
       type: item.type,
       decision,
@@ -761,6 +875,30 @@ export async function submitAdminReviewToBot(payload: {
   );
   return {
     ok: res.ok,
+  };
+}
+
+/**
+ * 13. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-toggle-user-timers
+ * Toggles whether students are allowed to create personal timers in RemindersModal.
+ */
+export async function toggleStudentTimersOnBot(
+  allowStudentTimers: boolean
+): Promise<{ ok: boolean; allowStudentTimers: boolean }> {
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    allowStudentTimers?: boolean;
+  }>('/api/miniapp/admin-toggle-user-timers', {
+    allowStudentTimers,
+    adminId: MASTER_ADMIN_TELEGRAM_ID,
+    updatedAt: new Date().toISOString(),
+  });
+  return {
+    ok: res.ok,
+    allowStudentTimers:
+      typeof res.data?.allowStudentTimers === 'boolean'
+        ? res.data.allowStudentTimers
+        : allowStudentTimers,
   };
 }
 

@@ -6,13 +6,14 @@
  * FeatureFlags Kill-Switch Support, and High-Contrast Day/Night Readability
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CertificateInfo, SupportTicket, ThemeMode, UserProfile } from '../../types';
 import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
 import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 import { playCoin, playError, playFanfare, playTick } from '../../utils/soundEngine';
 import { submitSupportTicketToBot } from '../../utils/apiBridge';
+import { getScopedStorageKey, safeJsonParse } from '../../utils/security';
 import {
   X,
   MessageSquare,
@@ -22,6 +23,7 @@ import {
   FileBadge,
   Calendar,
   ShieldCheck,
+  Plus,
 } from 'lucide-react';
 
 interface SupportModalProps {
@@ -33,48 +35,6 @@ interface SupportModalProps {
   supportTicketsEnabled?: boolean;
   onTriggerStealthAdmin?: () => void;
 }
-
-const SAMPLE_TICKETS: SupportTicket[] = [
-  {
-    id: 'TK-4021',
-    title: 'تداخل ساعت کارگاه پایتون با جلسه حل تمرین ریاضی ۲',
-    category: 'council',
-    status: 'answered',
-    updatedAt: 'امروز، ۱۰:۱۵',
-    messages: [
-      {
-        id: 'm-1',
-        sender: 'user',
-        senderName: 'دانشجو',
-        text: 'سلام، کارگاه پایتون روز دوشنبه ساعت ۱۶ با حل تمرین ریاضی تداخل دارد. آیا فایل ضبط شده ارائه می‌شود؟',
-        time: 'دیروز، ۲۰:۳۰',
-      },
-      {
-        id: 'm-2',
-        sender: 'support',
-        senderName: 'کمیته آموزش انجمن صنایع',
-        text: 'سلام و درود! بله، تمامی جلسات ضبط گردیده و لینک اختصاصی گوگل درایو پس از کارگاه برای ثبت‌نام‌کنندگان ایمیل خواهد شد.',
-        time: 'امروز، ۱۰:۱۵',
-      },
-    ],
-  },
-  {
-    id: 'TECH-108',
-    title: 'عدم تطبیق شماره دانشجویی در سامانه صدور سرتیفیکیت',
-    category: 'tech',
-    status: 'open',
-    updatedAt: 'دیروز، ۱۲:۰۰',
-    messages: [
-      {
-        id: 'm-3',
-        sender: 'user',
-        senderName: 'دانشجو',
-        text: 'سلام خسته نباشید، در استعلام گواهی دوره شبیه‌سازی آرنا شماره دانشجویی من به اشتباه ثبت شده است.',
-        time: 'دیروز، ۱۲:۰۰',
-      },
-    ],
-  },
-];
 
 const VERIFIED_CERTIFICATES: Record<string, CertificateInfo> = {
   'CERT-402-IE': {
@@ -111,22 +71,64 @@ export const SupportModal: React.FC<SupportModalProps> = ({
   const isNight = themeMode === 'night';
   const [activeTab, setActiveTab] = useState<'ticket' | 'cert'>('ticket');
 
-  const [tickets, setTickets] = useState<SupportTicket[]>(SAMPLE_TICKETS);
-  const [selectedTicketId, setSelectedTicketId] = useState<string>('TK-4021');
+  const userTicketsStorageKey = getScopedStorageKey(
+    `ie_user_support_tickets_v2_${user?.studentId || 'guest'}`,
+    user?.telegramUserId
+  );
+
+  const [tickets, setTickets] = useState<SupportTicket[]>(() => {
+    try {
+      const raw = localStorage.getItem(userTicketsStorageKey);
+      if (raw) {
+        const parsed = safeJsonParse<SupportTicket[]>(raw, []);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return [];
+  });
+  const [selectedTicketId, setSelectedTicketId] = useState<string>('');
   const [newReplyText, setNewReplyText] = useState('');
   const [showNewTicketModal, setShowNewTicketModal] = useState(false);
   const [newTicketTitle, setNewTicketTitle] = useState('');
   const [newTicketMessage, setNewTicketMessage] = useState('');
 
-  const [certQuery, setCertQuery] = useState('CERT-402-IE');
-  const [queriedCert, setQueriedCert] = useState<CertificateInfo | null>(
-    VERIFIED_CERTIFICATES['CERT-402-IE']
-  );
-  const [certSearched, setCertSearched] = useState(true);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(userTicketsStorageKey);
+      const parsed = raw ? safeJsonParse<SupportTicket[]>(raw, []) : [];
+      const safeList = Array.isArray(parsed) ? parsed : [];
+      setTickets(safeList);
+      if (safeList.length > 0) {
+        setSelectedTicketId((prev) =>
+          safeList.some((t) => t.id === prev) ? prev : safeList[0].id
+        );
+      } else {
+        setSelectedTicketId('');
+      }
+    } catch {
+      setTickets([]);
+    }
+  }, [userTicketsStorageKey, isOpen]);
+
+  const persistUserTickets = (nextTickets: SupportTicket[]) => {
+    setTickets(nextTickets);
+    try {
+      localStorage.setItem(userTicketsStorageKey, JSON.stringify(nextTickets));
+    } catch {
+      // Ignore storage error
+    }
+  };
+
+  const [certQuery, setCertQuery] = useState('');
+  const [queriedCert, setQueriedCert] = useState<CertificateInfo | null>(null);
+  const [certSearched, setCertSearched] = useState(false);
 
   if (!isOpen) return null;
 
-  const currentTicket = tickets.find((t) => t.id === selectedTicketId) || tickets[0];
+  const currentTicket =
+    tickets.find((t) => t.id === selectedTicketId) || tickets[0] || null;
 
   const handleCertInputChange = (val: string) => {
     const trimmed = val.trim().toLowerCase();
@@ -151,33 +153,47 @@ export const SupportModal: React.FC<SupportModalProps> = ({
       onTriggerStealthAdmin?.();
       return;
     }
-    if (!newReplyText.trim()) return;
+    if (!newReplyText.trim() || !currentTicket) return;
 
     playTick();
     const newMsg = {
       id: `m-${Date.now()}`,
       sender: 'user' as const,
-      senderName: 'دانشجو',
+      senderName: user?.fullName || 'دانشجو',
       text: newReplyText.trim(),
       time: 'هم‌اکنون',
     };
 
-    setTickets((prev) =>
-      prev.map((t) =>
-        t.id === selectedTicketId
-          ? {
-              ...t,
-              messages: [...t.messages, newMsg],
-              updatedAt: 'هم‌اکنون',
-            }
-          : t
-      )
+    const nextTickets = tickets.map((t) =>
+      t.id === currentTicket.id
+        ? {
+            ...t,
+            messages: [...t.messages, newMsg],
+            updatedAt: 'هم‌اکنون',
+          }
+        : t
     );
+    persistUserTickets(nextTickets);
     setNewReplyText('');
   };
 
   const handleCreateNewTicket = (e: React.FormEvent) => {
     e.preventDefault();
+    const trimmedTitle = newTicketTitle.trim().toLowerCase();
+    const trimmedMsg = newTicketMessage.trim().toLowerCase();
+    if (
+      trimmedTitle === '#admin' ||
+      trimmedTitle === '/admin' ||
+      trimmedMsg === '#admin' ||
+      trimmedMsg === '/admin'
+    ) {
+      playCoin();
+      setNewTicketTitle('');
+      setNewTicketMessage('');
+      onClose();
+      onTriggerStealthAdmin?.();
+      return;
+    }
     if (!newTicketTitle.trim() || !newTicketMessage.trim()) return;
 
     playFanfare();
@@ -191,14 +207,15 @@ export const SupportModal: React.FC<SupportModalProps> = ({
         {
           id: `m-${Date.now()}`,
           sender: 'user',
-          senderName: 'دانشجو',
+          senderName: user?.fullName || 'دانشجو',
           text: newTicketMessage.trim(),
           time: 'هم‌اکنون',
         },
       ],
     };
 
-    setTickets((prev) => [newTicket, ...prev]);
+    const nextTickets = [newTicket, ...tickets];
+    persistUserTickets(nextTickets);
     setSelectedTicketId(newTicket.id);
     setShowNewTicketModal(false);
     setNewTicketTitle('');
@@ -383,6 +400,34 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                   ارسال تیکت به انجمن صنایع
                 </PushButton>
               </form>
+            ) : tickets.length === 0 || !currentTicket ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4 animate-fade-in">
+                <div className="w-16 h-16 rounded-2xl bg-[#354B40]/25 border border-[#7FB69E]/40 flex items-center justify-center p-2">
+                  <MessageSquare className="w-8 h-8 text-[#D4AB58]" />
+                </div>
+                <div className="space-y-1.5 max-w-xs">
+                  <h4 className="font-black text-sm">
+                    هنوز هیچ تیکت پشتیبانی ثبت نکرده‌اید
+                  </h4>
+                  <p
+                    className={`text-xs font-bold leading-relaxed ${
+                      isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                    }`}
+                  >
+                    در این بخش فقط تیکت‌های واقعی شما و سوابق گفتگوهای قبلی‌تان با انجمن علمی مهندسی صنایع نمایش داده می‌شود.
+                  </p>
+                </div>
+                <PushButton
+                  variant="gold"
+                  onClick={() => {
+                    playTick();
+                    setShowNewTicketModal(true);
+                  }}
+                  icon={<Plus className="w-4 h-4" />}
+                >
+                  ثبت تیکت جدید به انجمن صنایع
+                </PushButton>
+              </div>
             ) : (
               <div className="flex-1 flex flex-col overflow-hidden">
                 <div className="p-3 border-b border-current/10 flex items-center justify-between gap-2 overflow-x-auto">

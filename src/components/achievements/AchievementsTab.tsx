@@ -14,6 +14,7 @@ import {
   DiscountVoucher,
   LootboxConfig,
   ThemeMode,
+  TicketRecord,
   UserProfile,
   WeeklyQuest,
 } from '../../types';
@@ -24,8 +25,10 @@ import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 import {
   COHORT_FILTER_OPTIONS,
   DEFAULT_LOOTBOX_CONFIG,
+  evaluateQuestsProgress,
   getCohortBattleStats,
   getFilteredLeaderboard,
+  getNormalizedLootboxChests,
   redeemLootboxChest,
 } from '../../utils/gamification';
 import {
@@ -39,6 +42,7 @@ import {
 interface AchievementsTabProps {
   user: UserProfile;
   realStudents?: AdminStudentDossier[];
+  userTickets?: TicketRecord[];
   lootboxConfig?: LootboxConfig;
   themeMode: ThemeMode;
   storedChecksum: string | null;
@@ -55,11 +59,13 @@ interface AchievementsTabProps {
   ) => void;
   onTamperReset: () => void;
   onClaimQuest: (questId: string, rewardPoints: number, questTitle: string) => void;
+  onUnlockSecretQuest?: (questId: string, enteredCode: string) => boolean;
 }
 
 export const AchievementsTab: React.FC<AchievementsTabProps> = ({
   user,
   realStudents = [],
+  userTickets = [],
   lootboxConfig = DEFAULT_LOOTBOX_CONFIG,
   themeMode,
   storedChecksum,
@@ -71,11 +77,12 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
   onRedeemLootboxSuccess,
   onTamperReset,
   onClaimQuest,
+  onUnlockSecretQuest,
 }) => {
   const isNight = themeMode === 'night';
 
   const [selectedCohort, setSelectedCohort] = useState<string>('all');
-  const [openingChestType, setOpeningChestType] = useState<'bronze' | 'gold' | null>(null);
+  const [openingChestType, setOpeningChestType] = useState<string | null>(null);
   const [unboxedResult, setUnboxedResult] = useState<{
     prizeType: 'voucher' | 'points' | 'empty';
     prizeTitle: string;
@@ -87,6 +94,8 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
     message: string;
   } | null>(null);
   const [copiedVoucherCode, setCopiedVoucherCode] = useState<string | null>(null);
+  const [questCodeInputs, setQuestCodeInputs] = useState<Record<string, string>>({});
+  const [questCodeError, setQuestCodeError] = useState<Record<string, string>>({});
 
   // Dynamically computed Leaderboard & Cohort Competition using ONLY real students from server + current registered user
   const leaderboard = getFilteredLeaderboard(selectedCohort, user, realStudents);
@@ -104,18 +113,16 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
   const restStudents = leaderboard.slice(3);
 
   const activeConfig = lootboxConfig || DEFAULT_LOOTBOX_CONFIG;
-  const bronzePrizes = Array.isArray(activeConfig.bronzePrizes)
-    ? activeConfig.bronzePrizes
-    : DEFAULT_LOOTBOX_CONFIG.bronzePrizes;
-  const goldPrizes = Array.isArray(activeConfig.goldPrizes)
-    ? activeConfig.goldPrizes
-    : DEFAULT_LOOTBOX_CONFIG.goldPrizes;
+  const customChests = getNormalizedLootboxChests(activeConfig);
 
-  const handleOpenLootbox = (chestType: 'bronze' | 'gold') => {
+  // Evaluate real quest completion progress based on actual user state & tickets
+  const evaluatedQuests = evaluateQuestsProgress(quests, user, userTickets);
+
+  const handleOpenLootbox = (chestId: string) => {
     setLootboxAlert(null);
     setUnboxedResult(null);
 
-    const result = redeemLootboxChest(chestType, user, storedChecksum, activeConfig);
+    const result = redeemLootboxChest(chestId, user, storedChecksum, activeConfig);
 
     if (!result.success) {
       playError();
@@ -137,7 +144,7 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
     }
 
     playCoin();
-    setOpeningChestType(chestType);
+    setOpeningChestType(chestId);
 
     setTimeout(() => {
       playCoin();
@@ -726,7 +733,7 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
                       isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                     }`}
                   >
-                    قرعه‌کشی شفاف بر اساس درصد شانس تعیین‌شده توسط ادمین
+                    صندوقچه‌های شانسی انجمن با جوایز مخفی و کدهای تخفیف کارگاه
                   </p>
                 </div>
                 <div className="px-2.5 py-1 rounded-xl bg-[#354B40] text-[#F6F1E7] text-xs font-black">
@@ -798,145 +805,119 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
                 )}
               </AnimatePresence>
 
-              {/* 2 Chest Cards Grid with Transparent Prize & Chance List */}
+              {/* Customizable Mystery Chests Grid (Prizes & Probabilities Hidden from Students) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Bronze Chest */}
-                <div
-                  className={`rounded-2xl p-3.5 border flex flex-col justify-between space-y-3 ${
-                    isNight
-                      ? 'bg-[#121A26] border-[#2C3E4C] text-[#F6F1E7]'
-                      : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
-                  }`}
-                >
-                  <div className="flex flex-col items-center text-center space-y-2">
-                    <motion.div
-                      animate={
-                        openingChestType === 'bronze'
-                          ? { rotate: [-10, 12, -12, 10, 0], scale: [1, 1.18, 1] }
-                          : {}
-                      }
-                      transition={{ duration: 0.5 }}
-                      className="w-14 h-14 rounded-2xl bg-[#E77F6E]/15 border border-[#E77F6E]/40 p-2 flex items-center justify-center"
+                {customChests.map((chest) => {
+                  const isOpeningThis = openingChestType === chest.id;
+                  const isGoldTheme = chest.themeColor === 'gold' || chest.id === 'gold';
+                  const isEmeraldTheme = chest.themeColor === 'emerald';
+                  const isPurpleTheme = chest.themeColor === 'purple';
+
+                  const borderColorClass = isGoldTheme
+                    ? isNight
+                      ? 'border-[#D4AB58]/60'
+                      : 'border-[#8F6B24]'
+                    : isEmeraldTheme
+                    ? 'border-emerald-500/50'
+                    : isPurpleTheme
+                    ? 'border-purple-500/50'
+                    : isNight
+                    ? 'border-[#2C3E4C]'
+                    : 'border-[#C8BFA8]';
+
+                  const iconBoxClass = isGoldTheme
+                    ? 'bg-[#D4AB58]/20 border-[#D4AB58]/50'
+                    : isEmeraldTheme
+                    ? 'bg-emerald-500/20 border-emerald-500/50'
+                    : isPurpleTheme
+                    ? 'bg-purple-500/20 border-purple-500/50'
+                    : 'bg-[#E77F6E]/15 border-[#E77F6E]/40';
+
+                  const btnVariant = isGoldTheme
+                    ? 'gold'
+                    : isEmeraldTheme
+                    ? 'primary'
+                    : 'coral';
+
+                  return (
+                    <div
+                      key={chest.id}
+                      className={`rounded-2xl p-3.5 border flex flex-col justify-between space-y-3 ${
+                        isNight ? 'bg-[#121A26] text-[#F6F1E7]' : 'bg-[#EAE3D2] text-[#14201B]'
+                      } ${borderColorClass}`}
                     >
-                      <PixelImage
-                        filename="35_icon_gift_box.png"
-                        alt="صندوقچه برنزی"
-                        className="w-10 h-10 object-contain"
-                      />
-                    </motion.div>
+                      <div className="flex flex-col items-center text-center space-y-2">
+                        <motion.div
+                          animate={
+                            isOpeningThis
+                              ? { rotate: [-12, 12, -12, 12, 0], scale: [1, 1.22, 1] }
+                              : {}
+                          }
+                          transition={{ duration: 0.5 }}
+                          className={`w-14 h-14 rounded-2xl border p-2 flex items-center justify-center ${iconBoxClass}`}
+                        >
+                          <PixelImage
+                            filename={chest.iconFilename || '35_icon_gift_box.png'}
+                            alt={chest.title}
+                            className="w-10 h-10 object-contain drop-shadow-[0_4px_10px_rgba(212,171,88,0.4)]"
+                          />
+                        </motion.div>
 
-                    <div>
-                      <h4 className="text-xs font-black">صندوقچه برنزی</h4>
-                      <span
-                        className={`text-[11px] font-black block mt-0.5 ${
-                          isNight ? 'text-[#E77F6E]' : 'text-[#9E2A2B]'
-                        }`}
-                      >
-                        {(activeConfig.bronzeCost || 50).toLocaleString('fa-IR')} امتیاز الماس
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Transparent Prize List & Win Probabilities */}
-                  <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 space-y-1.5 text-right">
-                    <div className="text-[10px] font-black opacity-80 border-b border-current/10 pb-1">
-                      📋 لیست جوایز و درصد شانس:
-                    </div>
-                    {bronzePrizes.map((p) => (
-                      <div
-                        key={p.id}
-                        className="flex items-center justify-between gap-1 text-[10px] font-bold"
-                      >
-                        <span className="truncate">{p.title}</span>
-                        <span className="px-1.5 py-0.5 rounded bg-[#E77F6E]/20 text-[#E77F6E] font-black shrink-0">
-                          {p.chancePercent.toLocaleString('fa-IR')}٪
-                        </span>
+                        <div>
+                          <h4
+                            className={`text-xs font-black ${
+                              isGoldTheme && isNight ? 'text-[#D4AB58]' : ''
+                            }`}
+                          >
+                            {chest.title}
+                          </h4>
+                          {chest.subtitle && (
+                            <p
+                              className={`text-[10px] font-bold mt-0.5 ${
+                                isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                              }`}
+                            >
+                              {chest.subtitle}
+                            </p>
+                          )}
+                          <span
+                            className={`text-[11px] font-black block mt-1 ${
+                              isGoldTheme
+                                ? isNight
+                                  ? 'text-emerald-400'
+                                  : 'text-[#354B40]'
+                                : isNight
+                                ? 'text-[#E77F6E]'
+                                : 'text-[#9E2A2B]'
+                            }`}
+                          >
+                            ورودی: {(Number(chest.cost) || 50).toLocaleString('fa-IR')} امتیاز الماس
+                          </span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
 
-                  <PushButton
-                    variant="coral"
-                    size="sm"
-                    fullWidth
-                    disabled={openingChestType !== null}
-                    onClick={() => handleOpenLootbox('bronze')}
-                  >
-                    {openingChestType === 'bronze' ? 'در حال بازگشایی...' : 'باز کردن صندوقچه'}
-                  </PushButton>
-                </div>
-
-                {/* Gold Chest */}
-                <div
-                  className={`rounded-2xl p-3.5 border flex flex-col justify-between space-y-3 ${
-                    isNight
-                      ? 'bg-[#121A26] border-[#D4AB58]/60 text-[#F6F1E7]'
-                      : 'bg-[#EAE3D2] border-[#8F6B24] text-[#14201B]'
-                  }`}
-                >
-                  <div className="flex flex-col items-center text-center space-y-2">
-                    <motion.div
-                      animate={
-                        openingChestType === 'gold'
-                          ? { rotate: [-14, 14, -14, 14, 0], scale: [1, 1.25, 1] }
-                          : {}
-                      }
-                      transition={{ duration: 0.5 }}
-                      className="w-14 h-14 rounded-2xl bg-[#D4AB58]/20 border border-[#D4AB58]/50 p-2 flex items-center justify-center"
-                    >
-                      <PixelImage
-                        filename="35_icon_gift_box.png"
-                        alt="صندوقچه طلایی صنایع"
-                        className="w-10 h-10 object-contain drop-shadow-[0_4px_10px_rgba(212,171,88,0.5)]"
-                      />
-                    </motion.div>
-
-                    <div>
-                      <h4
-                        className={`text-xs font-black ${
-                          isNight ? 'text-[#D4AB58]' : 'text-[#14201B]'
-                        }`}
-                      >
-                        صندوقچه طلایی صنایع
-                      </h4>
-                      <span
-                        className={`text-[11px] font-black block mt-0.5 ${
-                          isNight ? 'text-emerald-400' : 'text-[#354B40]'
-                        }`}
-                      >
-                        {(activeConfig.goldCost || 100).toLocaleString('fa-IR')} امتیاز الماس
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Transparent Prize List & Win Probabilities */}
-                  <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 space-y-1.5 text-right">
-                    <div className="text-[10px] font-black opacity-80 border-b border-current/10 pb-1">
-                      📋 لیست جوایز و درصد شانس:
-                    </div>
-                    {goldPrizes.map((p) => (
-                      <div
-                        key={p.id}
-                        className="flex items-center justify-between gap-1 text-[10px] font-bold"
-                      >
-                        <span className="truncate">{p.title}</span>
-                        <span className="px-1.5 py-0.5 rounded bg-[#D4AB58]/20 text-[#D4AB58] font-black shrink-0">
-                          {p.chancePercent.toLocaleString('fa-IR')}٪
-                        </span>
+                      {/* Mystery Box Notice (Odds & Prizes strictly hidden from students) */}
+                      <div className="p-2.5 rounded-xl bg-black/20 border border-current/10 text-center space-y-1">
+                        <div className="text-[10px] font-black text-[#D4AB58]">
+                          🎲 صندوقچه شانسی اسرارآمیز
+                        </div>
+                        <p className="text-[10px] font-bold opacity-80 leading-relaxed">
+                          جوایز و درصد شانس داخل این صندوقچه مخفی است؛ با باز کردن آن شانس خود را امتحان کنید!
+                        </p>
                       </div>
-                    ))}
-                  </div>
 
-                  <PushButton
-                    variant="gold"
-                    size="sm"
-                    fullWidth
-                    disabled={openingChestType !== null}
-                    onClick={() => handleOpenLootbox('gold')}
-                  >
-                    {openingChestType === 'gold' ? 'در حال بازگشایی...' : 'باز کردن صندوقچه'}
-                  </PushButton>
-                </div>
+                      <PushButton
+                        variant={btnVariant}
+                        size="sm"
+                        fullWidth
+                        disabled={openingChestType !== null}
+                        onClick={() => handleOpenLootbox(chest.id)}
+                      >
+                        {isOpeningThis ? 'در حال بازگشایی...' : 'باز کردن صندوقچه'}
+                      </PushButton>
+                    </div>
+                  );
+                })}
               </div>
 
               {/* User's Saved Vouchers Wallet */}
@@ -981,7 +962,7 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
             </div>
           )}
 
-          {/* 5. WEEKLY POINT QUESTS (ماموریت‌های امتیازی هفته) */}
+          {/* 5. QUESTS (ماموریت‌ها) — Strictly Earned Only After Completing Real Conditions */}
           <div
             className={`rounded-3xl p-4 border space-y-3 ${
               isNight
@@ -990,73 +971,143 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
             }`}
           >
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-black">ماموریت‌های امتیازی هفته</h3>
+              <h3 className="text-sm font-black">ماموریت‌ها</h3>
               <span
                 className={`text-[11px] font-black ${
                   isNight ? 'text-[#7FB69E]' : 'text-[#354B40]'
                 }`}
               >
-                پاداش فوری الماس
+                پاداش پس از انجام ماموریت
               </span>
             </div>
 
             <div className="space-y-2.5">
-              {quests.map((quest) => {
+              {evaluatedQuests.map((quest) => {
                 const isCompleted = quest.progress >= quest.maxProgress;
+                const needsSecretCode =
+                  quest.conditionType === 'secret_code' &&
+                  !quest.unlockedByCode &&
+                  !quest.isClaimed;
+
                 return (
                   <div
                     key={quest.id}
-                    className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
+                    className={`p-3 rounded-2xl border space-y-2 ${
                       isNight
                         ? 'bg-[#121A26] border-[#2C3E4C] text-[#F6F1E7]'
                         : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
                     }`}
                   >
-                    <div className="flex-1 min-w-0 space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-black truncate">{quest.title}</span>
-                        <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-[#D4AB58] text-[#101622] shrink-0">
-                          +{quest.rewardPoints.toLocaleString('fa-IR')} امتیاز
-                        </span>
-                      </div>
-                      <p
-                        className={`text-[11px] font-medium leading-snug ${
-                          isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
-                        }`}
-                      >
-                        {quest.description}
-                      </p>
-                    </div>
-
-                    <div className="shrink-0">
-                      {quest.isClaimed ? (
-                        <span className="px-3 py-1.5 rounded-xl bg-emerald-600/20 text-emerald-500 border border-emerald-500/40 text-[11px] font-black inline-block">
-                          دریافت شد!
-                        </span>
-                      ) : isCompleted ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            playFanfare();
-                            onClaimQuest(quest.id, quest.rewardPoints, quest.title);
-                          }}
-                          className="px-3 py-1.5 rounded-xl bg-[#D4AB58] text-[#101622] text-[11px] font-black shadow-[0_3px_0_#8F6B24] active:translate-y-0.5 cursor-pointer"
-                        >
-                          دریافت جایزه ✨
-                        </button>
-                      ) : (
-                        <span
-                          className={`px-2.5 py-1 rounded-xl border text-[11px] font-black inline-block ${
-                            isNight
-                              ? 'bg-white/5 border-white/10 text-[#A3C1AD]'
-                              : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B]'
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-black truncate">{quest.title}</span>
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-[#D4AB58] text-[#101622] shrink-0">
+                            +{quest.rewardPoints.toLocaleString('fa-IR')} امتیاز
+                          </span>
+                        </div>
+                        <p
+                          className={`text-[11px] font-medium leading-snug ${
+                            isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                           }`}
                         >
-                          {quest.progress.toLocaleString('fa-IR')} /{' '}
-                          {quest.maxProgress.toLocaleString('fa-IR')}
-                        </span>
-                      )}
+                          {quest.description}
+                        </p>
+                      </div>
+
+                      <div className="shrink-0">
+                        {quest.isClaimed ? (
+                          <span className="px-3 py-1.5 rounded-xl bg-emerald-600/20 text-emerald-500 border border-emerald-500/40 text-[11px] font-black inline-block">
+                            دریافت شد ✓
+                          </span>
+                        ) : isCompleted ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              playFanfare();
+                              onClaimQuest(quest.id, quest.rewardPoints, quest.title);
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-[#D4AB58] text-[#101622] text-[11px] font-black shadow-[0_3px_0_#8F6B24] active:translate-y-0.5 cursor-pointer"
+                          >
+                            دریافت جایزه ✨
+                          </button>
+                        ) : (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span
+                              className={`px-2.5 py-1 rounded-xl border text-[11px] font-black inline-block ${
+                                isNight
+                                  ? 'bg-white/5 border-white/10 text-[#A3C1AD]'
+                                  : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B]'
+                              }`}
+                            >
+                              {quest.progress.toLocaleString('fa-IR')} /{' '}
+                              {quest.maxProgress.toLocaleString('fa-IR')}
+                            </span>
+                            <span className="text-[9px] font-bold opacity-70">
+                              در انتظار انجام
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
+
+                    {needsSecretCode && (
+                      <div className="pt-2 border-t border-current/10 flex flex-col gap-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            dir="ltr"
+                            value={questCodeInputs[quest.id] || ''}
+                            onChange={(e) => {
+                              setQuestCodeInputs((prev) => ({
+                                ...prev,
+                                [quest.id]: e.target.value,
+                              }));
+                              setQuestCodeError((prev) => ({ ...prev, [quest.id]: '' }));
+                            }}
+                            placeholder="کد تایید انجام ماموریت..."
+                            className={`flex-1 px-2.5 py-1.5 rounded-xl border text-[11px] font-mono text-center ${
+                              isNight
+                                ? 'bg-[#0E1520] border-[#2C3E4C] text-[#F6F1E7]'
+                                : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B]'
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const rawCode = (questCodeInputs[quest.id] || '').trim();
+                              if (!rawCode) {
+                                playError();
+                                setQuestCodeError((prev) => ({
+                                  ...prev,
+                                  [quest.id]: 'لطفاً کد ماموریت را وارد کنید.',
+                                }));
+                                return;
+                              }
+                              const unlocked = onUnlockSecretQuest?.(quest.id, rawCode);
+                              if (unlocked) {
+                                playFanfare();
+                                setQuestCodeError((prev) => ({ ...prev, [quest.id]: '' }));
+                              } else {
+                                playError();
+                                setQuestCodeError((prev) => ({
+                                  ...prev,
+                                  [quest.id]: '❌ کد وارد شده معتبر نیست.',
+                                }));
+                              }
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-[#354B40] text-[#F6F1E7] text-[10px] font-black cursor-pointer shrink-0"
+                          >
+                            ثبت کد ماموریت
+                          </button>
+                        </div>
+                        {questCodeError[quest.id] && (
+                          <span className="text-[10px] font-bold text-[#E77F6E]">
+                            {questCodeError[quest.id]}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -21,6 +21,10 @@ export interface UserProfile {
   telegramUserId?: string;
   telegramUsername?: string;
   onboardingCompleted?: boolean;
+  referralCode?: string;
+  referredBy?: string;
+  referredCount?: number;
+  referralPointsEarned?: number;
 }
 
 export interface Professor {
@@ -166,7 +170,7 @@ export interface DiscountVoucher {
   title: string;
   discountPercent: number; // 25 to 100
   maxDiscountTomans: number;
-  chestType: 'bronze' | 'gold';
+  chestType: string;
   issuedAt: string;
   isUsed: boolean;
   signatureHash: string;
@@ -183,11 +187,22 @@ export interface LootboxPrizeItem {
   chancePercent: number; // 0 to 100
 }
 
+export interface LootboxChestConfig {
+  id: string;
+  title: string;
+  subtitle?: string;
+  cost: number;
+  themeColor?: 'bronze' | 'gold' | 'emerald' | 'royal' | 'crimson' | 'purple';
+  iconFilename?: string;
+  prizes: LootboxPrizeItem[];
+}
+
 export interface LootboxConfig {
   bronzeCost: number;
   goldCost: number;
   bronzePrizes: LootboxPrizeItem[];
   goldPrizes: LootboxPrizeItem[];
+  chests?: LootboxChestConfig[];
   updatedAt?: string;
 }
 
@@ -209,12 +224,18 @@ export interface BootstrapResponse {
   completedProfile?: boolean;
   profile?: UserProfile;
   students?: AdminStudentDossier[];
+  events?: EventItem[];
   lootboxConfig?: LootboxConfig;
   announcements?: ChannelAnnouncement[];
   disputes?: StudentIdDisputeTicket[];
   disputeTickets?: StudentIdDisputeTicket[];
   pendingApprovals?: AdminReceiptItem[];
   receipts?: AdminReceiptItem[];
+  allowStudentTimers?: boolean;
+  referralStats?: {
+    referredCount: number;
+    pointsEarned: number;
+  };
 }
 
 export interface LeaderboardStudent {
@@ -238,6 +259,13 @@ export interface CohortBattleStat {
   colorClass: string;
 }
 
+export type QuestConditionType =
+  | 'complete_profile'
+  | 'register_events'
+  | 'checkin_events'
+  | 'reach_score'
+  | 'secret_code';
+
 export interface WeeklyQuest {
   id: string;
   title: string;
@@ -246,6 +274,9 @@ export interface WeeklyQuest {
   progress: number;
   maxProgress: number;
   isClaimed: boolean;
+  conditionType?: QuestConditionType;
+  secretCode?: string;
+  unlockedByCode?: boolean;
 }
 
 export type LootiModelId = 'gemini-3.8-flash' | 'gemini-3.6-flash' | 'gemini-3.5-flash-lite';
@@ -297,6 +328,11 @@ export interface AdminReceiptItem {
   status: 'pending' | 'approved' | 'rejected';
   trackingCode: string;
   receiptImageUrl?: string;
+  imageBase64?: string;
+  imageDataUrl?: string;
+  photoUrl?: string;
+  imageUrl?: string;
+  fileUrl?: string;
 }
 
 export interface AdminStudentDossier {
@@ -315,6 +351,10 @@ export interface AdminStudentDossier {
   badges: string[];
   payments: { title: string; amount: number; date: string; status: string }[];
   chatLogs: { sender: string; text: string; time: string }[];
+  referralCode?: string;
+  referredBy?: string;
+  referredCount?: number;
+  referralPointsEarned?: number;
 }
 
 export interface ScheduledTimer {
@@ -362,6 +402,7 @@ export interface FeatureFlags {
   supportTicketsEnabled: boolean;
   professorsDirectoryEnabled: boolean;
   globalMaintenanceMode: boolean;
+  allowStudentTimers?: boolean;
 }
 
 export interface OnlineSessionUser {
@@ -459,8 +500,10 @@ declare global {
       WebApp?: {
         ready?: () => void;
         expand?: () => void;
+        openTelegramLink?: (url: string) => void;
         initData?: string;
         initDataUnsafe?: {
+          start_param?: string;
           user?: {
             id?: number | string;
             first_name?: string;

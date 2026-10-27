@@ -45,6 +45,7 @@ interface CheckoutDrawerProps {
   discountRule?: { pointsUnit: number; discountToman: number };
   onCompleteRegistration: (ticket: TicketRecord, pointsDeducted: number, pointsEarned: number) => void;
   onSubmitReceipt?: (receipt: AdminReceiptItem) => void;
+  onRefreshFromServer?: () => Promise<void> | void;
 }
 
 export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
@@ -56,6 +57,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   discountRule = { pointsUnit: 10, discountToman: 50000 },
   onCompleteRegistration,
   onSubmitReceipt,
+  onRefreshFromServer,
 }) => {
   const isNight = themeMode === 'night';
 
@@ -69,6 +71,9 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   const [receiptDataUrl, setReceiptDataUrl] = useState<string>('');
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const inFlightRequestRef = useRef<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   const [generatedTicket, setGeneratedTicket] = useState<TicketRecord | null>(null);
   const [telegramPushSent, setTelegramPushSent] = useState(false);
@@ -124,97 +129,115 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
     }
   };
 
-  const handleSimulateReceipt = () => {
-    playTick();
-    setUploadError(null);
-    setReceiptUploaded(true);
-  };
-
-  const handleConfirmOrder = () => {
-    playFanfare();
-    const trackingCode = `TK-${Math.floor(100000 + Math.random() * 900000)}`;
-    const qrPayload = generateTicketPayload(
-      event.id,
-      user.studentId,
-      trackingCode,
-      finalPrice
-    );
-
-    const ticket: TicketRecord = {
-      id: `ticket-${Date.now()}`,
-      eventId: event.id,
-      eventTitle: event.title,
-      eventDate: event.date,
-      eventTime: event.time,
-      location: event.location,
-      studentId: user.studentId,
-      studentName: user.fullName,
-      trackingCode,
-      qrPayload,
-      paidAmount: finalPrice,
-      discountPointsUsed: pointsUsed,
-      issuedAt: new Date().toLocaleDateString('fa-IR'),
-      sentToTelegram: false,
-      checkedIn: false,
-    };
-
-    const receiptItemId = `rcp-${Date.now()}`;
-    if (finalPrice > 0 && onSubmitReceipt) {
-      onSubmitReceipt({
-        id: receiptItemId,
-        studentId: user.studentId,
-        studentName: user.fullName,
-        telegramUserId: user.telegramUserId,
-        cohortYear: user.cohortYear,
-        type: 'payment_receipt',
-        title: `فیش ثبت‌نام ${event.title}`,
-        eventId: event.id,
-        eventTitle: event.title,
-        amount: finalPrice,
-        amountTomans: finalPrice,
-        trackingCode,
-        submittedAt: 'همین الان',
-        status: 'pending',
-        receiptImageUrl: receiptDataUrl || undefined,
-      });
-
-      // Push the compressed Base64 JPEG receipt to the Telegram Bot (`POST /api/miniapp/upload-receipt`)
-      void uploadPaymentReceiptToBot({
-        itemId: receiptItemId,
-        eventId: event.id,
-        eventTitle: event.title,
-        amountTomans: finalPrice,
-        trackingCode,
-        studentId: user.studentId,
-        studentName: user.fullName,
-        cohortYear: user.cohortYear,
-        imageBase64: receiptDataUrl || '',
-        telegramUserId: user.telegramUserId,
-      });
+  const handleConfirmOrder = async () => {
+    if (inFlightRequestRef.current || isSubmitting || step === 'success') {
+      return;
     }
+    inFlightRequestRef.current = true;
+    setIsSubmitting(true);
 
-    setGeneratedTicket(ticket);
-    setStep('success');
-    onCompleteRegistration(ticket, pointsUsed, event.rewardPoints);
+    try {
+      playFanfare();
+      const trackingCode = `TK-${Math.floor(100000 + Math.random() * 900000)}`;
+      const idempotencyKey = trackingCode;
+      try {
+        localStorage.setItem(`ie_idem_ticket_${idempotencyKey}`, idempotencyKey);
+      } catch {
+        // Ignore storage error
+      }
 
-    // Automatically push the QR ticket to the live Cloudflare Worker Telegram Bot on registration
-    void sendQrTicketToTelegramChat(ticket, user).then((res) => {
-      if (res.deliveredToTelegram) {
+      const qrPayload = generateTicketPayload(
+        event.id,
+        user.studentId,
+        trackingCode,
+        finalPrice
+      );
+
+      const ticket: TicketRecord = {
+        id: `ticket-${Date.now()}`,
+        eventId: event.id,
+        eventTitle: event.title,
+        eventDate: event.date,
+        eventTime: event.time,
+        location: event.location,
+        studentId: user.studentId,
+        studentName: user.fullName,
+        trackingCode,
+        qrPayload,
+        paidAmount: finalPrice,
+        discountPointsUsed: pointsUsed,
+        issuedAt: new Date().toLocaleDateString('fa-IR'),
+        sentToTelegram: true,
+        checkedIn: false,
+      };
+
+      const receiptItemId = `rcp-${Date.now()}`;
+      if (finalPrice > 0 && onSubmitReceipt) {
+        onSubmitReceipt({
+          id: receiptItemId,
+          studentId: user.studentId,
+          studentName: user.fullName,
+          telegramUserId: user.telegramUserId,
+          cohortYear: user.cohortYear,
+          type: 'payment_receipt',
+          title: `فیش ثبت‌نام ${event.title}`,
+          eventId: event.id,
+          eventTitle: event.title,
+          amount: finalPrice,
+          amountTomans: finalPrice,
+          trackingCode,
+          submittedAt: 'همین الان',
+          status: 'pending',
+          receiptImageUrl: receiptDataUrl || undefined,
+        });
+
+        // Push the compressed Base64 JPEG receipt to the Telegram Bot (`POST /api/miniapp/upload-receipt`)
+        await uploadPaymentReceiptToBot({
+          itemId: receiptItemId,
+          eventId: event.id,
+          eventTitle: event.title,
+          amountTomans: finalPrice,
+          trackingCode,
+          studentId: user.studentId,
+          studentName: user.fullName,
+          cohortYear: user.cohortYear,
+          imageBase64: receiptDataUrl || '',
+          telegramUserId: user.telegramUserId,
+        });
+      }
+
+      setGeneratedTicket(ticket);
+      setStep('success');
+      onCompleteRegistration(ticket, pointsUsed, event.rewardPoints);
+
+      // Push the QR ticket once to the live Cloudflare Worker Telegram Bot
+      const sendRes = await sendQrTicketToTelegramChat(ticket, user);
+      if (sendRes.deliveredToTelegram || sendRes.ok) {
         setTelegramPushSent(true);
       }
-    });
+      await onRefreshFromServer?.();
+    } finally {
+      inFlightRequestRef.current = false;
+      setIsSubmitting(false);
+    }
   };
 
   const handleSendToTelegram = async () => {
-    if (!generatedTicket) return;
+    if (!generatedTicket || inFlightRequestRef.current || isSendingTelegram || telegramPushSent) {
+      return;
+    }
+    inFlightRequestRef.current = true;
     setIsSendingTelegram(true);
     playTick();
 
-    await sendQrTicketToTelegramChat(generatedTicket, user);
-
-    setIsSendingTelegram(false);
-    setTelegramPushSent(true);
-    playFanfare();
+    try {
+      await sendQrTicketToTelegramChat(generatedTicket, user);
+      setTelegramPushSent(true);
+      playFanfare();
+    } finally {
+      inFlightRequestRef.current = false;
+      setIsSendingTelegram(false);
+    }
   };
 
   return (
@@ -458,24 +481,14 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
                 <div className="pt-1">
                   {!receiptUploaded ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="py-2 px-3 rounded-xl border border-dashed border-[#D4AB58] text-xs font-bold flex items-center justify-center gap-1.5 transition-all text-[#D4AB58] active:scale-95 cursor-pointer"
-                      >
-                        <Upload className="w-3.5 h-3.5" />
-                        <span>انتخاب عکس فیش از گالری</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSimulateReceipt}
-                        className="py-2 px-3 rounded-xl bg-[#D4AB58]/15 border border-[#D4AB58]/40 text-xs font-bold flex items-center justify-center gap-1.5 transition-all text-[#D4AB58] active:scale-95 cursor-pointer"
-                      >
-                        <FileCheck className="w-3.5 h-3.5" />
-                        <span>بارگذاری فیش نمونه فوری</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full py-2.5 px-3 rounded-xl border border-dashed border-[#D4AB58] text-xs font-bold flex items-center justify-center gap-1.5 transition-all text-[#D4AB58] active:scale-95 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>انتخاب تصویر فیش واریزی از گالری</span>
+                    </button>
                   ) : (
                     <div className="p-2.5 rounded-xl bg-emerald-950/60 border border-emerald-700/60 flex items-center justify-between text-xs text-emerald-300">
                       <span className="flex items-center gap-1.5 font-bold">
@@ -502,10 +515,12 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                 variant="gold"
                 size="lg"
                 fullWidth
-                disabled={finalPrice > 0 && !receiptUploaded}
+                disabled={isSubmitting || (finalPrice > 0 && !receiptUploaded)}
                 onClick={handleConfirmOrder}
               >
-                {finalPrice === 0
+                {isSubmitting
+                  ? 'در حال ثبت و صدور بلیط...'
+                  : finalPrice === 0
                   ? 'تأیید و دریافت فوری بلیط رایگان ✨'
                   : 'ثبت نهایی فیش و صدور بلیط الکترونیکی QR'}
               </PushButton>

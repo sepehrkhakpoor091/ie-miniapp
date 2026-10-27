@@ -15,8 +15,9 @@ import {
   Sun,
   Volume2,
   VolumeX,
-  Shield,
-  GraduationCap,
+  Calendar,
+  Ticket,
+  UserCheck,
 } from 'lucide-react';
 
 interface QuickMenuDrawerProps {
@@ -26,8 +27,9 @@ interface QuickMenuDrawerProps {
   isSoundActive: boolean;
   onToggleTheme: () => void;
   onToggleSound: () => void;
-  onOpenKycLock: () => void;
-  onOpenOnboarding: () => void;
+  onEditProfileAvatar: () => void;
+  onOpenActiveEvents: () => void;
+  onOpenEventHistory: () => void;
 }
 
 export const QuickMenuDrawer: React.FC<QuickMenuDrawerProps> = ({
@@ -37,8 +39,9 @@ export const QuickMenuDrawer: React.FC<QuickMenuDrawerProps> = ({
   isSoundActive,
   onToggleTheme,
   onToggleSound,
-  onOpenKycLock,
-  onOpenOnboarding,
+  onEditProfileAvatar,
+  onOpenActiveEvents,
+  onOpenEventHistory,
 }) => {
   const isNight = themeMode === 'night';
 
@@ -71,7 +74,7 @@ export const QuickMenuDrawer: React.FC<QuickMenuDrawerProps> = ({
                   isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                 }`}
               >
-                تم روز و شب، صدا، ویرایش پروفایل و احراز هویت
+                پروفایل، رویدادهای در حال برگزاری، سوابق و تنظیمات ظاهری
               </p>
             </div>
           </div>
@@ -163,13 +166,13 @@ export const QuickMenuDrawer: React.FC<QuickMenuDrawerProps> = ({
             </span>
           </button>
 
-          {/* Student Onboarding Wizard */}
+          {/* Profile & Avatar Edit (Navigates to Profile Tab -> Avatar Editor) */}
           <button
             type="button"
             onClick={() => {
               playTick();
               onClose();
-              onOpenOnboarding();
+              onEditProfileAvatar();
             }}
             className={`w-full p-3 rounded-2xl border transition-all flex items-center justify-between cursor-pointer active:scale-[0.98] ${
               isNight
@@ -178,30 +181,30 @@ export const QuickMenuDrawer: React.FC<QuickMenuDrawerProps> = ({
             }`}
           >
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-sky-500/20 text-sky-500 flex items-center justify-center">
-                <GraduationCap className="w-4 h-4" />
+              <div className="w-9 h-9 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center">
+                <UserCheck className="w-4 h-4" />
               </div>
               <div className="text-right">
-                <div className="font-black text-xs">🎓 ثبت‌نام اولیه و ویرایش پروفایل</div>
+                <div className="font-black text-xs">🎨 ویرایش پروفایل و تغییر آواتار</div>
                 <div
                   className={`text-[10px] font-bold ${
                     isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                   }`}
                 >
-                  انتخاب آواتار، تعیین ورودی و شماره تماس
+                  ورود به پروفایل جهت تغییر کاراکتر آواتار و مشاهده مشخصات
                 </div>
               </div>
             </div>
             <span className="text-xs font-bold">←</span>
           </button>
 
-          {/* KYC Lock Test */}
+          {/* Active Events Shortcut */}
           <button
             type="button"
             onClick={() => {
               playTick();
               onClose();
-              onOpenKycLock();
+              onOpenActiveEvents();
             }}
             className={`w-full p-3 rounded-2xl border transition-all flex items-center justify-between cursor-pointer active:scale-[0.98] ${
               isNight
@@ -211,16 +214,48 @@ export const QuickMenuDrawer: React.FC<QuickMenuDrawerProps> = ({
           >
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-[#D4AB58] flex items-center justify-center">
-                <Shield className="w-4 h-4" />
+                <Calendar className="w-4 h-4" />
               </div>
               <div className="text-right">
-                <div className="font-black text-xs">🪪 تست قفل KYC</div>
+                <div className="font-black text-xs">📅 رویدادهای در حال برگزاری</div>
                 <div
                   className={`text-[10px] font-bold ${
                     isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                   }`}
                 >
-                  بررسی سامانه تطبیق کارت فیزیکی دانشجو
+                  مشاهده و ثبت‌نام در کارگاه‌ها، مسابقات و بازدیدهای فعال
+                </div>
+              </div>
+            </div>
+            <span className="text-xs font-bold">←</span>
+          </button>
+
+          {/* User Event & Ticket History Shortcut */}
+          <button
+            type="button"
+            onClick={() => {
+              playTick();
+              onClose();
+              onOpenEventHistory();
+            }}
+            className={`w-full p-3 rounded-2xl border transition-all flex items-center justify-between cursor-pointer active:scale-[0.98] ${
+              isNight
+                ? 'bg-[#1A2424] hover:bg-[#223030] border-[#2C3E4C] text-[#F6F1E7]'
+                : 'bg-[#FFFFFF] hover:bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                <Ticket className="w-4 h-4" />
+              </div>
+              <div className="text-right">
+                <div className="font-black text-xs">🎟️ سابقه رویدادها و بلیط‌های من</div>
+                <div
+                  className={`text-[10px] font-bold ${
+                    isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                  }`}
+                >
+                  مشاهده سوابق شرکت در رویدادها، بارکدهای QR و گواهینامه‌ها
                 </div>
               </div>
             </div>

@@ -4,7 +4,7 @@
  * Featured Event Details & Instant Registration Modal
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ThemeMode } from '../../types';
 import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
@@ -38,13 +38,20 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
 }) => {
   const isNight = themeMode === 'night';
   const [isRegistered, setIsRegistered] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const inFlightRequestRef = useRef<boolean>(false);
 
   if (!isOpen || !eventId) return null;
 
   const handleRegister = () => {
+    if (inFlightRequestRef.current || isSubmitting || isRegistered) return;
+    inFlightRequestRef.current = true;
+    setIsSubmitting(true);
     playFanfare();
     setIsRegistered(true);
     onRegistered();
+    setIsSubmitting(false);
+    inFlightRequestRef.current = false;
   };
 
   return (

@@ -27,6 +27,7 @@ interface RemindersModalProps {
   onClose: () => void;
   themeMode: ThemeMode;
   scheduledTimers?: ScheduledTimer[];
+  allowStudentTimers?: boolean;
 }
 
 const DEFAULT_SYSTEM_REMINDERS: ReminderItem[] = [
@@ -70,6 +71,7 @@ export const RemindersModal: React.FC<RemindersModalProps> = ({
   onClose,
   themeMode,
   scheduledTimers,
+  allowStudentTimers = true,
 }) => {
   const isNight = themeMode === 'night';
   const [deletedIds, setDeletedIds] = useState<string[]>(() => {
@@ -150,7 +152,9 @@ export const RemindersModal: React.FC<RemindersModalProps> = ({
 
   if (!isOpen) return null;
 
-  const visibleReminders = reminders.filter((r) => !deletedIds.includes(r.id));
+  const visibleReminders = reminders
+    .filter((r) => !deletedIds.includes(r.id))
+    .filter((r) => (allowStudentTimers === false ? Boolean(r.isSystem) : true));
 
   const handleToggle = (id: string) => {
     playSwitch();
@@ -185,7 +189,7 @@ export const RemindersModal: React.FC<RemindersModalProps> = ({
 
   const handleAddReminder = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    if (allowStudentTimers === false || !newTitle.trim()) return;
 
     playFanfare();
     const item: ReminderItem = {
@@ -244,24 +248,36 @@ export const RemindersModal: React.FC<RemindersModalProps> = ({
         </div>
 
         {/* Action Bar */}
-        <div className="p-3 border-b border-white/5 flex items-center justify-between">
+        <div className="p-3 border-b border-white/5 flex items-center justify-between gap-2">
           <span className="text-xs font-bold opacity-80">زنگ‌های هشدار فعال:</span>
-          <button
-            onClick={() => {
-              playTick();
-              setShowAddForm(!showAddForm);
-            }}
-            className="px-3 py-1.5 rounded-xl bg-[#D4AB58] hover:bg-[#DDB669] text-[#1D2A24] font-bold text-xs flex items-center gap-1.5 transition-all active:scale-95 border-b-2 border-[#9C782E]"
-          >
-            <Plus className="w-3.5 h-3.5 stroke-[3]" />
-            {showAddForm ? 'انصراف' : 'افزودن یادآور شخصی'}
-          </button>
+          {allowStudentTimers !== false ? (
+            <button
+              onClick={() => {
+                playTick();
+                setShowAddForm(!showAddForm);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-[#D4AB58] hover:bg-[#DDB669] text-[#1D2A24] font-bold text-xs flex items-center gap-1.5 transition-all active:scale-95 border-b-2 border-[#9C782E] cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5 stroke-[3]" />
+              {showAddForm ? 'انصراف' : 'افزودن یادآور شخصی'}
+            </button>
+          ) : (
+            <span className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 text-[10px] font-black">
+              🔒 ساخت یادآور شخصی قفل است
+            </span>
+          )}
         </div>
 
         {/* Body Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {allowStudentTimers === false && (
+            <div className="p-3.5 rounded-2xl bg-amber-500/15 border-2 border-[#D4AB58]/60 text-xs font-black leading-relaxed text-right">
+              🔒 ثبت تایمر شخصی توسط مدیریت انجمن غیرفعال شده است و فقط یادآورهای رسمی انجمن صنایع (سلف، حل تمرین و کارگاهها) ارسال میشوند.
+            </div>
+          )}
+
           {/* Add Reminder Form */}
-          {showAddForm && (
+          {showAddForm && allowStudentTimers !== false && (
             <form
               onSubmit={handleAddReminder}
               className="p-4 rounded-2xl bg-white/5 border border-[#D4AB58]/40 space-y-3 animate-fade-in"

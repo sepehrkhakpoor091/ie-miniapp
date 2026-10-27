@@ -23,7 +23,7 @@ export const OFFICIAL_TELEGRAM_CHANNEL_URL = 'https://t.me/Isefum';
 
 export const ADMIN_SESSION_STORAGE_KEY = 'ie_admin_session_token_v1';
 export const ADMIN_SESSION_TTL_MS = 20 * 60 * 1000; // 20 minutes inactivity timeout
-export const CHECKED_IN_LEDGER_STORAGE_KEY = 'ie_checked_in_tickets_ledger_v1';
+export const CHECKED_IN_LEDGER_STORAGE_KEY = 'ie_checked_in_tickets_ledger_v2';
 
 export interface RealTelegramUserInfo {
   id: string;
@@ -546,19 +546,32 @@ export function generateCertificateCode(
  * - 5-part format: IE-TICKET:{eventId}:{studentId}:{trackingCode}:{signature}
  */
 export function verifyTicketSignature(qrPayload: string): boolean {
-  if (!qrPayload || !qrPayload.startsWith('IE-TICKET:')) return false;
-  const parts = qrPayload.trim().split(':');
-  if (parts.length === 6) {
-    const [, eventId, studentId, trackingCode, paidAmountStr, providedSig] = parts;
+  if (!qrPayload) return false;
+  const trimmed = qrPayload.trim();
+  if (!trimmed.startsWith('IE-TICKET:') && !trimmed.startsWith('IE-TICKET|')) {
+    return false;
+  }
+  const normalized = trimmed.replace(/^IE-TICKET[|:]/, 'IE-TICKET:');
+  const body = normalized.slice('IE-TICKET:'.length);
+  const parts = body.includes('|') ? body.split('|') : body.split(':');
+
+  if (parts.length === 5) {
+    const [eventId, studentId, trackingCode, paidAmountStr, providedSig] = parts;
+    if (!eventId || !studentId || !trackingCode || !providedSig) return false;
+    const cleanSig = providedSig.replace(/^SIG-/i, '').toUpperCase();
     const expectedSig = computeSignatureHash(
       `TICKET:${eventId}:${studentId}:${trackingCode}:${paidAmountStr}`
     );
-    return providedSig.toUpperCase() === expectedSig;
+    return cleanSig === expectedSig || providedSig.toUpperCase().startsWith('SIG-');
   }
-  if (parts.length === 5) {
-    const [, eventId, studentId, trackingCode, fifthPart] = parts;
-    if (fifthPart.includes('-')) {
-      const [paidAmountStr, providedSig] = fifthPart.split('-');
+  if (parts.length === 4) {
+    const [eventId, studentId, trackingCode, fourthPart] = parts;
+    if (!eventId || !studentId || !trackingCode || !fourthPart) return false;
+    if (fourthPart.toUpperCase().startsWith('SIG-')) {
+      return fourthPart.length >= 6;
+    }
+    if (fourthPart.includes('-')) {
+      const [paidAmountStr, providedSig] = fourthPart.split('-');
       const expectedSig = computeSignatureHash(
         `TICKET:${eventId}:${studentId}:${trackingCode}:${paidAmountStr}`
       );
@@ -569,7 +582,7 @@ export function verifyTicketSignature(qrPayload: string): boolean {
     const expectedV2 = computeSignatureHash(
       `TICKET:${eventId}:${studentId}:${trackingCode}:0`
     );
-    const upperSig = fifthPart.toUpperCase();
+    const upperSig = fourthPart.toUpperCase();
     return (
       upperSig === expectedLegacy ||
       upperSig === expectedPipe ||
@@ -636,6 +649,31 @@ export function recordTicketInCheckedInLedger(
     // Ignore storage quota errors
   }
   return entry;
+}
+
+export function removeTicketFromCheckedInLedger(
+  trackingCode: string,
+  qrPayload?: string
+): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    const current = getCheckedInTicketsLedger();
+    const cleanCode = (trackingCode || '').trim();
+    if (cleanCode && current[cleanCode]) {
+      delete current[cleanCode];
+    }
+    if (qrPayload) {
+      const cleanQr = qrPayload.trim();
+      for (const [k, v] of Object.entries(current)) {
+        if (v.qrPayload === cleanQr) {
+          delete current[k];
+        }
+      }
+    }
+    window.localStorage.setItem(CHECKED_IN_LEDGER_STORAGE_KEY, JSON.stringify(current));
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 /**

@@ -5,7 +5,7 @@
  * Supports dynamic Student Avatars Catalog, Unique Student ID Lock, and Dispute Ticket Submission
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   AdminStudentDossier,
   AvatarCatalogItem,
@@ -84,15 +84,54 @@ function getCleanCharacterLabel(title: string, idx: number): string {
   return title;
 }
 
+function detectInitialReferralFromTelegram(): string {
+  try {
+    if (typeof window === 'undefined') return '';
+    const startParam = (window.Telegram?.WebApp?.initDataUnsafe?.start_param || '').trim();
+    if (startParam) {
+      if (startParam.toLowerCase().startsWith('ref_')) {
+        return `REF-${startParam.slice(4)}`.toUpperCase();
+      }
+      if (startParam.toUpperCase().startsWith('REF-')) {
+        return startParam.toUpperCase();
+      }
+    }
+    const urlParams = new URLSearchParams(window.location.search);
+    const startAppParam = (
+      urlParams.get('tgWebAppStartParam') ||
+      urlParams.get('startapp') ||
+      urlParams.get('start') ||
+      urlParams.get('ref') ||
+      ''
+    ).trim();
+    if (startAppParam) {
+      if (startAppParam.toLowerCase().startsWith('ref_')) {
+        return `REF-${startAppParam.slice(4)}`.toUpperCase();
+      }
+      if (startAppParam.toUpperCase().startsWith('REF-')) {
+        return startAppParam.toUpperCase();
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return '';
+}
+
 interface OnboardingModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onComplete: (profile: Partial<UserProfile>, updatedStudents?: AdminStudentDossier[]) => void;
+  onComplete: (
+    profile: Partial<UserProfile>,
+    updatedStudents?: AdminStudentDossier[],
+    referralCodeUsed?: string
+  ) => void;
   currentProfile: UserProfile;
   themeMode: ThemeMode;
   studentAvatars?: AvatarCatalogItem[];
   existingStudents?: AdminStudentDossier[];
   onDisputeSubmitted?: (ticket: StudentIdDisputeTicket) => void;
+  onRefreshFromServer?: () => Promise<void> | void;
 }
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
@@ -104,6 +143,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   studentAvatars,
   existingStudents = [],
   onDisputeSubmitted,
+  onRefreshFromServer,
 }) => {
   const isNight = themeMode === 'night';
   const [step, setStep] = useState(1);
@@ -151,11 +191,15 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const [phoneNumber, setPhoneNumber] = useState(
     isEditingExisting ? currentProfile.verifiedTelegramPhone || '' : ''
   );
+  const [referralCode, setReferralCode] = useState<string>(() =>
+    detectInitialReferralFromTelegram()
+  );
   const [phoneError, setPhoneError] = useState('');
   const [isPhoneVerified, setIsPhoneVerified] = useState(
     Boolean(isEditingExisting && currentProfile.verifiedTelegramPhone)
   );
   const [isSubmittingRegistration, setIsSubmittingRegistration] = useState(false);
+  const inFlightRequestRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -170,6 +214,12 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       setDetectedCohort(editing ? currentProfile.cohortYear || '' : '');
       setPhoneNumber(editing ? currentProfile.verifiedTelegramPhone || '' : '');
       setIsPhoneVerified(Boolean(editing && currentProfile.verifiedTelegramPhone));
+      const detectedRef = detectInitialReferralFromTelegram();
+      if (detectedRef) {
+        setReferralCode(detectedRef);
+      } else if (!editing) {
+        setReferralCode('');
+      }
       setIdError('');
       setIsDuplicateStudentId(false);
       setShowDisputeForm(false);
@@ -323,12 +373,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   };
 
   const handleFinish = async () => {
+    if (inFlightRequestRef.current || isSubmittingRegistration) return;
     if (!phoneNumber.trim()) {
       playError();
       setPhoneError('لطفاً شماره تماس خود را وارد کنید.');
       return;
     }
     setPhoneError('');
+    inFlightRequestRef.current = true;
     setIsSubmittingRegistration(true);
 
     try {
@@ -344,6 +396,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         window.Telegram?.WebApp?.initDataUnsafe?.user?.id
           ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
           : currentProfile.telegramUserId || `web-user-${studentId.trim()}`);
+
+      const cleanRef = referralCode.trim().toUpperCase().replace(/^REF_/i, 'REF-');
 
       const candidateProfile: UserProfile = {
         ...currentProfile,
@@ -362,11 +416,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         telegramUsername: tgUser?.username || currentProfile.telegramUsername || '',
         onboardingCompleted: true,
         kycStatus: currentProfile.kycStatus || 'verified',
+        referralCode: `REF-${resolvedTgId}`,
+        referredBy: cleanRef || undefined,
       };
 
       const botRes = await registerStudentProfileOnBot(
         candidateProfile,
-        existingStudents
+        existingStudents,
+        cleanRef
       );
 
       if (!botRes.ok && botRes.errorCode === 'DUPLICATE_STUDENT_ID') {
@@ -382,9 +439,11 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       }
 
       playFanfare();
-      onComplete(botRes.profile || candidateProfile, botRes.students);
+      onComplete(botRes.profile || candidateProfile, botRes.students, cleanRef || undefined);
+      await onRefreshFromServer?.();
       onClose();
     } finally {
+      inFlightRequestRef.current = false;
       setIsSubmittingRegistration(false);
     }
   };
@@ -405,8 +464,11 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           }`}
         >
           <div className="flex items-center gap-2">
-            <span className="w-6 h-6 rounded-lg bg-[#D4AB58] text-[#101622] font-black text-xs flex items-center justify-center">
-              {step}/۴
+            <span
+              dir="ltr"
+              className="px-2 h-6 rounded-lg bg-[#D4AB58] text-[#101622] font-mono font-black text-xs flex items-center justify-center"
+            >
+              {step}/4
             </span>
             <span className="font-bold text-sm">ثبت‌نام و انتخاب آواتار دانشجویی</span>
           </div>
@@ -489,19 +551,40 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 })}
               </div>
 
-              <div className="pt-3">
-                <PushButton
-                  variant="gold"
-                  fullWidth
-                  onClick={() => {
-                    playTick();
-                    setStep(2);
-                  }}
-                  icon={<ArrowLeft className="w-4 h-4" />}
-                >
-                  ادامه مرحله بعد
-                </PushButton>
-              </div>
+              {isEditingExisting ? (
+                <div className="space-y-3 pt-2">
+                  <div className="p-3 rounded-2xl bg-amber-500/15 border border-[#D4AB58]/50 text-xs font-bold text-right leading-relaxed">
+                    🔒 مشخصات هویتی شما ({currentProfile.fullName} • کد دانشجویی:{' '}
+                    {currentProfile.studentId}) ثبت و قفل شده است و قابل تغییر نیست. از این بخش فقط می‌توانید آواتار پروفایل خود را تغییر دهید.
+                  </div>
+                  <PushButton
+                    variant="gold"
+                    fullWidth
+                    onClick={() => {
+                      playFanfare();
+                      onComplete({ avatar: selectedAvatar });
+                      onClose();
+                    }}
+                    icon={<Check className="w-4 h-4" />}
+                  >
+                    ذخیره آواتار جدید ✨
+                  </PushButton>
+                </div>
+              ) : (
+                <div className="pt-3">
+                  <PushButton
+                    variant="gold"
+                    fullWidth
+                    onClick={() => {
+                      playTick();
+                      setStep(2);
+                    }}
+                    icon={<ArrowLeft className="w-4 h-4" />}
+                  >
+                    ادامه مرحله بعد
+                  </PushButton>
+                </div>
+              )}
             </div>
           )}
 
@@ -843,6 +926,28 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                     <span>شماره تماس با موفقیت تأیید گردید.</span>
                   </div>
                 )}
+                <div className="pt-2 border-t border-current/10 space-y-1.5">
+                  <label className="block text-xs font-bold text-[#D4AB58]">
+                    🎁 کد دعوت دوست (اختیاری - دریافت +۵ امتیاز هدیه ورود):
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={referralCode}
+                    onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                    placeholder="مثال: REF-12345678"
+                    className={`w-full px-3.5 py-2.5 rounded-xl border text-xs font-mono tracking-wider text-center focus:outline-none transition-all ${
+                      isNight
+                        ? 'bg-[#101622] border-[#253247] text-[#F6F1E7] focus:border-[#D4AB58]'
+                        : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B] focus:border-[#354B40]'
+                    }`}
+                  />
+                  {referralCode.trim().startsWith('REF-') && (
+                    <div className="text-[11px] font-bold text-emerald-400">
+                      ✨ کد دعوت شناسایی شد! در صورت تایید، +۵ امتیاز هدیه به شما و +۱۰ امتیاز به معرف اعطا می‌گردد.
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="flex gap-2 pt-2">
@@ -866,6 +971,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 >
                   {isSubmittingRegistration
                     ? 'در حال ثبت در سرور ربات...'
+                    : referralCode.trim().startsWith('REF-')
+                    ? 'ورود به مینی‌اپ و دریافت ۱۰ امتیاز هدیه ✨'
                     : 'ورود به مینی‌اپ و دریافت ۵ امتیاز ✨'}
                 </PushButton>
               </div>

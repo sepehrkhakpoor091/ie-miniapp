@@ -161,6 +161,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
     const masterAdmin = resolveSupremeAdmin();
     createAdminSession(masterAdmin.id);
     onUnlockSuccess(masterAdmin);
+    onClose();
   };
 
   const handleVerify = async (e: React.FormEvent) => {
@@ -184,25 +185,27 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
       const safeAdmins = Array.isArray(admins) ? admins : [];
       // 1. Check Salted Cryptographic Master Hash (Zero Plaintext in Source Code)
       const isMasterMatch = verifyMasterPasswordHash(trimmed);
+      const passwordHash = computeAdminPasswordHash(trimmed);
 
-      // 2. Also verify against backend /api/miniapp/admin-auth when master hash is used
-      let isBackendVerified = false;
-      if (isMasterMatch) {
-        const passwordHash = computeAdminPasswordHash(trimmed);
-        const botAuth = await verifyAdminPasswordWithBot(passwordHash);
-        isBackendVerified = botAuth.verified || isMasterMatch;
-      }
-
-      // 3. Check custom delegated RBAC admin passwords (if any non-master admin was added)
+      // 2. Check custom delegated RBAC admin passwords (if any non-master admin was added)
       const matchedDelegatedAdmin = safeAdmins.find(
         (adm) =>
           !adm.isFrozen &&
           adm.personalPassword &&
           adm.personalPassword !== 'HASHED::MASTER_SALTLOCK' &&
           (adm.personalPassword.trim() === trimmed ||
-            computeAdminPasswordHash(adm.personalPassword.trim()) ===
-              computeAdminPasswordHash(trimmed))
+            computeAdminPasswordHash(adm.personalPassword.trim()) === passwordHash)
       );
+
+      // 3. If locally matched, unlock immediately and notify bot in background (zero UI lag!)
+      let isBackendVerified = false;
+      if (isMasterMatch) {
+        void verifyAdminPasswordWithBot(passwordHash);
+        isBackendVerified = true;
+      } else if (!matchedDelegatedAdmin) {
+        const botAuth = await verifyAdminPasswordWithBot(passwordHash);
+        isBackendVerified = botAuth.verified;
+      }
 
       if (isMasterMatch || isBackendVerified || matchedDelegatedAdmin) {
         playFanfare();
@@ -212,14 +215,16 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
         localStorage.removeItem(FAILED_ATTEMPTS_KEY);
         localStorage.removeItem(LOCKOUT_STORAGE_KEY);
 
-        const resolvedAdmin = isMasterMatch
-          ? resolveSupremeAdmin()
-          : matchedDelegatedAdmin;
+        const resolvedAdmin =
+          isMasterMatch || isBackendVerified
+            ? resolveSupremeAdmin()
+            : matchedDelegatedAdmin;
 
         // Bind to expiring sessionStorage cryptographic token (20-min inactivity TTL)
         createAdminSession(resolvedAdmin?.id || SUPREME_MASTER_ADMIN_RECORD.id);
 
         onUnlockSuccess(resolvedAdmin);
+        onClose();
         return;
       }
 

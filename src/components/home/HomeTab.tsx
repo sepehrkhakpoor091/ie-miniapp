@@ -8,6 +8,7 @@
 
 import React from 'react';
 import {
+  AdminStudentDossier,
   ChannelAnnouncement,
   EventItem,
   TabType,
@@ -17,6 +18,7 @@ import {
 import { PixelImage } from '../PixelImage';
 import { TactileCard } from '../ui/TactileCard';
 import { RollingNumber } from '../ui/RollingNumber';
+import { ReferralInviteCard } from '../ui/ReferralInviteCard';
 import { playTick, playCoin } from '../../utils/soundEngine';
 import {
   DEFAULT_CHANNEL_URL,
@@ -32,6 +34,8 @@ interface HomeTabProps {
   announcements?: ChannelAnnouncement[];
   channelUrl?: string;
   featuredEvent?: EventItem;
+  realStudents?: AdminStudentDossier[];
+  serverReferralStats?: { referredCount: number; pointsEarned: number };
   onToggleTheme: () => void;
   onToggleSound?: () => void;
   onChangeTab: (tab: TabType) => void;
@@ -69,6 +73,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   announcements: propAnnouncements,
   channelUrl = DEFAULT_CHANNEL_URL,
   featuredEvent,
+  realStudents = [],
+  serverReferralStats,
   onToggleTheme,
   onChangeTab,
   onOpenQuickMenu,
@@ -529,6 +535,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
             <span className="text-xs font-black text-[#D4AB58] shrink-0">مشاهده ←</span>
           </TactileCard>
+
+          {/* 3C. Official Referral & Invite Link Card */}
+          <ReferralInviteCard
+            user={user}
+            themeMode={themeMode}
+            realStudents={realStudents}
+            serverReferralStats={serverReferralStats}
+          />
         </div>
 
         {/* LEFT COLUMN IN RTL ON DESKTOP (lg:col-span-7): Featured Event Card + Latest Channel Announcements */}
