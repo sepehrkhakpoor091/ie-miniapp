@@ -31,12 +31,14 @@ import {
   TOTAL_DEGREE_UNITS,
 } from '../../utils/curriculumData';
 import { playCoin, playSwitch, playTick } from '../../utils/soundEngine';
+import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 
 interface CurriculumModalProps {
   isOpen: boolean;
   onClose: () => void;
   themeMode: ThemeMode;
   studentCohortYear?: string;
+  chartEnabled?: boolean;
 }
 
 type ViewMode = 'semesters' | 'flowchart' | 'electives';
@@ -67,6 +69,7 @@ export const CurriculumModal: React.FC<CurriculumModalProps> = ({
   isOpen,
   onClose,
   themeMode,
+  chartEnabled = true,
 }) => {
   const isNight = themeMode === 'night';
 
@@ -455,6 +458,15 @@ export const CurriculumModal: React.FC<CurriculumModalProps> = ({
               2. MAIN SCROLLABLE BODY (Plenty of space for Courses!)
              ================================================================= */}
           <div className="flex-1 overflow-y-auto p-3.5 lg:p-6 space-y-3.5">
+            {!chartEnabled ? (
+              <div className="py-10 max-w-xl mx-auto">
+                <SectionMaintenanceBanner
+                  themeMode={themeMode}
+                  sectionTitle="چارت درسی و انتخاب واحد"
+                />
+              </div>
+            ) : (
+              <>
             {/* ===============================================================
                 MODE 1: SEMESTER-BY-SEMESTER 8-TERM BOARD
                =============================================================== */}
@@ -1149,6 +1161,8 @@ export const CurriculumModal: React.FC<CurriculumModalProps> = ({
                   })}
                 </div>
               </div>
+            )}
+              </>
             )}
           </div>
         </motion.div>

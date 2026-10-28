@@ -33,6 +33,7 @@ import {
   calculateFinalPayable,
 } from './events';
 import { ensureContinuousPinnedAnnouncements } from './channelSync';
+import { resolveReceiptOrKycImageUrl } from './apiBridge';
 import { AdminStudentDossier, TicketRecord, UserProfile } from '../types';
 
 const MOCK_USER: UserProfile = {
@@ -427,3 +428,30 @@ test('saveAdminStudentOverride and applyAdminOverridesToStudents prevent stale s
   assert.equal(unlocked[0].kycStatus, 'verified');
   assert.equal(unlocked[0].isBanned, false);
 });
+
+test('resolveReceiptOrKycImageUrl resolves imageUrl or constructs tg-photo endpoint from fileId', () => {
+  // 1. Item with imageUrl (Base64 data URL)
+  assert.equal(
+    resolveReceiptOrKycImageUrl({
+      imageUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD',
+    }),
+    'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD'
+  );
+
+  // 2. Item with only fileId from Telegram Bot -> constructs Worker tg-photo URL
+  assert.equal(
+    resolveReceiptOrKycImageUrl({
+      fileId: 'AgACAgIAAxkBAAIBZ2X9abc123',
+    }),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/tg-photo?fileId=AgACAgIAAxkBAAIBZ2X9abc123'
+  );
+
+  // 3. Item where imageUrl itself contains a raw Telegram file_id
+  assert.equal(
+    resolveReceiptOrKycImageUrl({
+      imageUrl: 'AgACAgQAAxkBAAIC02Y1xyz987654321',
+    }),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/tg-photo?fileId=AgACAgQAAxkBAAIC02Y1xyz987654321'
+  );
+});
+

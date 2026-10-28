@@ -47,7 +47,7 @@ export const SectionMaintenanceBanner: React.FC<SectionMaintenanceBannerProps> =
       )}
 
       <h3 className="text-sm sm:text-base font-black leading-relaxed">
-        🚧 این بخش موقتاً توسط انجمن علمی در حال بروزرسانی است و به زودی فعال می‌شود
+        🔒 این بخش موقتاً توسط مدیریت انجمن صنایع غیرفعال شده است
       </h3>
 
       <p
@@ -55,7 +55,7 @@ export const SectionMaintenanceBanner: React.FC<SectionMaintenanceBannerProps> =
           isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
         }`}
       >
-        تیم فنی انجمن علمی مهندسی صنایع در حال ارتقای این سرویس می‌باشد. از شکیبایی شما سپاسگزاریم.
+        دسترسی به این بخش توسط مدیریت انجمن علمی مهندسی صنایع به صورت موقت محدود گردیده است. از شکیبایی شما سپاسگزاریم.
       </p>
     </div>
   );

@@ -233,6 +233,15 @@ export interface StudentIdDisputeTicket {
   status: 'open' | 'resolved';
 }
 
+export interface SiteSwitches {
+  maintenanceMode: boolean;
+  eventsEnabled: boolean;
+  lootboxEnabled: boolean;
+  chartEnabled: boolean;
+  supportEnabled: boolean;
+  leaderboardEnabled: boolean;
+}
+
 export interface BootstrapResponse {
   ok: boolean;
   completedProfile?: boolean;
@@ -247,6 +256,9 @@ export interface BootstrapResponse {
   pendingApprovals?: AdminReceiptItem[];
   receipts?: AdminReceiptItem[];
   allowStudentTimers?: boolean;
+  siteSwitches?: Partial<SiteSwitches>;
+  onlineCount?: number;
+  onlineUsers?: OnlineSessionUser[];
   referralStats?: {
     referredCount: number;
     pointsEarned: number;
@@ -348,6 +360,10 @@ export interface AdminReceiptItem {
   photoUrl?: string;
   imageUrl?: string;
   fileUrl?: string;
+  fileId?: string;
+  telegramFileId?: string;
+  photoFileId?: string;
+  file_id?: string;
 }
 
 export interface AdminStudentDossier {
@@ -420,17 +436,27 @@ export interface FeatureFlags {
   supportTicketsEnabled: boolean;
   professorsDirectoryEnabled: boolean;
   globalMaintenanceMode: boolean;
+  chartEnabled?: boolean;
   allowStudentTimers?: boolean;
+  maintenanceMode?: boolean;
+  eventsEnabled?: boolean;
+  lootboxEnabled?: boolean;
+  supportEnabled?: boolean;
 }
 
 export interface OnlineSessionUser {
   id: string;
+  userId?: string;
+  telegramUserId?: string;
   studentId: string;
   fullName: string;
+  name?: string;
   cohortYear: string;
   device: 'Telegram Mobile' | 'Desktop Web';
   activePage: string;
   lastHeartbeat: string;
+  lastSeen?: string;
+  onlineAt?: string;
   isLocked: boolean;
 }
 

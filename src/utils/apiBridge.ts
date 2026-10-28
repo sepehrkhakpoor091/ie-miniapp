@@ -13,7 +13,9 @@ import {
   ChannelAnnouncement,
   EventItem,
   LootboxConfig,
+  OnlineSessionUser,
   Professor,
+  SiteSwitches,
   StudentIdDisputeTicket,
   SupportTicket,
   TicketRecord,
@@ -33,6 +35,68 @@ export const BOT_WORKER_BASE_URL =
   'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev';
 export const BOT_API_URL_STORAGE_KEY = 'ie_bot_api_base_url_v1';
 export const IDEMPOTENCY_STORAGE_KEY = 'ie_idempotency_keys_v1';
+export const SITE_SWITCHES_OVERRIDE_KEY = 'ie_site_switches_override_v1';
+
+/**
+ * Resolves the real displayable image URL for a receipt or KYC card item.
+ * - Uses `imageUrl` (or `receiptImageUrl`/`imageBase64`/`imageDataUrl`/`photoUrl`/`fileUrl`) if provided.
+ * - If only `fileId` (or `telegramFileId`/`photoFileId`/`file_id`) is provided from the Telegram Bot,
+ *   constructs `https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/tg-photo?fileId={fileId}`.
+ */
+export function resolveReceiptOrKycImageUrl(
+  item?: Partial<AdminReceiptItem> | null
+): string {
+  if (!item) return '';
+  const rawUrl = (
+    item.imageUrl ||
+    item.receiptImageUrl ||
+    item.imageBase64 ||
+    item.imageDataUrl ||
+    item.photoUrl ||
+    item.fileUrl ||
+    ''
+  ).trim();
+
+  if (rawUrl) {
+    if (
+      rawUrl.startsWith('data:image/') ||
+      rawUrl.startsWith('http://') ||
+      rawUrl.startsWith('https://') ||
+      rawUrl.startsWith('blob:')
+    ) {
+      return rawUrl;
+    }
+    if (rawUrl.startsWith('/api/')) {
+      return `${BOT_WORKER_BASE_URL}${rawUrl}`;
+    }
+    if (rawUrl.startsWith('/')) {
+      return rawUrl;
+    }
+    // Check if rawUrl looks like a Telegram file_id (e.g. AgACAgIAAxkB...) rather than base64
+    if (rawUrl.length < 220 && /^[A-Za-z0-9_-]{20,}$/.test(rawUrl) && !rawUrl.includes('/')) {
+      return `${BOT_WORKER_BASE_URL}/api/miniapp/tg-photo?fileId=${encodeURIComponent(
+        rawUrl
+      )}`;
+    }
+    return `data:image/jpeg;base64,${rawUrl}`;
+  }
+
+  const rawFileId = (
+    item.fileId ||
+    item.telegramFileId ||
+    item.photoFileId ||
+    item.file_id ||
+    ''
+  ).trim();
+
+  if (rawFileId) {
+    return `${BOT_WORKER_BASE_URL}/api/miniapp/tg-photo?fileId=${encodeURIComponent(
+      rawFileId
+    )}`;
+  }
+
+  return '';
+}
 
 const inMemoryIdempotencySet = new Set<string>();
 
@@ -435,6 +499,39 @@ export async function fetchMiniAppBootstrap(
       : Array.isArray(json.receipts)
       ? json.receipts
       : undefined;
+
+    const normalizedApprovals = rawApprovals
+      ? rawApprovals.map((item) => {
+          const resolvedUrl = resolveReceiptOrKycImageUrl(item);
+          return {
+            ...item,
+            imageUrl: resolvedUrl || item.imageUrl,
+            receiptImageUrl: resolvedUrl || item.receiptImageUrl,
+          };
+        })
+      : undefined;
+
+    const rawRecord = json as unknown as Record<string, unknown>;
+    const rawSiteSwitches =
+      json.siteSwitches && typeof json.siteSwitches === 'object'
+        ? json.siteSwitches
+        : rawRecord.switches && typeof rawRecord.switches === 'object'
+        ? (rawRecord.switches as Partial<SiteSwitches>)
+        : undefined;
+
+    const rawOnlineUsers = Array.isArray(json.onlineUsers)
+      ? json.onlineUsers
+      : Array.isArray(rawRecord.activeUsers)
+      ? (rawRecord.activeUsers as OnlineSessionUser[])
+      : undefined;
+
+    const rawOnlineCount =
+      typeof json.onlineCount === 'number'
+        ? json.onlineCount
+        : Array.isArray(rawOnlineUsers)
+        ? rawOnlineUsers.length
+        : undefined;
+
     return {
       ok: true,
       completedProfile: Boolean(
@@ -452,8 +549,8 @@ export async function fetchMiniAppBootstrap(
           : undefined,
       professors: Array.isArray(json.professors)
         ? json.professors
-        : Array.isArray((json as unknown as Record<string, unknown>).profs)
-        ? ((json as unknown as Record<string, unknown>).profs as Professor[])
+        : Array.isArray(rawRecord.profs)
+        ? (rawRecord.profs as Professor[])
         : undefined,
       lootboxConfig: json.lootboxConfig,
       announcements: Array.isArray(json.announcements) ? json.announcements : undefined,
@@ -467,10 +564,13 @@ export async function fetchMiniAppBootstrap(
         : Array.isArray(json.disputes)
         ? json.disputes
         : undefined,
-      pendingApprovals: rawApprovals,
-      receipts: rawApprovals,
+      pendingApprovals: normalizedApprovals,
+      receipts: normalizedApprovals,
       allowStudentTimers:
         typeof json.allowStudentTimers === 'boolean' ? json.allowStudentTimers : undefined,
+      siteSwitches: rawSiteSwitches,
+      onlineCount: rawOnlineCount,
+      onlineUsers: rawOnlineUsers,
       referralStats: json.referralStats,
     };
   } catch {
@@ -721,7 +821,7 @@ export async function saveLootboxConfigOnBot(
 
 /**
  * 10. POST ${BOT_WORKER_BASE_URL}/api/miniapp/upload-kyc
- * Sends the compressed Base64 JPEG (max width 900px) student ID card image to the Telegram Bot
+ * Sends the compressed Base64 JPEG (quality: 0.7, max width 800px) student ID card image to the Telegram Bot
  * so it is immediately forwarded to the Admins in Telegram AND queued in pendingApprovals.
  */
 export async function uploadKycCardToBot(payload: {
@@ -752,6 +852,7 @@ export async function uploadKycCardToBot(payload: {
       studentName: payload.studentName,
       cohortYear: payload.cohortYear,
       trackingCode: payload.trackingCode,
+      imageUrl: payload.imageBase64,
       imageBase64: payload.imageBase64,
       imageDataUrl: payload.imageBase64,
       receiptImageUrl: payload.imageBase64,
@@ -771,7 +872,7 @@ export async function uploadKycCardToBot(payload: {
 
 /**
  * 11. POST ${BOT_WORKER_BASE_URL}/api/miniapp/upload-receipt
- * Sends the compressed Base64 JPEG (max width 900px) workshop payment receipt image to the Telegram Bot
+ * Sends the compressed Base64 JPEG (quality: 0.7, max width 800px) workshop payment receipt image to the Telegram Bot
  * so it is immediately sent with inline Approve/Reject buttons to Admins in Telegram AND queued in pendingApprovals.
  */
 export async function uploadPaymentReceiptToBot(payload: {
@@ -824,6 +925,7 @@ export async function uploadPaymentReceiptToBot(payload: {
       studentId: payload.studentId,
       studentName: payload.studentName,
       cohortYear: payload.cohortYear,
+      imageUrl: payload.imageBase64,
       imageBase64: payload.imageBase64,
       imageDataUrl: payload.imageBase64,
       receiptImageUrl: payload.imageBase64,
@@ -1041,4 +1143,147 @@ export async function submitAdminUserActionToBot(payload: {
     profile: res.data?.profile,
   };
 }
+
+export function saveLocalSiteSwitchesOverride(
+  switches: SiteSwitches,
+  syncedWithServer = false
+): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(
+        SITE_SWITCHES_OVERRIDE_KEY,
+        JSON.stringify({
+          switches,
+          updatedAt: Date.now(),
+          syncedWithServer,
+        })
+      );
+    }
+  } catch {
+    // Ignore storage error
+  }
+}
+
+export function getLocalSiteSwitchesOverride(): {
+  switches: SiteSwitches;
+  updatedAt: number;
+  syncedWithServer?: boolean;
+} | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(SITE_SWITCHES_OVERRIDE_KEY);
+      if (raw) {
+        const parsed = safeJsonParse<{
+          switches?: SiteSwitches;
+          updatedAt?: number;
+          syncedWithServer?: boolean;
+        } | null>(raw, null);
+        if (parsed?.switches && typeof parsed.updatedAt === 'number') {
+          return {
+            switches: parsed.switches,
+            updatedAt: parsed.updatedAt,
+            syncedWithServer: parsed.syncedWithServer,
+          };
+        }
+      }
+    }
+  } catch {
+    // Ignore storage error
+  }
+  return null;
+}
+
+/**
+ * 17. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-site-switches
+ * Saves the 6 real site switches (maintenanceMode, eventsEnabled, lootboxEnabled,
+ * chartEnabled, supportEnabled, leaderboardEnabled) to Cloudflare KV.
+ */
+export async function saveSiteSwitchesOnBot(
+  siteSwitches: SiteSwitches
+): Promise<{ ok: boolean; siteSwitches: SiteSwitches }> {
+  saveLocalSiteSwitchesOverride(siteSwitches, false);
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    siteSwitches?: SiteSwitches;
+  }>('/api/miniapp/admin-site-switches', {
+    siteSwitches,
+    ...siteSwitches,
+    adminId: MASTER_ADMIN_TELEGRAM_ID,
+    updatedAt: new Date().toISOString(),
+  });
+  const finalSwitches = res.data?.siteSwitches || siteSwitches;
+  if (res.ok && res.data?.siteSwitches) {
+    saveLocalSiteSwitchesOverride(finalSwitches, true);
+  }
+  return {
+    ok: res.ok,
+    siteSwitches: finalSwitches,
+  };
+}
+
+/**
+ * 18. POST ${BOT_WORKER_BASE_URL}/api/miniapp/heartbeat
+ * Sends a live heartbeat every 45 seconds and returns the real onlineCount & onlineUsers (last 3 minutes).
+ */
+export async function sendHeartbeatToBot(
+  user: UserProfile,
+  activePage = 'مینی‌اپ انجمن صنایع'
+): Promise<{
+  ok: boolean;
+  onlineCount?: number;
+  onlineUsers?: OnlineSessionUser[];
+}> {
+  const tgUser = getRealTelegramUser();
+  const resolvedTgId =
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : user.telegramUserId || user.id || '');
+
+  const device: 'Telegram Mobile' | 'Desktop Web' =
+    typeof window !== 'undefined' && window.innerWidth >= 1024
+      ? 'Desktop Web'
+      : 'Telegram Mobile';
+
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    onlineCount?: number;
+    onlineUsers?: OnlineSessionUser[];
+    activeUsers?: OnlineSessionUser[];
+  }>('/api/miniapp/heartbeat', {
+    userId: resolvedTgId || user.studentId || user.id,
+    telegramUserId: resolvedTgId,
+    studentId: user.studentId,
+    fullName: user.fullName || 'دانشجوی آنلاین',
+    name: user.fullName || 'دانشجوی آنلاین',
+    cohortYear: user.cohortYear || '1402',
+    device,
+    activePage,
+    onlineAt: new Date().toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }),
+  });
+
+  const list = Array.isArray(res.data?.onlineUsers)
+    ? res.data!.onlineUsers
+    : Array.isArray(res.data?.activeUsers)
+    ? res.data!.activeUsers
+    : undefined;
+
+  const count =
+    typeof res.data?.onlineCount === 'number'
+      ? res.data.onlineCount
+      : Array.isArray(list)
+      ? list.length
+      : undefined;
+
+  return {
+    ok: res.ok,
+    onlineCount: count,
+    onlineUsers: list,
+  };
+}
+
 

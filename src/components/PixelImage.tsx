@@ -88,12 +88,13 @@ export function buildCandidateUrls(rawName: string): string[] {
 /**
  * Converts an uploaded image file into a compact DataURL.
  * For avatars/medals (maxDimension <= 256), preserves crisp pixel art PNG.
- * For KYC cards & payment receipts (maxDimension = 900), outputs compressed JPEG Base64 (max width 900px).
+ * For KYC cards & payment receipts (maxDimension = 800), outputs compressed JPEG Base64 (quality: 0.7, max width 800px).
  */
 export function compressImageFileToDataUrl(
   file: File,
   maxDimension = 192,
-  outputMimeType?: 'image/jpeg' | 'image/png'
+  outputMimeType?: 'image/jpeg' | 'image/png',
+  jpegQuality = 0.7
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -104,24 +105,23 @@ export function compressImageFileToDataUrl(
       img.onload = () => {
         try {
           const canvas = document.createElement('canvas');
-          const ratio = Math.min(
-            1,
-            maxDimension / Math.max(img.width || 1, img.height || 1)
-          );
+          const useJpeg =
+            outputMimeType === 'image/jpeg' ||
+            (!outputMimeType && maxDimension >= 400);
+          const ratio = useJpeg
+            ? Math.min(1, maxDimension / Math.max(img.width || 1, 1))
+            : Math.min(1, maxDimension / Math.max(img.width || 1, img.height || 1));
           canvas.width = Math.max(1, Math.round(img.width * ratio));
           canvas.height = Math.max(1, Math.round(img.height * ratio));
           const ctx = canvas.getContext('2d');
           if (ctx) {
-            const useJpeg =
-              outputMimeType === 'image/jpeg' ||
-              (!outputMimeType && maxDimension >= 400);
             if (useJpeg) {
               ctx.fillStyle = '#FFFFFF';
               ctx.fillRect(0, 0, canvas.width, canvas.height);
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = 'high';
               ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-              resolve(canvas.toDataURL('image/jpeg', 0.85));
+              resolve(canvas.toDataURL('image/jpeg', jpegQuality));
             } else {
               ctx.imageSmoothingEnabled = false;
               ctx.drawImage(img, 0, 0, canvas.width, canvas.height);

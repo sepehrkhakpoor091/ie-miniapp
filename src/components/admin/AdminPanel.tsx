@@ -38,6 +38,7 @@ import {
   Professor,
   QuestConditionType,
   ScheduledTimer,
+  SiteSwitches,
   StudentIdDisputeTicket,
   ThemeMode,
   TicketRecord,
@@ -85,9 +86,11 @@ import {
   verifyTicketSignature,
 } from '../../utils/security';
 import {
+  resolveReceiptOrKycImageUrl,
   saveEventsOnBot,
   saveLootboxConfigOnBot,
   saveProfessorsOnBot,
+  saveSiteSwitchesOnBot,
   submitAdminReviewToBot,
   submitAdminUserActionToBot,
   toggleStudentTimersOnBot,
@@ -323,8 +326,76 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   supportTicketsEnabled: true,
   professorsDirectoryEnabled: true,
   globalMaintenanceMode: false,
+  chartEnabled: true,
   allowStudentTimers: true,
+  maintenanceMode: false,
+  eventsEnabled: true,
+  lootboxEnabled: true,
+  supportEnabled: true,
 };
+
+export function extractSiteSwitchesFromFlags(flags?: Partial<FeatureFlags>): SiteSwitches {
+  return {
+    maintenanceMode: Boolean(
+      flags?.maintenanceMode ?? flags?.globalMaintenanceMode ?? false
+    ),
+    eventsEnabled:
+      flags?.eventsEnabled ?? flags?.eventsRegistrationEnabled ?? true,
+    lootboxEnabled:
+      flags?.lootboxEnabled ?? flags?.lootboxStoreEnabled ?? true,
+    chartEnabled: flags?.chartEnabled ?? true,
+    supportEnabled:
+      flags?.supportEnabled ?? flags?.supportTicketsEnabled ?? true,
+    leaderboardEnabled: flags?.leaderboardEnabled ?? true,
+  };
+}
+
+export function mergeSiteSwitchesIntoFlags(
+  prevFlags: FeatureFlags,
+  partialSwitches: Partial<SiteSwitches>
+): FeatureFlags {
+  const currentSwitches = extractSiteSwitchesFromFlags(prevFlags);
+  const nextSwitches: SiteSwitches = {
+    maintenanceMode:
+      typeof partialSwitches.maintenanceMode === 'boolean'
+        ? partialSwitches.maintenanceMode
+        : currentSwitches.maintenanceMode,
+    eventsEnabled:
+      typeof partialSwitches.eventsEnabled === 'boolean'
+        ? partialSwitches.eventsEnabled
+        : currentSwitches.eventsEnabled,
+    lootboxEnabled:
+      typeof partialSwitches.lootboxEnabled === 'boolean'
+        ? partialSwitches.lootboxEnabled
+        : currentSwitches.lootboxEnabled,
+    chartEnabled:
+      typeof partialSwitches.chartEnabled === 'boolean'
+        ? partialSwitches.chartEnabled
+        : currentSwitches.chartEnabled,
+    supportEnabled:
+      typeof partialSwitches.supportEnabled === 'boolean'
+        ? partialSwitches.supportEnabled
+        : currentSwitches.supportEnabled,
+    leaderboardEnabled:
+      typeof partialSwitches.leaderboardEnabled === 'boolean'
+        ? partialSwitches.leaderboardEnabled
+        : currentSwitches.leaderboardEnabled,
+  };
+
+  return {
+    ...prevFlags,
+    globalMaintenanceMode: nextSwitches.maintenanceMode,
+    maintenanceMode: nextSwitches.maintenanceMode,
+    eventsRegistrationEnabled: nextSwitches.eventsEnabled,
+    eventsEnabled: nextSwitches.eventsEnabled,
+    lootboxStoreEnabled: nextSwitches.lootboxEnabled,
+    lootboxEnabled: nextSwitches.lootboxEnabled,
+    chartEnabled: nextSwitches.chartEnabled,
+    supportTicketsEnabled: nextSwitches.supportEnabled,
+    supportEnabled: nextSwitches.supportEnabled,
+    leaderboardEnabled: nextSwitches.leaderboardEnabled,
+  };
+}
 
 const PIXEL_MEDAL_PRESETS = [
   { filename: '19_badge_Gear.png', label: 'چرخ‌دنده طلایی' },
@@ -358,6 +429,8 @@ interface AdminPanelProps {
   userTickets?: TicketRecord[];
   certificates?: CertificateInfo[];
   featureFlags?: FeatureFlags;
+  onlineCount?: number;
+  onlineUsers?: OnlineSessionUser[];
   students?: AdminStudentDossier[];
   events?: EventItem[];
   receipts?: AdminReceiptItem[];
@@ -410,6 +483,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   currentUser,
   userTickets = [],
   featureFlags = DEFAULT_FEATURE_FLAGS,
+  onlineCount: propOnlineCount,
+  onlineUsers: propOnlineUsers,
   students = DEFAULT_STUDENTS,
   events = DEFAULT_EVENTS,
   receipts = DEFAULT_RECEIPTS,
@@ -456,6 +531,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [toastBanner, setToastBanner] = useState<string | null>(null);
   const [isSyncingBotQueue, setIsSyncingBotQueue] = useState(false);
   const [previewImageModalSrc, setPreviewImageModalSrc] = useState<string | null>(null);
+  const [isOnlineUsersModalOpen, setIsOnlineUsersModalOpen] = useState<boolean>(false);
 
   const [studentList, setStudentList] = useState<AdminStudentDossier[]>(() =>
     Array.isArray(students) && students.length > 0
@@ -626,26 +702,89 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
   };
 
-  // Live Online Users Radar State (strictly real users)
-  const [onlineSessions, setOnlineSessions] = useState<OnlineSessionUser[]>(() =>
-    currentUser?.studentId && !isFakeTestAccount(currentUser)
-      ? [
-          {
-            id: 'sess-current',
-            studentId: currentUser.studentId,
-            fullName: currentUser.fullName || 'دانشجوی آنلاین',
-            cohortYear: currentUser.cohortYear || '۱۴۰۲',
-            device:
-              typeof window !== 'undefined' && window.innerWidth >= 1024
-                ? 'Desktop Web'
-                : 'Telegram Mobile',
-            activePage: 'پروفایل دانشجویی / بلیط QR',
-            lastHeartbeat: 'هم‌اکنون آنلاین (شما)',
-            isLocked: false,
-          },
-        ]
-      : []
-  );
+  // Live Online Users Radar State (strictly real users from heartbeat + current session)
+  const [onlineSessions, setOnlineSessions] = useState<OnlineSessionUser[]>(() => {
+    if (Array.isArray(propOnlineUsers) && propOnlineUsers.length > 0) {
+      return propOnlineUsers.filter((u) => !isFakeTestAccount(u));
+    }
+    const validCurrent = currentUser && !isFakeTestAccount(currentUser) ? currentUser : null;
+    return [
+      {
+        id:
+          validCurrent?.telegramUserId ||
+          validCurrent?.studentId ||
+          activeAdmin?.telegramId ||
+          'sess-current',
+        studentId: validCurrent?.studentId || activeAdmin?.telegramId || '629890497',
+        fullName:
+          validCurrent?.fullName ||
+          activeAdmin?.fullName ||
+          'کاربر آنلاین در مینی‌اپ',
+        cohortYear: validCurrent?.cohortYear || '1402',
+        device:
+          typeof window !== 'undefined' && window.innerWidth >= 1024
+            ? 'Desktop Web'
+            : 'Telegram Mobile',
+        activePage: 'پنل مدیریت / مینی‌اپ انجمن صنایع',
+        lastHeartbeat: new Date().toLocaleTimeString('fa-IR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        onlineAt: new Date().toLocaleTimeString('fa-IR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        isLocked: false,
+      },
+    ];
+  });
+
+  useEffect(() => {
+    if (Array.isArray(propOnlineUsers) && propOnlineUsers.length > 0) {
+      setOnlineSessions((prev) => {
+        const lockedMap = new Map<string, boolean>();
+        for (const p of Array.isArray(prev) ? prev : []) {
+          if (p.studentId || p.id) {
+            lockedMap.set(p.studentId || p.id, Boolean(p.isLocked));
+          }
+        }
+        return propOnlineUsers
+          .filter((u) => !isFakeTestAccount(u))
+          .map((u, idx) => {
+            const key = u.studentId || u.userId || u.telegramUserId || u.id || `online-${idx}`;
+            return {
+              ...u,
+              id: u.id || key,
+              studentId: u.studentId || u.userId || '---',
+              fullName: u.fullName || u.name || 'دانشجوی آنلاین',
+              cohortYear: u.cohortYear || extractCohortFromStudentId(u.studentId || '').cohort || '1402',
+              device:
+                u.device ||
+                (typeof window !== 'undefined' && window.innerWidth >= 1024
+                  ? 'Desktop Web'
+                  : 'Telegram Mobile'),
+              activePage: u.activePage || 'مینی‌اپ انجمن صنایع',
+              lastHeartbeat:
+                u.lastHeartbeat ||
+                u.onlineAt ||
+                u.lastSeen ||
+                new Date().toLocaleTimeString('fa-IR', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }),
+              isLocked: lockedMap.get(key) ?? Boolean(u.isLocked),
+            };
+          });
+      });
+    }
+  }, [propOnlineUsers]);
+
+  const effectiveOnlineCount = useMemo(() => {
+    if (typeof propOnlineCount === 'number' && propOnlineCount > 0) {
+      return Math.max(propOnlineCount, onlineSessions.length);
+    }
+    return Math.max(1, onlineSessions.length);
+  }, [propOnlineCount, onlineSessions.length]);
 
   // ==========================================================================
   // MODULE 1 STATE: QR Scanner vs Separate Ticket History Page + Image Upload
@@ -915,26 +1054,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const resolveItemImageSrc = (item: AdminReceiptItem): string => {
-    const raw = (
-      item.receiptImageUrl ||
-      item.imageBase64 ||
-      item.imageDataUrl ||
-      item.photoUrl ||
-      item.imageUrl ||
-      item.fileUrl ||
-      ''
-    ).trim();
-    if (!raw) return '';
-    if (
-      raw.startsWith('data:image/') ||
-      raw.startsWith('http://') ||
-      raw.startsWith('https://') ||
-      raw.startsWith('blob:') ||
-      raw.startsWith('/')
-    ) {
-      return raw;
-    }
-    return `data:image/jpeg;base64,${raw}`;
+    return resolveReceiptOrKycImageUrl(item);
   };
 
   const appendLog = (
@@ -1044,26 +1164,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // MODULE ACTION HANDLERS
   // ==========================================================================
 
-  // Toggle FeatureFlags Kill-Switches
-  const handleToggleFeatureFlag = (key: keyof FeatureFlags, label: string) => {
+  // Toggle SiteSwitches & FeatureFlags Kill-Switches + Persist to Cloudflare KV (POST /api/miniapp/admin-site-switches)
+  const handleToggleSiteSwitch = async (
+    switchKey: keyof SiteSwitches,
+    label: string
+  ) => {
     playSwitch();
-    const nextFlags: FeatureFlags = {
-      ...flagsState,
-      [key]: !flagsState[key],
+    const currentSwitches = extractSiteSwitchesFromFlags(flagsState);
+    const nextValue = !currentSwitches[switchKey];
+    const nextSwitches: SiteSwitches = {
+      ...currentSwitches,
+      [switchKey]: nextValue,
     };
+    const nextFlags = mergeSiteSwitchesIntoFlags(flagsState, nextSwitches);
     setFlagsState(nextFlags);
     onUpdateFeatureFlags?.(nextFlags);
-    const enabled = nextFlags[key];
+
+    const isLockingSite = switchKey === 'maintenanceMode' ? nextValue : !nextValue;
     appendLog(
-      `${enabled ? 'فعال‌سازی' : 'غیرفعال‌سازی موقت (بروزرسانی)'} بخش: ${label}`,
-      key,
-      enabled ? 'success' : 'warning'
+      `${isLockingSite ? '🔒 قفل/غیرفعال‌سازی' : '🔓 باز کردن/فعال‌سازی'} کلید سایت: ${label}`,
+      switchKey,
+      isLockingSite ? 'warning' : 'success'
     );
     triggerToast(
-      enabled
-        ? `✅ بخش «${label}» برای دانشجویان فعال شد.`
-        : `🚧 بخش «${label}» در وضعیت بروزرسانی موقت قرار گرفت.`
+      switchKey === 'maintenanceMode'
+        ? nextValue
+          ? '🔒 کل مینی‌اپ برای کاربران عادی قفل شد (فقط باز برای ادمین‌ها) و در کلودفلر ذخیره گردید.'
+          : '🔓 قفل تعمیر مینی‌اپ باز شد و سامانه برای همه دانشجویان فعال گردید!'
+        : nextValue
+        ? `✅ «${label}» فعال شد و در کلودفلر ذخیره گردید.`
+        : `🔒 «${label}» غیرفعال شد و در کلودفلر ذخیره گردید.`
     );
+
+    await saveSiteSwitchesOnBot(nextSwitches);
   };
 
   // Module 5: Toggle Student Personal Timers Lock (POST /api/miniapp/admin-toggle-user-timers)
@@ -2652,9 +2785,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              <span className="text-[10px] font-black px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shrink-0">
-                🟢 {onlineSessions.length.toLocaleString('fa-IR')} آنلاین
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  playTick();
+                  setIsOnlineUsersModalOpen(true);
+                }}
+                title="مشاهده لیست دقیق کاربران آنلاین در ۳ دقیقه اخیر"
+                className="text-[10px] lg:text-xs font-black px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shrink-0 cursor-pointer flex items-center gap-1.5 transition-all active:scale-95 shadow-sm"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>🟢 {effectiveOnlineCount.toLocaleString('fa-IR')} آنلاین</span>
+              </button>
             </div>
           </div>
 
@@ -2698,6 +2840,100 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         </div>
 
+        {/* ===================================================================
+            MODAL: LIVE ONLINE USERS IN THE LAST 3 MINUTES (Click on 🟢 آنلاین)
+           =================================================================== */}
+        {isOnlineUsersModalOpen && (
+          <div
+            onClick={() => setIsOnlineUsersModalOpen(false)}
+            className="fixed inset-0 z-[130] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className={`max-w-lg w-full rounded-3xl border-2 border-emerald-500/60 p-4 lg:p-5 space-y-3.5 shadow-2xl ${cardSurfaceClass}`}
+            >
+              <div className="flex items-center justify-between border-b border-current/15 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                  <div>
+                    <h3 className="text-sm lg:text-base font-black text-emerald-400">
+                      🟢 لیست کاربران آنلاین در ۳ دقیقه اخیر ({effectiveOnlineCount.toLocaleString('fa-IR')} نفر)
+                    </h3>
+                    <p className="text-[10px] font-bold opacity-80">
+                      بروزرسانی خودکار از طریق سیگنال Heartbeat هر ۴۵ ثانیه
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsOnlineUsersModalOpen(false)}
+                  className="px-3 py-1 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black cursor-pointer"
+                >
+                  بستن ✕
+                </button>
+              </div>
+
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-0.5">
+                {onlineSessions.length === 0 ? (
+                  <div className="p-6 text-center text-xs font-bold opacity-75">
+                    در حال حاضر کاربری در ۳ دقیقه اخیر آنلاین نبوده است.
+                  </div>
+                ) : (
+                  onlineSessions.map((sess, idx) => (
+                    <div
+                      key={sess.id || idx}
+                      className={`p-3 rounded-2xl border flex items-center justify-between gap-2 text-xs ${subCardClass}`}
+                    >
+                      <div className="space-y-1 min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                          <span className="font-black text-sm">{sess.fullName}</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/20 text-[#D4AB58] font-black">
+                            ورودی {sess.cohortYear || '۱۴۰۲'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap text-[11px] font-bold opacity-85">
+                          <span>
+                            شماره دانشجویی:{' '}
+                            <span className="font-mono text-[#D4AB58]">{sess.studentId}</span>
+                          </span>
+                          <span>•</span>
+                          <span className="text-emerald-400">
+                            ⏱ زمان آنلاین: {sess.lastHeartbeat || 'آنلاین (هم‌اکنون)'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playTick();
+                          const found = studentList.find(
+                            (s) =>
+                              s.studentId === sess.studentId ||
+                              String(s.id) === String(sess.userId || sess.id)
+                          );
+                          setIsOnlineUsersModalOpen(false);
+                          setActiveModule(3);
+                          if (found) {
+                            setSelectedStudentIdForDossier(found.id);
+                            setDossierTab('overview');
+                          } else {
+                            setUserSearchQuery(sess.studentId || sess.fullName);
+                          }
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl bg-[#354B40] hover:bg-[#2A3C33] text-[#F6F1E7] text-[10px] font-black shrink-0 cursor-pointer"
+                      >
+                        پرونده ۳۶۰
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Toast Notification Banner */}
         {toastBanner && (
           <div className="p-3 rounded-2xl bg-emerald-950/95 border-2 border-emerald-500/60 text-emerald-100 text-xs font-black flex items-center justify-between shadow-lg animate-fade-in">
@@ -2723,12 +2959,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
                   <h3 className="text-sm font-black">
-                    🟢 رادار کاربران آنلاین در سایت ({onlineSessions.length.toLocaleString('fa-IR')} نفر)
+                    🟢 رادار کاربران آنلاین در سایت ({effectiveOnlineCount.toLocaleString('fa-IR')} نفر)
                   </h3>
                 </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-500">
-                  کنترل زنده قفل و باز کردن
-                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    playTick();
+                    setIsOnlineUsersModalOpen(true);
+                  }}
+                  className="text-[10px] font-black px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 cursor-pointer"
+                >
+                  مشاهده لیست کامل 🔍
+                </button>
               </div>
 
               <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
@@ -2769,6 +3012,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           const found = studentList.find(
                             (s) => s.studentId === sess.studentId
                           );
+                          setActiveModule(3);
                           if (found) {
                             setSelectedStudentIdForDossier(found.id);
                             setDossierTab('overview');
@@ -2808,91 +3052,98 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
 
-            {/* 2. SECTION KILL-SWITCHES */}
+            {/* 2. SECTION KILL-SWITCHES (8. کلیدهای سایت و کلودفلر - siteSwitches) */}
             <div className={`rounded-3xl p-4 border space-y-3 ${cardSurfaceClass}`}>
               <div className="flex items-center justify-between border-b border-current/10 pb-2.5">
                 <h3 className="text-sm font-black">
-                  🎛 کلیدهای کنترل و قفل/بازکردن بخش‌های سایت (FeatureFlags)
+                  🎛 ۸. کلیدهای سایت و کلودفلر (کنترل زنده بخش‌های مینی‌اپ)
                 </h3>
                 <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-[#D4AB58]/20 text-[#D4AB58]">
-                  اعمال آنی
+                  ذخیره آنی در Cloudflare KV
                 </span>
               </div>
 
-              <div className="space-y-2 text-xs">
-                {[
-                  {
-                    key: 'eventsRegistrationEnabled' as keyof FeatureFlags,
-                    label: 'ثبت‌نام کارگاه‌ها و رویدادها',
-                  },
-                  {
-                    key: 'lootboxStoreEnabled' as keyof FeatureFlags,
-                    label: 'فروشگاه صندوقچه جوایز و کد تخفیف',
-                  },
-                  {
-                    key: 'leaderboardEnabled' as keyof FeatureFlags,
-                    label: 'جدول برترین‌ها',
-                  },
-                  {
-                    key: 'supportTicketsEnabled' as keyof FeatureFlags,
-                    label: 'ارسال تیکت پشتیبانی',
-                  },
-                  {
-                    key: 'professorsDirectoryEnabled' as keyof FeatureFlags,
-                    label: 'بانک اطلاعات و برنامه اساتید',
-                  },
-                ].map((item) => {
-                  const isEnabled = flagsState[item.key];
-                  return (
-                    <div
-                      key={item.key}
-                      className={`p-2.5 rounded-2xl border flex items-center justify-between ${subCardClass}`}
-                    >
-                      <span className="font-black">{item.label}</span>
+              {(() => {
+                const currentSwitches = extractSiteSwitchesFromFlags(flagsState);
+                return (
+                  <div className="space-y-2 text-xs">
+                    {/* کلید ۱: بستن کل مینی‌اپ برای همه کاربران (فقط باز برای ادمین‌ها) */}
+                    <div className="p-3 rounded-2xl border-2 border-rose-500/60 bg-rose-950/25 flex items-center justify-between gap-2">
+                      <div>
+                        <div className="font-black text-rose-400">
+                          🔒 بستن کل مینی‌اپ برای همه کاربران (فقط باز برای ادمین‌ها)
+                        </div>
+                        <div className="text-[10px] font-bold opacity-80 mt-0.5">
+                          کلید ۱ (maintenanceMode): نمایش صفحه بروزرسانی سراسری برای دانشجویان
+                        </div>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => handleToggleFeatureFlag(item.key, item.label)}
-                        className={`px-3 py-1 rounded-xl text-[11px] font-black cursor-pointer transition-all ${
-                          isEnabled
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-rose-700 text-white'
+                        onClick={() =>
+                          handleToggleSiteSwitch(
+                            'maintenanceMode',
+                            '🔒 بستن کل مینی‌اپ برای همه کاربران (فقط باز برای ادمین‌ها)'
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-xl text-[11px] font-black shrink-0 cursor-pointer transition-all ${
+                          currentSwitches.maintenanceMode
+                            ? 'bg-rose-600 text-white animate-pulse shadow-lg'
+                            : 'bg-emerald-600 text-white'
                         }`}
                       >
-                        {isEnabled ? 'باز و فعال ✓' : 'قفل موقت 🚧 (کلیک برای باز کردن)'}
+                        {currentSwitches.maintenanceMode
+                          ? '🔒 بسته (فقط ادمین) — کلیک برای باز کردن'
+                          : '🔓 باز برای همه کاربران ✓'}
                       </button>
                     </div>
-                  );
-                })}
 
-                <div className="p-3 rounded-2xl border-2 border-rose-500/60 bg-rose-950/25 flex items-center justify-between">
-                  <div>
-                    <div className="font-black text-rose-400">
-                      🔒 حالت تعمیر و بروزرسانی کل سایت (قفل/بازکردن کل سامانه)
-                    </div>
-                    <div className="text-[10px] font-bold opacity-80">
-                      نمایش کارت «این بخش موقتاً در حال بروزرسانی است» در تمام صفحات دانشجویی
-                    </div>
+                    {/* کلیدهای ۲ تا ۶ */}
+                    {[
+                      {
+                        key: 'eventsEnabled' as keyof SiteSwitches,
+                        label: 'فعال بودن بخش رویدادها و ثبت‌نام کارگاه‌ها',
+                      },
+                      {
+                        key: 'lootboxEnabled' as keyof SiteSwitches,
+                        label: 'فعال بودن بخش صندوقچه‌های شانس و جوایز',
+                      },
+                      {
+                        key: 'chartEnabled' as keyof SiteSwitches,
+                        label: 'فعال بودن بخش چارت درسی و انتخاب واحد',
+                      },
+                      {
+                        key: 'supportEnabled' as keyof SiteSwitches,
+                        label: 'فعال بودن بخش پشتیبانی و ارسال تیکت',
+                      },
+                      {
+                        key: 'leaderboardEnabled' as keyof SiteSwitches,
+                        label: 'فعال بودن جدول برترین‌ها و رقابت ورودی‌ها',
+                      },
+                    ].map((item) => {
+                      const isEnabled = currentSwitches[item.key];
+                      return (
+                        <div
+                          key={item.key}
+                          className={`p-2.5 rounded-2xl border flex items-center justify-between gap-2 ${subCardClass}`}
+                        >
+                          <span className="font-black">{item.label}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleSiteSwitch(item.key, item.label)}
+                            className={`px-3 py-1 rounded-xl text-[11px] font-black shrink-0 cursor-pointer transition-all ${
+                              isEnabled
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-rose-700 text-white'
+                            }`}
+                          >
+                            {isEnabled ? 'باز و فعال ✓' : 'غیرفعال 🔒 (کلیک برای فعال‌سازی)'}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleToggleFeatureFlag(
-                        'globalMaintenanceMode',
-                        'حالت تعمیر و بروزرسانی کل سایت'
-                      )
-                    }
-                    className={`px-3 py-1.5 rounded-xl text-[11px] font-black shrink-0 cursor-pointer ${
-                      flagsState.globalMaintenanceMode
-                        ? 'bg-emerald-600 text-white animate-pulse'
-                        : 'bg-rose-700 text-white'
-                    }`}
-                  >
-                    {flagsState.globalMaintenanceMode
-                      ? '🔓 باز کردن قفل کل سایت'
-                      : '🔒 قفل موقت کل سایت'}
-                  </button>
-                </div>
-              </div>
+                );
+              })()}
             </div>
           </div>
         )}

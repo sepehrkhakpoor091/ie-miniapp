@@ -27,6 +27,7 @@ import {
   FeatureFlags,
   KycStatus,
   LootboxConfig,
+  OnlineSessionUser,
   PointTransaction,
   Professor,
   ScheduledTimer,
@@ -80,6 +81,9 @@ import { EVENTS_DATA, normalizeEvent, normalizeEventsList } from './utils/events
 import {
   BOT_WORKER_BASE_URL,
   fetchMiniAppBootstrap,
+  getLocalSiteSwitchesOverride,
+  resolveReceiptOrKycImageUrl,
+  sendHeartbeatToBot,
   syncUserProfileToBot,
 } from './utils/apiBridge';
 
@@ -102,6 +106,7 @@ import {
   DEFAULT_RECEIPTS,
   DEFAULT_STUDENTS,
   DEFAULT_TIMERS,
+  mergeSiteSwitchesIntoFlags,
 } from './components/admin/AdminPanel';
 
 // Drawers & Modals
@@ -221,6 +226,8 @@ export default function App() {
   const [serverReferralStats, setServerReferralStats] = useState<
     { referredCount: number; pointsEarned: number } | undefined
   >(undefined);
+  const [onlineCount, setOnlineCount] = useState<number>(1);
+  const [onlineUsers, setOnlineUsers] = useState<OnlineSessionUser[]>([]);
 
   const [featuredEventId, setFeaturedEventId] = useState<string>(() => {
     try {
@@ -498,7 +505,14 @@ export default function App() {
       );
       setAdminsCatalog(cleaned.length > 0 ? cleaned : DEFAULT_ADMINS);
     });
-    loadJsonOrFallback(FEATURE_FLAGS_STORAGE_KEY, DEFAULT_FEATURE_FLAGS, setFeatureFlags);
+    loadJsonOrFallback(FEATURE_FLAGS_STORAGE_KEY, DEFAULT_FEATURE_FLAGS, (loadedFlags) => {
+      const localSw = getLocalSiteSwitchesOverride();
+      if (localSw?.switches) {
+        setFeatureFlags(mergeSiteSwitchesIntoFlags(loadedFlags, localSw.switches));
+      } else {
+        setFeatureFlags(loadedFlags);
+      }
+    });
     loadJsonOrFallback(STUDENTS_STORAGE_KEY, DEFAULT_STUDENTS, (loadedStudents) => {
       const safeList = Array.isArray(loadedStudents) ? loadedStudents : [];
       const cleaned = applyAdminOverridesToStudents(safeList);
@@ -828,15 +842,39 @@ export default function App() {
       );
     }
 
-    if (typeof boot.allowStudentTimers === 'boolean') {
+    if (typeof boot.allowStudentTimers === 'boolean' || boot.siteSwitches) {
       setFeatureFlags((prev) => {
-        const nextFlags: FeatureFlags = {
+        let nextFlags: FeatureFlags = {
           ...prev,
-          allowStudentTimers: boot.allowStudentTimers,
+          ...(typeof boot.allowStudentTimers === 'boolean'
+            ? { allowStudentTimers: boot.allowStudentTimers }
+            : {}),
         };
+        const localOverride = getLocalSiteSwitchesOverride();
+        const hasRecentUnsyncedLocal =
+          localOverride &&
+          (localOverride.syncedWithServer === false ||
+            Date.now() - localOverride.updatedAt < 20000);
+        if (hasRecentUnsyncedLocal && localOverride.switches) {
+          nextFlags = mergeSiteSwitchesIntoFlags(nextFlags, localOverride.switches);
+        } else if (boot.siteSwitches) {
+          nextFlags = mergeSiteSwitchesIntoFlags(nextFlags, boot.siteSwitches);
+        } else if (localOverride?.switches) {
+          nextFlags = mergeSiteSwitchesIntoFlags(nextFlags, localOverride.switches);
+        }
         localStorage.setItem(FEATURE_FLAGS_STORAGE_KEY, JSON.stringify(nextFlags));
         return nextFlags;
       });
+    }
+
+    if (typeof boot.onlineCount === 'number' && boot.onlineCount >= 0) {
+      setOnlineCount(Math.max(1, boot.onlineCount));
+    }
+    if (Array.isArray(boot.onlineUsers)) {
+      setOnlineUsers(boot.onlineUsers);
+      if (typeof boot.onlineCount !== 'number') {
+        setOnlineCount(Math.max(1, boot.onlineUsers.length));
+      }
     }
 
     if (boot.referralStats) {
@@ -875,16 +913,11 @@ export default function App() {
         const map = new Map<string, AdminReceiptItem>();
         for (const item of serverApprovals) {
           if (item && item.id) {
-            const resolvedImg =
-              item.receiptImageUrl ||
-              item.imageBase64 ||
-              item.imageDataUrl ||
-              item.photoUrl ||
-              item.imageUrl ||
-              item.fileUrl;
+            const resolvedImg = resolveReceiptOrKycImageUrl(item);
             const normalizedItem: AdminReceiptItem = {
               ...item,
-              receiptImageUrl: resolvedImg,
+              imageUrl: resolvedImg || item.imageUrl,
+              receiptImageUrl: resolvedImg || item.receiptImageUrl,
               imageBase64: item.imageBase64 || resolvedImg,
             };
             map.set(item.id, normalizedItem);
@@ -899,6 +932,7 @@ export default function App() {
             if (!serverVersion.receiptImageUrl && localItem.receiptImageUrl) {
               map.set(localItem.id, {
                 ...serverVersion,
+                imageUrl: localItem.imageUrl || localItem.receiptImageUrl,
                 receiptImageUrl: localItem.receiptImageUrl,
                 imageBase64: localItem.imageBase64 || localItem.receiptImageUrl,
               });
@@ -1007,6 +1041,42 @@ export default function App() {
       document.removeEventListener('visibilitychange', onFocusOrVisible);
     };
   }, [user.studentId, user.telegramUserId, user.kycStatus]);
+
+  // Live 45-second Heartbeat (`POST /api/miniapp/heartbeat`) for real onlineCount & onlineUsers
+  useEffect(() => {
+    const pageLabel = isAdminPanelOpen
+      ? 'پنل مدیریت'
+      : activeTab === 'events'
+      ? 'کارگاه‌ها و رویدادها'
+      : activeTab === 'achievements'
+      ? 'افتخارات و جوایز'
+      : activeTab === 'profile'
+      ? 'پروفایل دانشجو'
+      : 'صفحه اصلی';
+
+    const fireHeartbeat = async () => {
+      try {
+        const hb = await sendHeartbeatToBot(user, pageLabel);
+        if (typeof hb.onlineCount === 'number' && hb.onlineCount >= 0) {
+          setOnlineCount(Math.max(1, hb.onlineCount));
+        }
+        if (Array.isArray(hb.onlineUsers)) {
+          setOnlineUsers(hb.onlineUsers);
+        }
+      } catch {
+        // Ignore transient network errors
+      }
+    };
+
+    void fireHeartbeat();
+    const hbInterval = window.setInterval(() => {
+      void fireHeartbeat();
+    }, 45000);
+
+    return () => {
+      window.clearInterval(hbInterval);
+    };
+  }, [user.studentId, user.fullName, user.cohortYear, user.telegramUserId, activeTab, isAdminPanelOpen]);
 
   const handleSyncTelegramChannel = async (customUrl?: string) => {
     setIsSyncingChannel(true);
@@ -1439,6 +1509,8 @@ export default function App() {
             channelUrl={officialChannelUrl}
             featuredEventId={featuredEventId}
             aboutConfig={aboutConfig}
+            onlineCount={onlineCount}
+            onlineUsers={onlineUsers}
             onUpdateEvents={(nextEvents) => {
               const normalizedNext = normalizeEventsList(nextEvents);
               setEventsCatalog(normalizedNext);
@@ -1530,6 +1602,42 @@ export default function App() {
               });
             }}
           />
+        ) : featureFlags.globalMaintenanceMode || featureFlags.maintenanceMode ? (
+          <div className="min-h-screen w-full flex flex-col items-center justify-between p-6 bg-gradient-to-b from-[#0E1520] via-[#131D2D] to-[#0B1018] text-[#F6F1E7] select-none">
+            <div className="w-full max-w-md pt-6 flex items-center justify-center">
+              <span className="px-3.5 py-1.5 rounded-full bg-[#D4AB58]/15 border border-[#D4AB58]/40 text-[#D4AB58] text-[11px] font-black">
+                انجمن علمی مهندسی صنایع دانشگاه فردوسی مشهد
+              </span>
+            </div>
+
+            <div className="my-auto max-w-lg w-full rounded-3xl border-2 border-[#D4AB58]/60 bg-[#151F2E]/95 p-6 sm:p-8 text-center space-y-4 shadow-2xl">
+              <div className="w-16 h-16 mx-auto rounded-2xl bg-[#D4AB58]/15 border-2 border-[#D4AB58] flex items-center justify-center text-3xl shadow-inner">
+                🛠
+              </div>
+              <h1 className="text-base sm:text-lg font-black text-[#D4AB58] leading-relaxed">
+                🛠 مینی‌اپ انجمن علمی مهندسی صنایع در حال بروزرسانی است و موقتاً توسط مدیریت بسته شده است.
+              </h1>
+              <p className="text-xs font-bold text-[#A3C1AD] leading-relaxed">
+                هم‌اکنون تیم فنی انجمن در حال ارتقای زیرساخت‌ها و بروزرسانی بخش‌های مینی‌اپ است. لطفاً دقایقی دیگر مجدداً مراجعه فرمایید.
+              </p>
+            </div>
+
+            <div className="pb-4 pt-6 flex flex-col items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (getValidAdminSession()) {
+                    setIsAdminPanelOpen(true);
+                  } else {
+                    setIsAdminVaultOpen(true);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-[#1B2638] hover:bg-[#233148] text-[#D4AB58] border border-[#D4AB58]/40 text-[11px] font-black cursor-pointer transition-all shadow"
+              >
+                🔐 ورود ادمین / مدیریت
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="flex-1 flex flex-col lg:flex-row w-full">
             <DesktopSidebar
@@ -1576,14 +1684,6 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-              ) : featureFlags.globalMaintenanceMode ? (
-                <div className="p-6 lg:py-16 max-w-xl mx-auto">
-                  <SectionMaintenanceBanner
-                    themeMode={themeMode}
-                    sectionTitle="کل سامانه دانشجویی انجمن علمی مهندسی صنایع"
-                    onStealthTap={handleStealthTapGesture}
-                  />
-                </div>
               ) : (
                 <>
                   {activeTab === 'home' && (
@@ -1610,6 +1710,10 @@ export default function App() {
                       onOpenCurriculumModal={() => setIsCurriculumModalOpen(true)}
                       onStealthTap={handleStealthTapGesture}
                       onOpenEventDetails={(clickedEventId) => {
+                        if (!featureFlags.eventsRegistrationEnabled) {
+                          setActiveTab('events');
+                          return;
+                        }
                         const safeEvs = normalizeEventsList(
                           Array.isArray(eventsCatalog) && eventsCatalog.length > 0
                             ? eventsCatalog
@@ -1802,6 +1906,7 @@ export default function App() {
           onClose={() => setIsCurriculumModalOpen(false)}
           themeMode={themeMode}
           studentCohortYear={user.cohortYear}
+          chartEnabled={featureFlags.chartEnabled !== false}
         />
 
         <ProfessorsModal

@@ -74,8 +74,8 @@ export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
 
     playTick();
     try {
-      // Compress via Canvas to standard JPEG Base64 (max width 900px)
-      const compressed = await compressImageFileToDataUrl(file, 900, 'image/jpeg');
+      // Compress via Canvas to standard JPEG Base64 (quality: 0.7, max width 800px)
+      const compressed = await compressImageFileToDataUrl(file, 800, 'image/jpeg', 0.7);
       setSelectedImage(compressed);
     } catch {
       playError();
@@ -116,6 +116,7 @@ export const KycLockOverlay: React.FC<KycLockOverlayProps> = ({
       trackingCode,
       submittedAt: 'همین الان',
       status: 'pending',
+      imageUrl: selectedImage,
       receiptImageUrl: selectedImage,
       imageBase64: selectedImage,
     });

@@ -159,8 +159,8 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
     playTick();
     try {
-      // Compress via Canvas to standard JPEG Base64 (max width 900px)
-      const compressed = await compressImageFileToDataUrl(file, 900, 'image/jpeg');
+      // Compress via Canvas to standard JPEG Base64 (quality: 0.7, max width 800px)
+      const compressed = await compressImageFileToDataUrl(file, 800, 'image/jpeg', 0.7);
       setReceiptDataUrl(compressed);
       setReceiptUploaded(true);
     } catch {
@@ -230,7 +230,9 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
           trackingCode,
           submittedAt: 'همین الان',
           status: 'pending',
+          imageUrl: receiptDataUrl || undefined,
           receiptImageUrl: receiptDataUrl || undefined,
+          imageBase64: receiptDataUrl || undefined,
         });
 
         // Push the compressed Base64 JPEG receipt to the Telegram Bot (`POST /api/miniapp/upload-receipt`)
