@@ -104,7 +104,7 @@ export const ReferralInviteCard: React.FC<ReferralInviteCardProps> = ({
       <div className="flex items-start justify-between gap-2">
         <div className="space-y-0.5">
           <h3 className="text-xs sm:text-sm font-black text-[#D4AB58] flex items-center gap-1.5">
-            <span>🎁 دعوت از دوستان مهندسی صنایع (+۱۰ امتیاز هدیه)</span>
+            <span>🎁 دعوت از دوستان صنایعی و دریافت امتیاز</span>
           </h3>
           <p
             className={`text-[11px] font-bold leading-relaxed ${

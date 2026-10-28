@@ -253,7 +253,7 @@ export function isMasterAdminTelegramUser(candidateTelegramId?: string): boolean
 
 /**
  * Checks whether a student dossier, admin record, or ID string belongs to the
- * 100% immune Supreme Master Admin (Telegram numeric ID: 629890497).
+ * 100% immune Supreme Master Admin (strictly based on Telegram numeric ID: 629890497).
  */
 export function isProtectedMasterAccount(
   candidate?:
@@ -271,18 +271,210 @@ export function isProtectedMasterAccount(
     const clean = candidate.trim();
     return (
       clean === MASTER_ADMIN_TELEGRAM_ID ||
-      clean.includes(MASTER_ADMIN_TELEGRAM_ID)
+      clean === `usr-${MASTER_ADMIN_TELEGRAM_ID}` ||
+      clean === `adm-master-${MASTER_ADMIN_TELEGRAM_ID}`
     );
   }
   const tgId = String(candidate.telegramId || candidate.telegramUserId || '').trim();
   const idStr = String(candidate.id || '').trim();
-  const stId = String(candidate.studentId || '').trim();
   return (
     tgId === MASTER_ADMIN_TELEGRAM_ID ||
     idStr === MASTER_ADMIN_TELEGRAM_ID ||
-    idStr.includes(MASTER_ADMIN_TELEGRAM_ID) ||
-    stId === MASTER_ADMIN_TELEGRAM_ID
+    idStr === `usr-${MASTER_ADMIN_TELEGRAM_ID}` ||
+    idStr === `adm-master-${MASTER_ADMIN_TELEGRAM_ID}`
   );
+}
+
+/**
+ * Identifies any leftover fake/dummy test account (e.g. studentId 4011234567 or hardcoded سپهر خاکپور without real Telegram ID 629890497)
+ */
+export function isFakeTestAccount(
+  candidate?: {
+    id?: string;
+    studentId?: string;
+    fullName?: string;
+    firstName?: string;
+    lastName?: string;
+    telegramId?: string;
+    telegramUserId?: string;
+  } | null
+): boolean {
+  if (!candidate) return false;
+  const tgId = String(candidate.telegramId || candidate.telegramUserId || '').trim();
+  if (tgId === MASTER_ADMIN_TELEGRAM_ID) return false;
+  const stId = String(candidate.studentId || '').trim();
+  const full = String(candidate.fullName || `${candidate.firstName || ''} ${candidate.lastName || ''}`).trim();
+  if (stId === '4011234567') return true;
+  if (full === 'سپهر خاکپور' && (!tgId || tgId.startsWith('web-') || tgId === 'usr-guest')) {
+    return true;
+  }
+  return false;
+}
+
+export const ADMIN_USER_OVERRIDES_STORAGE_KEY = 'ie_admin_user_overrides_v1';
+
+export interface AdminStudentOverrideRecord {
+  kycStatus?: 'verified' | 'required' | 'kyc_locked' | 'pending_review';
+  isBanned?: boolean;
+  score?: number;
+  fullName?: string;
+  studentId?: string;
+  cohortYear?: string;
+  avatar?: string;
+  deleted?: boolean;
+  updatedAtMs: number;
+}
+
+const inMemoryAdminOverrides: Record<string, AdminStudentOverrideRecord> = {};
+
+export function getAdminStudentOverridesMap(): Record<string, AdminStudentOverrideRecord> {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(ADMIN_USER_OVERRIDES_STORAGE_KEY);
+      const parsed = safeJsonParse<Record<string, AdminStudentOverrideRecord>>(raw, {});
+      return { ...inMemoryAdminOverrides, ...parsed };
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return { ...inMemoryAdminOverrides };
+}
+
+export function saveAdminStudentOverride(
+  keys: (string | undefined | null)[],
+  patch: Partial<Omit<AdminStudentOverrideRecord, 'updatedAtMs'>>
+): void {
+  const validKeys = Array.from(
+    new Set(
+      keys
+        .map((k) => (k ? String(k).trim() : ''))
+        .filter((k) => k.length > 0 && k !== 'undefined' && k !== 'null')
+    )
+  );
+  if (validKeys.length === 0) return;
+
+  const currentMap = getAdminStudentOverridesMap();
+  const nowMs = Date.now();
+
+  let existingMerged: Partial<AdminStudentOverrideRecord> = {};
+  for (const k of validKeys) {
+    if (currentMap[k]) {
+      existingMerged = { ...existingMerged, ...currentMap[k] };
+    }
+  }
+
+  const nextRecord: AdminStudentOverrideRecord = {
+    ...existingMerged,
+    ...patch,
+    updatedAtMs: nowMs,
+  };
+
+  for (const k of validKeys) {
+    currentMap[k] = nextRecord;
+    inMemoryAdminOverrides[k] = nextRecord;
+  }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(
+        ADMIN_USER_OVERRIDES_STORAGE_KEY,
+        JSON.stringify(currentMap)
+      );
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
+export function getAdminOverrideForStudent(
+  candidate?: {
+    id?: string;
+    studentId?: string;
+    telegramUserId?: string;
+    telegramId?: string;
+  } | null
+): AdminStudentOverrideRecord | null {
+  if (!candidate) return null;
+  const map = getAdminStudentOverridesMap();
+  const lookupKeys = [
+    candidate.telegramUserId,
+    candidate.telegramId,
+    candidate.studentId,
+    candidate.id,
+  ]
+    .map((k) => (k ? String(k).trim() : ''))
+    .filter((k) => k.length > 0);
+
+  let best: AdminStudentOverrideRecord | null = null;
+  for (const k of lookupKeys) {
+    const rec = map[k];
+    if (rec && (!best || rec.updatedAtMs >= best.updatedAtMs)) {
+      best = rec;
+    }
+  }
+  return best;
+}
+
+export function applyAdminOverridesToStudents<
+  T extends {
+    id?: string;
+    studentId?: string;
+    telegramUserId?: string;
+    telegramId?: string;
+    kycStatus?: 'verified' | 'required' | 'kyc_locked' | 'pending_review';
+    isBanned?: boolean;
+    score?: number;
+    fullName?: string;
+    cohortYear?: any;
+    avatar?: string;
+  }
+>(students: T[]): T[] {
+  if (!Array.isArray(students)) return [];
+  const result: T[] = [];
+  for (const s of students) {
+    if (!s || isFakeTestAccount(s)) continue;
+    const normalizedTgId = s.telegramUserId || s.telegramId;
+    const ov = getAdminOverrideForStudent({
+      ...s,
+      telegramUserId: normalizedTgId,
+    });
+    if (ov?.deleted) continue;
+
+    const protectedStu = isProtectedMasterAccount(s);
+    if (!ov) {
+      result.push(
+        protectedStu
+          ? {
+              ...s,
+              telegramUserId: normalizedTgId,
+              kycStatus: 'verified',
+              isBanned: false,
+            }
+          : {
+              ...s,
+              telegramUserId: normalizedTgId,
+            }
+      );
+      continue;
+    }
+
+    result.push({
+      ...s,
+      telegramUserId: normalizedTgId,
+      fullName: ov.fullName ?? s.fullName,
+      studentId: ov.studentId ?? s.studentId,
+      cohortYear: ov.cohortYear ?? s.cohortYear,
+      avatar: ov.avatar ?? s.avatar,
+      score: typeof ov.score === 'number' ? ov.score : s.score,
+      kycStatus: protectedStu ? 'verified' : ov.kycStatus ?? s.kycStatus,
+      isBanned: protectedStu
+        ? false
+        : typeof ov.isBanned === 'boolean'
+        ? ov.isBanned
+        : s.isBanned,
+    });
+  }
+  return result;
 }
 
 /**

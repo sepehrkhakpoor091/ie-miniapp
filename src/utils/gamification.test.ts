@@ -20,6 +20,10 @@ import {
   recordTicketInCheckedInLedger,
   findCheckedInTicketInLedger,
   removeTicketFromCheckedInLedger,
+  isProtectedMasterAccount,
+  isFakeTestAccount,
+  saveAdminStudentOverride,
+  applyAdminOverridesToStudents,
 } from './security';
 import {
   DEFAULT_EVENT_SYLLABUS,
@@ -32,11 +36,11 @@ import { ensureContinuousPinnedAnnouncements } from './channelSync';
 import { AdminStudentDossier, TicketRecord, UserProfile } from '../types';
 
 const MOCK_USER: UserProfile = {
-  id: 'usr-4011234567',
+  id: 'usr-4019998877',
   firstName: 'علی',
   lastName: 'محمدی',
   fullName: 'علی محمدی',
-  studentId: '4011234567',
+  studentId: '4019998877',
   cohortYear: '۱۴۰۱',
   avatar: '01_avatar_boy.png',
   score: 280,
@@ -358,7 +362,68 @@ test('workshop points-to-discount slider respects floor, ceiling, step multiplie
   assert.equal(pinnedList.every((p) => p.isPinned === true), true);
 });
 
+test('isProtectedMasterAccount strictly checks Telegram ID 629890497 and isFakeTestAccount filters 4011234567 / سپهر خاکپور', () => {
+  // Real master admin with numeric Telegram ID 629890497 is protected
+  assert.equal(
+    isProtectedMasterAccount({ telegramUserId: '629890497', studentId: '4012223344' }),
+    true
+  );
+  assert.equal(isProtectedMasterAccount({ id: 'usr-629890497' }), true);
 
+  // Dummy/fake account with studentId 4011234567 without 629890497 is NOT protected and IS flagged as fake
+  assert.equal(
+    isProtectedMasterAccount({ studentId: '4011234567', telegramUserId: 'web-local' }),
+    false
+  );
+  assert.equal(
+    isFakeTestAccount({ fullName: 'سپهر خاکپور', studentId: '4011234567' }),
+    true
+  );
+  assert.equal(isFakeTestAccount({ studentId: '4011234567' }), true);
+  assert.equal(
+    isFakeTestAccount({ fullName: 'سارا حسینی', studentId: '4011112233' }),
+    false
+  );
+});
 
+test('saveAdminStudentOverride and applyAdminOverridesToStudents prevent stale server polls from reverting KYC lock or account ban', () => {
+  // Admin locks KYC and bans account for student 40409764351 (telegramId: 8941039254)
+  saveAdminStudentOverride(['8941039254', '40409764351'], {
+    kycStatus: 'required',
+    isBanned: true,
+  });
 
+  // Server bootstrap returns stale record with kycStatus: 'verified' and isBanned: false
+  const staleServerList: AdminStudentDossier[] = [
+    {
+      id: '8941039254',
+      telegramId: '8941039254',
+      fullName: 'جواد خیابانی',
+      studentId: '40409764351',
+      cohortYear: '1404',
+      phone: '09150000000',
+      score: 0,
+      level: 1,
+      kycStatus: 'verified',
+      isBanned: false,
+      attendedEvents: [],
+      badges: [],
+      payments: [],
+      chatLogs: [],
+    },
+  ];
 
+  const reconciled = applyAdminOverridesToStudents(staleServerList);
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].kycStatus, 'required');
+  assert.equal(reconciled[0].isBanned, true);
+
+  // Admin later unlocks KYC and unbans account
+  saveAdminStudentOverride(['8941039254', '40409764351'], {
+    kycStatus: 'verified',
+    isBanned: false,
+  });
+  const unlocked = applyAdminOverridesToStudents(staleServerList);
+  assert.equal(unlocked[0].kycStatus, 'verified');
+  assert.equal(unlocked[0].isBanned, false);
+});

@@ -50,7 +50,16 @@ export const TactileCard: React.FC<TactileCardProps> = ({
 
   return (
     <div
+      role={onClick ? 'button' : rest.role}
+      tabIndex={onClick ? 0 : rest.tabIndex}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (onClick && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          onClick();
+        }
+        rest.onKeyDown?.(e);
+      }}
       className={`
         ${baseStyles}
         ${variantStyles[variant]}

@@ -54,14 +54,18 @@ import {
 } from './utils/soundEngine';
 import {
   MASTER_ADMIN_TELEGRAM_ID,
+  applyAdminOverridesToStudents,
   clearAdminSession,
   computeStateChecksum,
+  getAdminOverrideForStudent,
   getRealTelegramUser,
   getScopedStorageKey,
   getValidAdminSession,
+  isFakeTestAccount,
   isMasterAdminTelegramUser,
   isProtectedMasterAccount,
   safeJsonParse,
+  saveAdminStudentOverride,
   verifyStateIntegrity,
 } from './utils/security';
 import {
@@ -112,6 +116,9 @@ import { ProfessorsModal, PROFESSORS_DATA } from './components/modals/Professors
 import { RemindersModal } from './components/modals/RemindersModal';
 import { SupportModal } from './components/modals/SupportModal';
 import { EventDetailsModal } from './components/modals/EventDetailsModal';
+
+export const APP_STORAGE_VERSION = 'v17_clean';
+const APP_STORAGE_VERSION_KEY = 'ie_app_storage_version';
 
 const USER_STORAGE_KEY = 'ie_student_profile_v6';
 const CHECKSUM_STORAGE_KEY = 'ie_student_checksum_v6';
@@ -414,6 +421,40 @@ export default function App() {
       window.Telegram.WebApp.expand?.();
     }
 
+    // Purge any corrupted previous cache when upgrading to APP_STORAGE_VERSION = 'v17_clean'
+    try {
+      const currentStorageVersion = localStorage.getItem(APP_STORAGE_VERSION_KEY);
+      if (currentStorageVersion !== APP_STORAGE_VERSION) {
+        const keysToClean: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (
+            k &&
+            (k === STUDENTS_STORAGE_KEY ||
+              k === 'ie_registered_student_ids_v1' ||
+              k.startsWith(USER_STORAGE_KEY) ||
+              k.startsWith(CHECKSUM_STORAGE_KEY) ||
+              k.startsWith(ONBOARDING_COMPLETED_KEY))
+          ) {
+            keysToClean.push(k);
+          }
+        }
+        keysToClean.forEach((k) => {
+          const rawVal = localStorage.getItem(k);
+          if (
+            k === STUDENTS_STORAGE_KEY ||
+            k === 'ie_registered_student_ids_v1' ||
+            (rawVal && (rawVal.includes('4011234567') || rawVal.includes('سپهر خاکپور')))
+          ) {
+            localStorage.removeItem(k);
+          }
+        });
+        localStorage.setItem(APP_STORAGE_VERSION_KEY, APP_STORAGE_VERSION);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+
     const savedTheme = localStorage.getItem(THEME_STORAGE_KEY) as ThemeMode | null;
     if (savedTheme === 'day' || savedTheme === 'night') {
       setThemeMode(savedTheme);
@@ -458,7 +499,11 @@ export default function App() {
       setAdminsCatalog(cleaned.length > 0 ? cleaned : DEFAULT_ADMINS);
     });
     loadJsonOrFallback(FEATURE_FLAGS_STORAGE_KEY, DEFAULT_FEATURE_FLAGS, setFeatureFlags);
-    loadJsonOrFallback(STUDENTS_STORAGE_KEY, DEFAULT_STUDENTS, setStudentsCatalog);
+    loadJsonOrFallback(STUDENTS_STORAGE_KEY, DEFAULT_STUDENTS, (loadedStudents) => {
+      const safeList = Array.isArray(loadedStudents) ? loadedStudents : [];
+      const cleaned = applyAdminOverridesToStudents(safeList);
+      setStudentsCatalog(cleaned);
+    });
     loadJsonOrFallback(RECEIPTS_STORAGE_KEY, DEFAULT_RECEIPTS, setReceiptsCatalog);
     loadJsonOrFallback(TIMERS_STORAGE_KEY, DEFAULT_TIMERS, setTimersCatalog);
     loadJsonOrFallback(BADGES_STORAGE_KEY, EXTENDED_BADGES, setBadgesCatalog);
@@ -506,7 +551,8 @@ export default function App() {
       const parsed = safeJsonParse<UserProfile | null>(savedProfileRaw, null);
       const isLegacyMock =
         parsed &&
-        (parsed.studentId === `402${'1202422'}` ||
+        (isFakeTestAccount(parsed) ||
+          parsed.studentId === `402${'1202422'}` ||
           (parsed.fullName &&
             parsed.fullName.includes('رضایی') &&
             parsed.firstName?.startsWith('امیر')));
@@ -632,7 +678,7 @@ export default function App() {
     let latestServerKycStatusForCurrentUser: KycStatus | undefined;
 
     if (Array.isArray(boot.students) && boot.students.length > 0) {
-      const serverStudents = boot.students;
+      const serverStudents = applyAdminOverridesToStudents(boot.students);
       for (const s of serverStudents) {
         if (s && s.studentId) {
           const protectedStu = isProtectedMasterAccount(s);
@@ -646,22 +692,57 @@ export default function App() {
         }
       }
       setStudentsCatalog((prev) => {
-        const safePrev = Array.isArray(prev) ? prev : [];
+        const safePrev = applyAdminOverridesToStudents(
+          Array.isArray(prev) ? prev : []
+        );
+        const prevMap = new Map<string, AdminStudentDossier>();
+        for (const loc of safePrev) {
+          if (loc && loc.studentId) {
+            prevMap.set(loc.studentId, loc);
+          }
+        }
+
         const map = new Map<string, AdminStudentDossier>();
         for (const s of serverStudents) {
           if (s && s.studentId) {
             const protectedStu = isProtectedMasterAccount(s);
-            const resolvedKyc = protectedStu ? 'verified' : s.kycStatus;
+            const existingLocal = prevMap.get(s.studentId);
+            const ov = getAdminOverrideForStudent(s) || getAdminOverrideForStudent(existingLocal);
+            if (ov?.deleted) continue;
+
+            const resolvedKyc = protectedStu
+              ? 'verified'
+              : ov?.kycStatus ?? existingLocal?.kycStatus ?? s.kycStatus;
+            const resolvedBan = protectedStu
+              ? false
+              : typeof ov?.isBanned === 'boolean'
+              ? ov.isBanned
+              : typeof existingLocal?.isBanned === 'boolean'
+              ? existingLocal.isBanned
+              : s.isBanned;
+            const resolvedScore =
+              typeof ov?.score === 'number'
+                ? ov.score
+                : typeof existingLocal?.score === 'number'
+                ? existingLocal.score
+                : s.score;
+
             map.set(s.studentId, {
               ...s,
-              fullName: s.fullName || 'دانشجوی مهندسی صنایع',
-              phone: s.phone || '',
+              fullName: ov?.fullName || existingLocal?.fullName || s.fullName || 'دانشجوی مهندسی صنایع',
+              studentId: ov?.studentId || s.studentId,
+              cohortYear: (ov?.cohortYear ||
+                existingLocal?.cohortYear ||
+                s.cohortYear) as AdminStudentDossier['cohortYear'],
+              avatar: ov?.avatar || existingLocal?.avatar || s.avatar,
+              score: resolvedScore,
+              phone: s.phone || existingLocal?.phone || '',
               attendedEvents: Array.isArray(s.attendedEvents) ? s.attendedEvents : [],
               badges: Array.isArray(s.badges) ? s.badges : [],
               payments: Array.isArray(s.payments) ? s.payments : [],
               chatLogs: Array.isArray(s.chatLogs) ? s.chatLogs : [],
               kycStatus: resolvedKyc,
-              isBanned: protectedStu ? false : s.isBanned,
+              isBanned: resolvedBan,
             });
           }
         }
@@ -683,7 +764,7 @@ export default function App() {
             });
           }
         }
-        const mergedList = Array.from(map.values());
+        const mergedList = applyAdminOverridesToStudents(Array.from(map.values()));
         localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(mergedList));
         return mergedList;
       });
@@ -837,8 +918,14 @@ export default function App() {
           String(boot.profile.studentId).trim().length >= 6)
     );
 
+    const currentAdminOverride =
+      getAdminOverrideForStudent(user) ||
+      getAdminOverrideForStudent(boot.profile) ||
+      (tgIdForBootstrap ? getAdminOverrideForStudent({ telegramUserId: tgIdForBootstrap }) : null);
+
     if (serverHasValidProfile && boot.profile) {
       const resolvedKyc =
+        currentAdminOverride?.kycStatus ||
         latestServerKycStatusForCurrentUser ||
         boot.profile.kycStatus ||
         user.kycStatus ||
@@ -847,6 +934,12 @@ export default function App() {
         ...DEFAULT_PROFILE,
         ...user,
         ...boot.profile,
+        fullName: currentAdminOverride?.fullName || boot.profile.fullName || user.fullName,
+        studentId: currentAdminOverride?.studentId || boot.profile.studentId || user.studentId,
+        score:
+          typeof currentAdminOverride?.score === 'number'
+            ? currentAdminOverride.score
+            : boot.profile.score ?? user.score,
         kycStatus: resolvedKyc,
         onboardingCompleted: true,
       };
@@ -855,12 +948,13 @@ export default function App() {
         setIsKycTestActive(false);
       }
       setIsOnboardingOpen(false);
-    } else if (latestServerKycStatusForCurrentUser && user.studentId) {
+    } else if ((currentAdminOverride?.kycStatus || latestServerKycStatusForCurrentUser) && user.studentId) {
+      const nextKyc = currentAdminOverride?.kycStatus || latestServerKycStatusForCurrentUser!;
       persistVerifiedProfile({
         ...user,
-        kycStatus: latestServerKycStatusForCurrentUser,
+        kycStatus: nextKyc,
       });
-      if (latestServerKycStatusForCurrentUser === 'verified') {
+      if (nextKyc === 'verified') {
         setIsKycTestActive(false);
       }
     } else if (isInitialMount) {
@@ -961,16 +1055,17 @@ export default function App() {
     const isCompletingOnboarding =
       Boolean(updatedFields.onboardingCompleted) && !isAlreadyRegistered;
 
-    // Once registered, lock identity fields (name, studentId, cohortYear, phone) permanently; allow avatar/score/kyc updates
+    // Allow explicit identity updates from OnboardingModal or AdminPanel
     const safeUpdatedFields: Partial<UserProfile> = isAlreadyRegistered
       ? {
           ...updatedFields,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          fullName: user.fullName,
-          studentId: user.studentId,
-          cohortYear: user.cohortYear,
-          verifiedTelegramPhone: user.verifiedTelegramPhone,
+          firstName: updatedFields.firstName ?? user.firstName,
+          lastName: updatedFields.lastName ?? user.lastName,
+          fullName: updatedFields.fullName ?? user.fullName,
+          studentId: updatedFields.studentId ?? user.studentId,
+          cohortYear: updatedFields.cohortYear ?? user.cohortYear,
+          verifiedTelegramPhone:
+            updatedFields.verifiedTelegramPhone ?? user.verifiedTelegramPhone,
           onboardingCompleted: true,
         }
       : updatedFields;
@@ -1000,8 +1095,9 @@ export default function App() {
     }
 
     if (Array.isArray(updatedStudentsFromBot) && updatedStudentsFromBot.length > 0) {
-      setStudentsCatalog(updatedStudentsFromBot);
-      localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(updatedStudentsFromBot));
+      const overriddenFromBot = applyAdminOverridesToStudents(updatedStudentsFromBot);
+      setStudentsCatalog(overriddenFromBot);
+      localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(overriddenFromBot));
       return;
     }
 
@@ -1053,7 +1149,7 @@ export default function App() {
             ];
 
         // If completing onboarding with a valid referral code, award +10 points to the referrer student
-        const next =
+        const nextRaw =
           isCompletingOnboarding && cleanRefTargetId
             ? baseList.map((s) => {
                 const matchesInviter =
@@ -1072,6 +1168,7 @@ export default function App() {
               })
             : baseList;
 
+        const next = applyAdminOverridesToStudents(nextRaw);
         localStorage.setItem(STUDENTS_STORAGE_KEY, JSON.stringify(next));
         return next;
       });
@@ -1087,6 +1184,9 @@ export default function App() {
       setIsKycTestActive(false);
       return;
     }
+    saveAdminStudentOverride([user.id, user.studentId, user.telegramUserId], {
+      kycStatus: newStatus,
+    });
     handleUpdateProfile({ kycStatus: newStatus });
     if (newStatus === 'verified') {
       setIsKycTestActive(false);
@@ -1635,11 +1735,14 @@ export default function App() {
         {!isAdminPanelOpen &&
           !isMasterAdminTelegramUser(user.telegramUserId) &&
           !isProtectedMasterAccount(user) &&
-          (user.kycStatus !== 'verified' || isKycTestActive) && (
+          (user.kycStatus === 'required' ||
+            user.kycStatus === 'kyc_locked' ||
+            user.kycStatus === 'pending_review' ||
+            isKycTestActive) && (
             <KycLockOverlay
               status={
                 isKycTestActive && user.kycStatus === 'verified'
-                  ? 'kyc_locked'
+                  ? 'required'
                   : user.kycStatus
               }
               themeMode={themeMode}
@@ -1665,7 +1768,7 @@ export default function App() {
         />
 
         <OnboardingModal
-          isOpen={isOnboardingOpen}
+          isOpen={isOnboardingOpen && !isAdminPanelOpen && !isAdminVaultOpen}
           onClose={() => setIsOnboardingOpen(false)}
           onComplete={handleUpdateProfile}
           currentProfile={user}

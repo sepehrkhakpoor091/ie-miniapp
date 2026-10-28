@@ -69,13 +69,17 @@ import {
 } from '../../utils/gamification';
 import {
   MASTER_ADMIN_TELEGRAM_ID,
+  applyAdminOverridesToStudents,
   computeBadgeVerificationHash,
+  extractCohortFromStudentId,
   findCheckedInTicketInLedger,
   generateCertificateCode,
+  isFakeTestAccount,
   isMasterAdminTelegramUser,
   isProtectedMasterAccount,
   recordTicketInCheckedInLedger,
   removeTicketFromCheckedInLedger,
+  saveAdminStudentOverride,
   touchAdminSession,
   validateUploadedImageFile,
   verifyTicketSignature,
@@ -85,6 +89,7 @@ import {
   saveLootboxConfigOnBot,
   saveProfessorsOnBot,
   submitAdminReviewToBot,
+  submitAdminUserActionToBot,
   toggleStudentTimersOnBot,
   verifyQrCheckInWithBot,
 } from '../../utils/apiBridge';
@@ -453,7 +458,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [previewImageModalSrc, setPreviewImageModalSrc] = useState<string | null>(null);
 
   const [studentList, setStudentList] = useState<AdminStudentDossier[]>(() =>
-    Array.isArray(students) && students.length > 0 ? students : DEFAULT_STUDENTS
+    Array.isArray(students) && students.length > 0
+      ? applyAdminOverridesToStudents(students)
+      : DEFAULT_STUDENTS
   );
   const [eventList, setEventList] = useState<EventItem[]>(() =>
     normalizeEventsList(
@@ -511,7 +518,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [admins]);
 
   useEffect(() => {
-    if (Array.isArray(students)) setStudentList(students);
+    if (Array.isArray(students)) {
+      setStudentList(applyAdminOverridesToStudents(students));
+    }
   }, [students]);
 
   useEffect(() => {
@@ -544,9 +553,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     updater: (prev: AdminStudentDossier[]) => AdminStudentDossier[]
   ) => {
     setStudentList((prev) => {
-      const next = updater(Array.isArray(prev) ? prev : DEFAULT_STUDENTS);
+      const next = applyAdminOverridesToStudents(
+        updater(Array.isArray(prev) ? prev : DEFAULT_STUDENTS)
+      );
       queueMicrotask(() => onUpdateStudents?.(next));
       return next;
+    });
+  };
+
+  const mergeServerStudentsPreservingLocal = (
+    serverList: AdminStudentDossier[]
+  ) => {
+    updateStudentsAndPersist((prev) => {
+      const map = new Map<string, AdminStudentDossier>();
+      for (const s of Array.isArray(serverList) ? serverList : []) {
+        if (s && s.studentId) {
+          map.set(s.studentId, s);
+        }
+      }
+      for (const loc of Array.isArray(prev) ? prev : []) {
+        if (loc && loc.studentId && !map.has(loc.studentId)) {
+          map.set(loc.studentId, loc);
+        }
+      }
+      return Array.from(map.values());
     });
   };
 
@@ -598,7 +628,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Live Online Users Radar State (strictly real users)
   const [onlineSessions, setOnlineSessions] = useState<OnlineSessionUser[]>(() =>
-    currentUser?.studentId
+    currentUser?.studentId && !isFakeTestAccount(currentUser)
       ? [
           {
             id: 'sess-current',
@@ -667,6 +697,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [selectedStudentIdForDossier, setSelectedStudentIdForDossier] = useState<string | null>(
     null
   );
+  const [editDossierFullName, setEditDossierFullName] = useState<string>('');
+  const [editDossierStudentId, setEditDossierStudentId] = useState<string>('');
   const [dossierTab, setDossierTab] = useState<'overview' | 'payments' | 'chats'>('overview');
   const [customPointsInput, setCustomPointsInput] = useState<number>(25);
   const [customPointsReason, setCustomPointsReason] = useState<string>(
@@ -938,6 +970,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const filteredStudents = useMemo(() => {
     const safeList = Array.isArray(studentList) ? studentList : [];
     return safeList.filter((st) => {
+      if (isFakeTestAccount(st)) return false;
       const matchesCohort =
         selectedCohort === 'همه' || st.cohortYear === selectedCohort;
       const q = userSearchQuery.trim();
@@ -951,9 +984,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [studentList, selectedCohort, userSearchQuery]);
 
   const activeDossierStudent = useMemo(() => {
+    if (!selectedStudentIdForDossier) return null;
     const safeList = Array.isArray(studentList) ? studentList : [];
-    return safeList.find((s) => s.id === selectedStudentIdForDossier) || null;
+    return (
+      safeList.find(
+        (s) => s.id === selectedStudentIdForDossier && !isFakeTestAccount(s)
+      ) || null
+    );
   }, [studentList, selectedStudentIdForDossier]);
+
+  useEffect(() => {
+    if (activeDossierStudent) {
+      setEditDossierFullName(activeDossierStudent.fullName || '');
+      setEditDossierStudentId(activeDossierStudent.studentId || '');
+    } else {
+      setEditDossierFullName('');
+      setEditDossierStudentId('');
+    }
+  }, [activeDossierStudent?.id]);
 
   // Normalize receipt/kyc items and filter by type AND folder (pending / approved / rejected)
   const queueItemsByType = useMemo(() => {
@@ -1070,7 +1118,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const bodyParts = body.includes('|') ? body.split('|') : body.split(':');
 
     const eventId = bodyParts[0] || 'ev-project-mgmt';
-    const studentId = bodyParts[1] || '4011234567';
+    const studentId = bodyParts[1] || '402100000';
     const trackingCode = bodyParts[2] || 'TK-402891';
     const paidFromPayload =
       bodyParts.length === 5 ? Math.max(0, Number(bodyParts[3]) || 0) : undefined;
@@ -1400,6 +1448,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             ? 'kyc_locked'
             : 'pending_review';
 
+        saveAdminStudentOverride(
+          [item.studentId, item.telegramUserId],
+          { kycStatus: nextKycStatus }
+        );
+
         updateStudentsAndPersist((prev) =>
           prev.map((s) =>
             s.studentId === item.studentId ? { ...s, kycStatus: nextKycStatus } : s
@@ -1523,7 +1576,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
   };
 
-  const handleModifyStudentDossier = (
+  const isCurrentActingAdminMaster = useMemo(
+    () =>
+      isMasterAdminTelegramUser(activeAdmin?.telegramId) ||
+      activeAdmin?.telegramId === MASTER_ADMIN_TELEGRAM_ID ||
+      isMasterAdminTelegramUser(currentUser?.telegramUserId),
+    [activeAdmin?.telegramId, currentUser?.telegramUserId]
+  );
+
+  const handleModifyStudentDossier = async (
     student: AdminStudentDossier,
     change: {
       deltaScore?: number;
@@ -1534,22 +1595,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   ) => {
     const isProtectedMaster = isProtectedMasterAccount(student);
-    if (
+    const isRestrictingMaster =
       isProtectedMaster &&
       ((change.explicitKycStatus && change.explicitKycStatus !== 'verified') ||
-        change.explicitBanStatus === true)
-    ) {
+        change.explicitBanStatus === true ||
+        (!isCurrentActingAdminMaster &&
+          typeof change.deltaScore === 'number' &&
+          change.deltaScore < 0));
+
+    if (isRestrictingMaster) {
       playError();
       triggerToast(
-        '👑 اکانت مالک و مدیر ارشد کل (629890497) دارای مصونیت ۱۰۰٪ است و غیرقابل محدودسازی می‌باشد!'
+        '👑 اکانت مدیر ارشد کل (629890497) دارای مصونیت است و سایر ادمین‌ها نمی‌توانند آن را قفل یا امتیاز آن را کسر کنند!'
       );
       return;
     }
 
     playCoin();
+    const nextComputedScore =
+      typeof change.deltaScore === 'number'
+        ? Math.max(0, student.score + change.deltaScore)
+        : student.score;
+
+    // Persist authoritative Admin override immediately so background polling never reverts it!
+    saveAdminStudentOverride(
+      [student.id, student.studentId, student.telegramUserId],
+      {
+        ...(typeof change.deltaScore === 'number' ? { score: nextComputedScore } : {}),
+        ...(change.explicitKycStatus ? { kycStatus: change.explicitKycStatus } : {}),
+        ...(typeof change.explicitBanStatus === 'boolean'
+          ? { isBanned: change.explicitBanStatus }
+          : {}),
+        ...(change.newAvatar ? { avatar: change.newAvatar } : {}),
+      }
+    );
+
     updateStudentsAndPersist((prev) =>
       prev.map((s) => {
-        if (s.id !== student.id) return s;
+        if (s.id !== student.id && s.studentId !== student.studentId) return s;
         const protectedRow = isProtectedMasterAccount(s);
         const nextScore =
           typeof change.deltaScore === 'number'
@@ -1575,8 +1658,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
 
     const isCurrentStudent = Boolean(
-      currentUser?.studentId && student.studentId === currentUser.studentId
+      (currentUser?.studentId && student.studentId === currentUser.studentId) ||
+        (currentUser?.telegramUserId &&
+          student.telegramUserId &&
+          student.telegramUserId === currentUser.telegramUserId)
     );
+
+    const targetUserId =
+      student.telegramUserId || student.studentId || student.id;
 
     if (typeof change.deltaScore === 'number' && change.deltaScore !== 0) {
       const reasonText =
@@ -1599,6 +1688,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             : `${Math.abs(change.deltaScore)} امتیاز از ${student.fullName} کسر شد.`
         }`
       );
+      const botRes = await submitAdminUserActionToBot({
+        action: 'update_points',
+        targetUserId,
+        studentId: student.studentId,
+        telegramUserId: student.telegramUserId,
+        deltaPoints: change.deltaScore,
+        score: nextComputedScore,
+        reason: reasonText,
+      });
+      if (Array.isArray(botRes.students) && botRes.students.length > 0) {
+        mergeServerStudentsPreservingLocal(botRes.students);
+      }
     }
 
     if (change.explicitKycStatus) {
@@ -1608,15 +1709,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       appendLog(
         change.explicitKycStatus === 'verified'
           ? '🔓 باز کردن قفل KYC و تایید هویت دانشجو'
-          : '🔒 قفل کردن کارت دانشجویی (KYC Lock)',
+          : '🔒 قفل کردن کارت دانشجویی (KYC Lock - درخواست کارت دانشجویی)',
         `${student.fullName} (${student.studentId})`,
         change.explicitKycStatus === 'verified' ? 'success' : 'warning'
       );
       triggerToast(
         change.explicitKycStatus === 'verified'
           ? `🔓 قفل کارت دانشجویی (KYC) برای «${student.fullName}» باز شد و حساب تایید گردید!`
-          : `🔒 کارت دانشجویی (KYC) برای «${student.fullName}» قفل شد.`
+          : `🔒 کارت دانشجویی (KYC) برای «${student.fullName}» قفل شد و صفحه درخواست کارت دانشجویی برای او فعال گردید.`
       );
+      const botRes = await submitAdminUserActionToBot({
+        action: 'set_kyc',
+        targetUserId,
+        studentId: student.studentId,
+        telegramUserId: student.telegramUserId,
+        kycStatus: change.explicitKycStatus,
+      });
+      if (Array.isArray(botRes.students) && botRes.students.length > 0) {
+        mergeServerStudentsPreservingLocal(botRes.students);
+      }
     }
 
     if (typeof change.explicitBanStatus === 'boolean') {
@@ -1632,6 +1743,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           ? `🚫 حساب کاربری «${student.fullName}» قفل و مسدود شد.`
           : `🔓 قفل حساب کاربری «${student.fullName}» باز شد و دسترسی کامل فعال گردید!`
       );
+      const botRes = await submitAdminUserActionToBot({
+        action: 'set_ban',
+        targetUserId,
+        studentId: student.studentId,
+        telegramUserId: student.telegramUserId,
+        isBanned: change.explicitBanStatus,
+      });
+      if (Array.isArray(botRes.students) && botRes.students.length > 0) {
+        mergeServerStudentsPreservingLocal(botRes.students);
+      }
     }
 
     if (change.newAvatar) {
@@ -1639,6 +1760,151 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         onUpdateCurrentUserProfile?.({ avatar: change.newAvatar });
       }
       triggerToast(`🎭 آواتار دانشجو «${student.fullName}» تغییر یافت.`);
+    }
+  };
+
+  const handleSaveStudentIdentity = async (student: AdminStudentDossier) => {
+    const cleanFullName = editDossierFullName.trim();
+    const cleanStudentId = editDossierStudentId.trim();
+    if (!cleanFullName || cleanStudentId.length < 6) {
+      playError();
+      triggerToast('لطفاً نام و نام خانوادگی و شماره دانشجویی معتبر (حداقل ۶ رقم) وارد کنید.');
+      return;
+    }
+
+    if (isProtectedMasterAccount(student) && !isCurrentActingAdminMaster) {
+      playError();
+      triggerToast('👑 فقط مدیر ارشد (629890497) مجاز به ویرایش مشخصات حساب اصلی است.');
+      return;
+    }
+
+    playCoin();
+    const nameParts = cleanFullName.split(/\s+/);
+    const firstName = nameParts[0] || cleanFullName;
+    const lastName = nameParts.slice(1).join(' ') || '';
+    const cohortInfo = extractCohortFromStudentId(cleanStudentId);
+    const resolvedCohort = (cohortInfo.cohort || student.cohortYear || '1402') as AdminStudentDossier['cohortYear'];
+
+    saveAdminStudentOverride(
+      [student.id, student.studentId, cleanStudentId, student.telegramUserId],
+      {
+        fullName: cleanFullName,
+        studentId: cleanStudentId,
+        cohortYear: resolvedCohort,
+      }
+    );
+
+    updateStudentsAndPersist((prev) =>
+      prev.map((s) =>
+        s.id === student.id || s.studentId === student.studentId
+          ? {
+              ...s,
+              fullName: cleanFullName,
+              studentId: cleanStudentId,
+              cohortYear: resolvedCohort,
+            }
+          : s
+      )
+    );
+
+    const isCurrentStudent = Boolean(
+      (currentUser?.studentId && student.studentId === currentUser.studentId) ||
+        (currentUser?.telegramUserId &&
+          student.telegramUserId &&
+          student.telegramUserId === currentUser.telegramUserId)
+    );
+    if (isCurrentStudent) {
+      onUpdateCurrentUserProfile?.({
+        firstName,
+        lastName,
+        fullName: cleanFullName,
+        studentId: cleanStudentId,
+        cohortYear: resolvedCohort,
+      });
+    }
+
+    appendLog(
+      'ویرایش مشخصات هویتی دانشجو توسط ادمین',
+      `${cleanFullName} (${cleanStudentId})`,
+      'info'
+    );
+    triggerToast(
+      `💾 مشخصات جدید کاربر «${cleanFullName}» (${cleanStudentId}) ذخیره و به سرور ربات ارسال شد.`
+    );
+
+    const targetUserId =
+      student.telegramUserId || student.studentId || student.id;
+    const botRes = await submitAdminUserActionToBot({
+      action: 'edit_user',
+      targetUserId,
+      previousStudentId: student.studentId,
+      studentId: cleanStudentId,
+      telegramUserId: student.telegramUserId,
+      fullName: cleanFullName,
+      firstName,
+      lastName,
+      cohortYear: resolvedCohort,
+    });
+    if (Array.isArray(botRes.students) && botRes.students.length > 0) {
+      mergeServerStudentsPreservingLocal(botRes.students);
+    }
+  };
+
+  const handleDeleteStudentUser = async (student: AdminStudentDossier) => {
+    if (isProtectedMasterAccount(student)) {
+      playError();
+      triggerToast('👑 اکانت مالک و مدیر ارشد کل (629890497) غیرقابل حذف است!');
+      return;
+    }
+
+    playError();
+    const targetUserId =
+      student.telegramUserId || student.studentId || student.id;
+
+    saveAdminStudentOverride(
+      [student.id, student.studentId, student.telegramUserId],
+      { deleted: true }
+    );
+
+    updateStudentsAndPersist((prev) =>
+      prev.filter(
+        (s) =>
+          s.id !== student.id &&
+          s.studentId !== student.studentId &&
+          (!student.telegramUserId || s.telegramUserId !== student.telegramUserId)
+      )
+    );
+
+    try {
+      const rawReg = localStorage.getItem('ie_registered_student_ids_v1');
+      if (rawReg) {
+        const parsed = JSON.parse(rawReg) as Record<string, string>;
+        delete parsed[student.studentId];
+        localStorage.setItem('ie_registered_student_ids_v1', JSON.stringify(parsed));
+      }
+    } catch {
+      // Ignore storage error
+    }
+
+    setSelectedStudentIdForDossier(null);
+
+    appendLog(
+      '🗑 حذف کامل کاربر از سایت و ربات تلگرام',
+      `${student.fullName} (${student.studentId})`,
+      'danger'
+    );
+    triggerToast(
+      `🗑 کاربر «${student.fullName}» (${student.studentId}) به طور کامل از سایت و ربات حذف شد.`
+    );
+
+    const botRes = await submitAdminUserActionToBot({
+      action: 'delete_user',
+      targetUserId,
+      studentId: student.studentId,
+      telegramUserId: student.telegramUserId,
+    });
+    if (Array.isArray(botRes.students)) {
+      mergeServerStudentsPreservingLocal(botRes.students);
     }
   };
 
@@ -3343,7 +3609,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 type="text"
                 value={userSearchQuery}
                 onChange={(e) => setUserSearchQuery(e.target.value)}
-                placeholder="جستجو بر اساس نام، شماره دانشجویی (مثلاً 4011234567) یا تلفن..."
+                placeholder="جستجو بر اساس نام، شماره دانشجویی (مثلاً 402123456) یا تلفن..."
                 className={`w-full pr-9 pl-3 py-2 rounded-xl text-xs font-bold border focus:outline-none ${inputClass}`}
               />
             </div>
@@ -3409,7 +3675,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <span className="text-xs font-black">{st.fullName}</span>
                           {isProtectedMasterAccount(st) && (
                             <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/25 text-[#D4AB58] border border-[#D4AB58]/60 font-black">
-                              👑 مالک و مدیر ارشد کل (غیرقابل محدودسازی)
+                              👑 مالک و مدیر ارشد کل (629890497)
                             </span>
                           )}
                           <span className="text-[10px] px-2 py-0.5 rounded bg-black/20 font-mono font-bold">
@@ -3433,8 +3699,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           ورودی {st.cohortYear} • سطح {st.level} • KYC:{' '}
                           {isProtectedMasterAccount(st) || st.kycStatus === 'verified'
                             ? 'باز و تایید شده ✅'
-                            : st.kycStatus === 'kyc_locked'
-                            ? 'قفل شده 🔒'
+                            : st.kycStatus === 'required' || st.kycStatus === 'kyc_locked'
+                            ? 'قفل شده (نیاز به کارت دانشجویی) 🔒'
                             : 'در انتظار بررسی ⏳'}
                         </div>
                       </div>
@@ -3473,7 +3739,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           onClick={() =>
                             handleModifyStudentDossier(st, {
                               explicitKycStatus:
-                                st.kycStatus === 'verified' ? 'kyc_locked' : 'verified',
+                                st.kycStatus === 'verified' ? 'required' : 'verified',
                             })
                           }
                           className={`px-2.5 py-1 rounded-lg cursor-pointer ${
@@ -3501,8 +3767,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           }`}
                         >
                           {st.isBanned
-                            ? '🔓 باز کردن حساب (رفع مسدودی)'
-                            : '🚫 قفل کردن حساب کاربری'}
+                            ? '🔓 باز کردن حساب'
+                            : '🚫 قفل حساب'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteStudentUser(st)}
+                          className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-600 text-white cursor-pointer"
+                          title="حذف کامل کاربر از سایت و ربات"
+                        >
+                          🗑 حذف کاربر
                         </button>
                       </>
                     )}
@@ -3516,7 +3791,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       }}
                       className="px-2.5 py-1 rounded-lg bg-[#D4AB58] text-[#101622] cursor-pointer"
                     >
-                      💎 تغییر امتیاز دلخواه
+                      ✏️ ویرایش و امتیاز
                     </button>
                   </div>
                 </div>
@@ -3524,11 +3799,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
 
             {/* ===============================================================
-                360° STUDENT DOSSIER MODAL (Two-Way Lock/Unlock + Custom Points + Avatar)
+                360° STUDENT DOSSIER MODAL (Edit Identity, Delete, KYC Lock/Unlock, Custom Points)
                =============================================================== */}
             {activeDossierStudent && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+              <div
+                onClick={() => setSelectedStudentIdForDossier(null)}
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+              >
                 <div
+                  onClick={(e) => e.stopPropagation()}
                   className={`w-full max-w-lg rounded-3xl border-2 p-5 space-y-4 max-h-[90vh] overflow-y-auto ${
                     isNight
                       ? 'bg-[#141D2B] border-[#D4AB58] text-[#F6F1E7]'
@@ -3558,10 +3837,64 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <button
                       type="button"
                       onClick={() => setSelectedStudentIdForDossier(null)}
-                      className="w-8 h-8 rounded-xl bg-current/10 flex items-center justify-center cursor-pointer"
+                      aria-label="بستن پرونده ۳۶۰ درجه"
+                      className="w-8 h-8 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
                     >
                       <X className="w-4 h-4" />
                     </button>
+                  </div>
+
+                  {/* SECTION 0: EDIT USER FULL NAME & STUDENT ID + COMPLETE DELETE */}
+                  <div className={`p-3.5 rounded-2xl border space-y-2.5 text-xs ${subCardClass}`}>
+                    <div className="font-black text-[#D4AB58]">
+                      ✏️ ویرایش نام و شماره دانشجویی یا حذف کامل کاربر:
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-bold block mb-1">
+                          نام و نام خانوادگی:
+                        </label>
+                        <input
+                          type="text"
+                          value={editDossierFullName}
+                          onChange={(e) => setEditDossierFullName(e.target.value)}
+                          placeholder="نام و نام خانوادگی دانشجو"
+                          className={`w-full px-3 py-2 rounded-xl border text-xs font-bold ${inputClass}`}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold block mb-1">
+                          شماره دانشجویی:
+                        </label>
+                        <input
+                          type="text"
+                          dir="ltr"
+                          value={editDossierStudentId}
+                          onChange={(e) => setEditDossierStudentId(e.target.value)}
+                          placeholder="شماره دانشجویی"
+                          className={`w-full px-3 py-2 rounded-xl border text-xs font-mono font-bold text-center ${inputClass}`}
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSaveStudentIdentity(activeDossierStudent)}
+                      className="w-full py-2.5 px-3 rounded-xl bg-[#D4AB58] hover:bg-[#e3b963] text-[#101622] font-black text-xs cursor-pointer shadow flex items-center justify-center gap-1.5"
+                    >
+                      <span>💾 ذخیره مشخصات جدید کاربر</span>
+                    </button>
+
+                    {!isProtectedMasterAccount(activeDossierStudent) && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteStudentUser(activeDossierStudent)}
+                        className="w-full py-2.5 px-3 rounded-xl bg-rose-700 hover:bg-rose-600 text-white font-black text-xs cursor-pointer shadow flex items-center justify-center gap-1.5"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>🗑 حذف کامل این کاربر از سایت و ربات</span>
+                      </button>
+                    )}
                   </div>
 
                   {/* SECTION A: CUSTOM ARBITRARY POINTS ADDITION & DEDUCTION */}
@@ -3641,13 +3974,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </button>
                       <button
                         type="button"
+                        disabled={
+                          isProtectedMasterAccount(activeDossierStudent) &&
+                          !isCurrentActingAdminMaster
+                        }
                         onClick={() =>
                           handleModifyStudentDossier(activeDossierStudent, {
                             deltaScore: -Math.abs(Number(customPointsInput) || 10),
                             reason: customPointsReason,
                           })
                         }
-                        className="py-2.5 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs cursor-pointer shadow"
+                        className="py-2.5 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs cursor-pointer shadow disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         ➖ کسر {Math.abs(Number(customPointsInput) || 10)} امتیاز
                       </button>
@@ -3662,7 +3999,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </span>
                       {isProtectedMasterAccount(activeDossierStudent) && (
                         <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/25 text-[#D4AB58] border border-[#D4AB58]/60 font-black">
-                          👑 مالک و مدیر ارشد کل (غیرقابل محدودسازی)
+                          👑 مالک و مدیر ارشد کل (629890497)
                         </span>
                       )}
                     </div>
@@ -3718,10 +4055,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             >
                               {activeDossierStudent.kycStatus === 'verified'
                                 ? 'باز (تاییدشده ✅)'
-                                : 'قفل‌شده 🔒'}
+                                : 'قفل‌شده (نیاز به کارت) 🔒'}
                             </span>
                           </div>
-                          <div className="grid grid-cols-2 gap-1.5">
+                          <div className="grid grid-cols-1 gap-1.5">
                             <button
                               type="button"
                               onClick={() =>
@@ -3735,22 +4072,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   : 'bg-emerald-600 text-white shadow'
                               }`}
                             >
-                              🔓 باز کردن قفل KYC
+                              🔓 باز کردن قفل KYC (تایید هویت)
                             </button>
                             <button
                               type="button"
                               onClick={() =>
                                 handleModifyStudentDossier(activeDossierStudent, {
-                                  explicitKycStatus: 'kyc_locked',
+                                  explicitKycStatus: 'required',
                                 })
                               }
                               className={`py-1.5 px-2 rounded-lg text-[10px] font-black cursor-pointer ${
+                                activeDossierStudent.kycStatus === 'required' ||
                                 activeDossierStudent.kycStatus === 'kyc_locked'
                                   ? 'bg-rose-700/40 text-rose-300 border border-rose-500/40'
                                   : 'bg-rose-700 text-white shadow'
                               }`}
                             >
-                              🔒 قفل کردن KYC
+                              🔒 قفل کردن KYC (درخواست کارت دانشجویی)
                             </button>
                           </div>
                         </div>
@@ -3769,7 +4107,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               {!activeDossierStudent.isBanned ? 'باز و فعال ✅' : 'مسدود 🚫'}
                             </span>
                           </div>
-                          <div className="grid grid-cols-2 gap-1.5">
+                          <div className="grid grid-cols-1 gap-1.5">
                             <button
                               type="button"
                               onClick={() =>

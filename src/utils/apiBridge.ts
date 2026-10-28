@@ -965,4 +965,80 @@ export async function saveProfessorsOnBot(
   };
 }
 
+/**
+ * 16. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-user-action
+ * Executes Admin actions on a user: edit_user, delete_user, set_kyc, update_points, set_ban
+ * and returns the updated students list from the Cloudflare Worker KV store.
+ */
+export async function submitAdminUserActionToBot(payload: {
+  action: 'edit_user' | 'delete_user' | 'set_kyc' | 'update_points' | 'set_ban';
+  targetUserId: string;
+  studentId?: string;
+  previousStudentId?: string;
+  telegramUserId?: string;
+  telegramId?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  cohortYear?: string;
+  kycStatus?: 'verified' | 'required' | 'kyc_locked' | 'pending_review';
+  deltaPoints?: number;
+  score?: number;
+  reason?: string;
+  isBanned?: boolean;
+}): Promise<{
+  ok: boolean;
+  students?: AdminStudentDossier[];
+  profile?: UserProfile;
+}> {
+  const tgUser = getRealTelegramUser();
+  const actingAdminId = tgUser?.id || MASTER_ADMIN_TELEGRAM_ID;
+  const resolvedTargetTgId =
+    payload.telegramId || payload.telegramUserId || payload.targetUserId;
+
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    students?: AdminStudentDossier[];
+    profile?: UserProfile;
+  }>('/api/miniapp/admin-user-action', {
+    ...payload,
+    telegramId: resolvedTargetTgId,
+    telegramUserId: resolvedTargetTgId,
+    adminId: actingAdminId,
+    updatedAt: new Date().toISOString(),
+  });
+
+  // Fallback for when the new admin-user-action route is not yet deployed on the Cloudflare Worker:
+  // also push the updated fields to /api/miniapp/sync-user so KV stays updated.
+  if (!res.ok && payload.action !== 'delete_user') {
+    void postToMiniAppApi('/api/miniapp/sync-user', {
+      telegramId: resolvedTargetTgId,
+      telegramUserId: resolvedTargetTgId,
+      studentId: payload.studentId,
+      ...(payload.kycStatus ? { kycStatus: payload.kycStatus } : {}),
+      ...(typeof payload.isBanned === 'boolean' ? { isBanned: payload.isBanned } : {}),
+      ...(typeof payload.score === 'number' ? { score: payload.score } : {}),
+      ...(payload.fullName ? { fullName: payload.fullName } : {}),
+      profile: {
+        id: resolvedTargetTgId,
+        telegramId: resolvedTargetTgId,
+        telegramUserId: resolvedTargetTgId,
+        studentId: payload.studentId,
+        ...(payload.fullName ? { fullName: payload.fullName } : {}),
+        ...(payload.firstName ? { firstName: payload.firstName } : {}),
+        ...(payload.lastName ? { lastName: payload.lastName } : {}),
+        ...(payload.cohortYear ? { cohortYear: payload.cohortYear } : {}),
+        ...(payload.kycStatus ? { kycStatus: payload.kycStatus } : {}),
+        ...(typeof payload.isBanned === 'boolean' ? { isBanned: payload.isBanned } : {}),
+        ...(typeof payload.score === 'number' ? { score: payload.score } : {}),
+      },
+    });
+  }
+
+  return {
+    ok: res.ok,
+    students: Array.isArray(res.data?.students) ? res.data!.students : undefined,
+    profile: res.data?.profile,
+  };
+}
 

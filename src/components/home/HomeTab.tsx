@@ -18,7 +18,6 @@ import {
 import { PixelImage } from '../PixelImage';
 import { TactileCard } from '../ui/TactileCard';
 import { RollingNumber } from '../ui/RollingNumber';
-import { ReferralInviteCard } from '../ui/ReferralInviteCard';
 import { playTick, playCoin } from '../../utils/soundEngine';
 import {
   DEFAULT_CHANNEL_URL,
@@ -516,6 +515,38 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 درباره ما
               </span>
             </TactileCard>
+
+            {/* Tile 5: 🎁 دعوت دوستان (Compact Quick-Access Tile -> Opens Referral Card in Profile) */}
+            <TactileCard
+              themeMode={themeMode}
+              interactive
+              onClick={() => {
+                playCoin();
+                onChangeTab('profile');
+              }}
+              className="col-span-4 lg:col-span-2 p-2.5 lg:p-3 flex items-center justify-between gap-2.5 border border-[#D4AB58]/50"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-[#D4AB58]/20 border border-[#D4AB58]/50 flex items-center justify-center shrink-0 text-sm">
+                  🎁
+                </div>
+                <div className="text-right min-w-0">
+                  <span
+                    className={`text-xs font-extrabold block truncate ${
+                      isNight ? 'text-[#F6F1E7]' : 'text-[#14201B]'
+                    }`}
+                  >
+                    🎁 دعوت دوستان
+                  </span>
+                  <span className="text-[10px] font-bold text-[#D4AB58] block truncate">
+                    دریافت +۱۰ امتیاز هدیه در تب پروفایل
+                  </span>
+                </div>
+              </div>
+              <span className="text-[11px] font-black text-[#D4AB58] shrink-0">
+                مشاهده ←
+              </span>
+            </TactileCard>
           </div>
 
           {/* 3B. Interactive FUM 142-Unit Curriculum & Prerequisite Flowchart Card */}
@@ -556,14 +587,6 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
             <span className="text-xs font-black text-[#D4AB58] shrink-0">مشاهده ←</span>
           </TactileCard>
-
-          {/* 3C. Official Referral & Invite Link Card */}
-          <ReferralInviteCard
-            user={user}
-            themeMode={themeMode}
-            realStudents={realStudents}
-            serverReferralStats={serverReferralStats}
-          />
         </div>
 
         {/* LEFT COLUMN IN RTL ON DESKTOP (lg:col-span-7): Featured Event Card + Latest Channel Announcements */}

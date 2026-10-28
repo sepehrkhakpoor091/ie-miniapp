@@ -361,12 +361,96 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     }
   };
 
+  const normalizePhoneDigits = (raw: string): string => {
+    const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+    const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
+    let out = '';
+    for (const ch of raw || '') {
+      const pIdx = persianDigits.indexOf(ch);
+      const aIdx = arabicDigits.indexOf(ch);
+      if (pIdx >= 0) out += String(pIdx);
+      else if (aIdx >= 0) out += String(aIdx);
+      else out += ch;
+    }
+    let clean = out.replace(/[^\d+]/g, '');
+    if (clean.startsWith('+98')) clean = '0' + clean.slice(3);
+    else if (clean.startsWith('98') && clean.length === 12) clean = '0' + clean.slice(2);
+    else if (clean.startsWith('9') && clean.length === 10) clean = '0' + clean;
+    return clean;
+  };
+
+  const handleRequestContactFromTelegram = () => {
+    playTick();
+    setPhoneError('');
+    const webApp = (
+      typeof window !== 'undefined'
+        ? (
+            window as unknown as {
+              Telegram?: {
+                WebApp?: {
+                  requestContact?: (
+                    cb: (
+                      shared: boolean,
+                      resp?: {
+                        responseUnsafe?: {
+                          contact?: { phone_number?: string };
+                        };
+                      }
+                    ) => void
+                  ) => void;
+                };
+              };
+            }
+          ).Telegram?.WebApp
+        : undefined
+    );
+
+    if (typeof webApp?.requestContact === 'function') {
+      try {
+        webApp.requestContact((shared, resp) => {
+          if (shared) {
+            const rawContactPhone =
+              resp?.responseUnsafe?.contact?.phone_number || '';
+            const normalized = normalizePhoneDigits(rawContactPhone);
+            if (normalized && normalized.length >= 10) {
+              setPhoneNumber(normalized);
+            }
+            setIsPhoneVerified(true);
+            setPhoneError('');
+            playFanfare();
+          } else {
+            setPhoneError(
+              'دریافت خودکار لغو شد؛ می‌توانید شماره موبایل ۱۱ رقمی (با پیش‌شماره 09) را مستقیماً در کادر زیر تایپ کنید.'
+            );
+          }
+        });
+        return;
+      } catch {
+        // Fallback to manual input if client throws
+      }
+    }
+
+    const normalizedManual = normalizePhoneDigits(phoneNumber);
+    if (/^09\d{9}$/.test(normalizedManual)) {
+      setPhoneNumber(normalizedManual);
+      setIsPhoneVerified(true);
+      setPhoneError('');
+      playFanfare();
+    } else {
+      setPhoneError(
+        'نسخه تلگرام شما دریافت خودکار را پشتیبانی نمی‌کند؛ لطفاً شماره موبایل ۱۱ رقمی خود (با شروع 09) را در کادر زیر وارد کنید.'
+      );
+    }
+  };
+
   const handleVerifyTelegramPhone = () => {
-    if (!phoneNumber.trim() || phoneNumber.trim().length < 10) {
+    const normalized = normalizePhoneDigits(phoneNumber);
+    if (!/^09\d{9}$/.test(normalized)) {
       playError();
-      setPhoneError('لطفاً ابتدا شماره تماس معتبر خود را در کادر بالا وارد کنید.');
+      setPhoneError('لطفاً شماره موبایل ۱۱ رقمی معتبر با پیش‌شماره 09 وارد کنید (مثال: 09151234567).');
       return;
     }
+    setPhoneNumber(normalized);
     setPhoneError('');
     playFanfare();
     setIsPhoneVerified(true);
@@ -374,19 +458,24 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   const handleFinish = async () => {
     if (inFlightRequestRef.current || isSubmittingRegistration) return;
-    if (!phoneNumber.trim()) {
+    const normalizedPhone = normalizePhoneDigits(phoneNumber);
+    if (!/^09\d{9}$/.test(normalizedPhone)) {
       playError();
-      setPhoneError('لطفاً شماره تماس خود را وارد کنید.');
+      setPhoneError('لطفاً شماره موبایل ۱۱ رقمی معتبر با پیش‌شماره 09 وارد کنید (مثال: 09151234567).');
       return;
     }
+    setPhoneNumber(normalizedPhone);
     setPhoneError('');
+    setIsPhoneVerified(true);
     inFlightRequestRef.current = true;
     setIsSubmittingRegistration(true);
 
     try {
       const isFirstRegistration = !currentProfile.onboardingCompleted;
+      const cleanRef = referralCode.trim().toUpperCase().replace(/^REF_/i, 'REF-');
+      const refBonus = isFirstRegistration && cleanRef.startsWith('REF-') ? 5 : 0;
       const nextScore = isFirstRegistration
-        ? Math.max(0, Number(currentProfile.score) || 0) + 5
+        ? Math.max(0, Number(currentProfile.score) || 0) + 5 + refBonus
         : Math.max(0, Number(currentProfile.score) || 0);
       const levelInfo = calculateLevelFromScore(nextScore);
       const tgUser = getRealTelegramUser();
@@ -397,18 +486,21 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
           : currentProfile.telegramUserId || `web-user-${studentId.trim()}`);
 
-      const cleanRef = referralCode.trim().toUpperCase().replace(/^REF_/i, 'REF-');
+      const cleanFirst = firstName.trim();
+      const cleanLast = lastName.trim();
+      const cleanFull = `${cleanFirst} ${cleanLast}`.trim();
+      const cleanStudentId = studentId.trim();
 
       const candidateProfile: UserProfile = {
         ...currentProfile,
-        id: currentProfile.id || `usr-${studentId.trim()}`,
+        id: currentProfile.id && currentProfile.id !== 'usr-guest' ? currentProfile.id : `usr-${cleanStudentId}`,
         avatar: selectedAvatar,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        fullName: `${firstName.trim()} ${lastName.trim()}`.trim(),
-        studentId: studentId.trim(),
+        firstName: cleanFirst,
+        lastName: cleanLast,
+        fullName: cleanFull,
+        studentId: cleanStudentId,
         cohortYear: detectedCohort || '۱۴۰۲',
-        verifiedTelegramPhone: phoneNumber.trim(),
+        verifiedTelegramPhone: normalizedPhone,
         score: nextScore,
         level: levelInfo.level,
         rankTitle: levelInfo.rankTitle,
@@ -419,6 +511,30 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         referralCode: `REF-${resolvedTgId}`,
         referredBy: cleanRef || undefined,
       };
+
+      // Immediately persist registration snapshot in localStorage as requested
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem(
+            'ie_registered_profile_snapshot_v17',
+            JSON.stringify({
+              firstName: cleanFirst,
+              lastName: cleanLast,
+              fullName: cleanFull,
+              studentId: cleanStudentId,
+              phone: normalizedPhone,
+              telegramUserId: resolvedTgId,
+            })
+          );
+          window.localStorage.setItem(
+            'ie_student_profile_v6',
+            JSON.stringify(candidateProfile)
+          );
+          window.localStorage.setItem('ie_onboarding_completed_v6', 'true');
+        }
+      } catch {
+        // Ignore storage restrictions
+      }
 
       const botRes = await registerStudentProfileOnBot(
         candidateProfile,
@@ -694,7 +810,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   type="text"
                   value={studentId}
                   onChange={handleStudentIdChange}
-                  placeholder="مثال: 4011234567"
+                  placeholder="مثال: 402123456"
                   maxLength={14}
                   className={`w-full px-3.5 py-2.5 rounded-xl border text-sm font-mono tracking-widest text-center focus:outline-none transition-all ${
                     isNight
@@ -851,7 +967,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             </div>
           )}
 
-          {/* STEP 4: Phone Input (Empty Initial Value, Placeholder Only) & Registration Submit */}
+          {/* STEP 4: Direct Telegram Phone Capture + Active Manual 11-Digit 09 Input & Registration Submit */}
           {step === 4 && (
             <div className="space-y-4 text-center">
               <div className="relative inline-block">
@@ -887,16 +1003,30 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               </div>
 
               <div className="p-4 rounded-2xl bg-current/5 border border-current/10 text-right space-y-2.5">
-                <label className="block text-xs font-semibold opacity-85">
-                  شماره تماس (موبایل):
+                <button
+                  type="button"
+                  onClick={handleRequestContactFromTelegram}
+                  className="w-full py-2.5 px-3 rounded-xl bg-[#354B40] hover:bg-[#3f5a4d] text-xs font-black text-[#F6F1E7] border-2 border-[#D4AB58] flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer shadow"
+                >
+                  <Phone className="w-4 h-4 text-[#D4AB58]" />
+                  <span>📱 دریافت خودکار شماره از تلگرام</span>
+                </button>
+
+                <label className="block text-xs font-semibold opacity-85 pt-1">
+                  یا ورود مستقیم شماره موبایل ۱۱ رقمی (با پیش‌شماره 09):
                 </label>
                 <input
                   type="tel"
                   dir="ltr"
                   value={phoneNumber}
                   onChange={(e) => {
-                    setPhoneNumber(e.target.value);
+                    const val = e.target.value;
+                    setPhoneNumber(val);
                     setPhoneError('');
+                    const norm = normalizePhoneDigits(val);
+                    if (/^09\d{9}$/.test(norm)) {
+                      setIsPhoneVerified(true);
+                    }
                   }}
                   placeholder="مثال: 09151234567"
                   maxLength={14}
@@ -908,7 +1038,9 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 />
 
                 {phoneError && (
-                  <div className="text-xs font-bold text-[#E77F6E]">{phoneError}</div>
+                  <div className="text-xs font-bold text-[#E77F6E] leading-relaxed">
+                    {phoneError}
+                  </div>
                 )}
 
                 {!isPhoneVerified ? (
@@ -917,8 +1049,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                     onClick={handleVerifyTelegramPhone}
                     className="w-full py-2 px-3 rounded-xl bg-[#253247] hover:bg-[#2F3F59] text-xs font-bold text-[#F6F1E7] border border-[#354661] flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
                   >
-                    <Phone className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>تأیید و اتصال شماره تلگرام (Verify Phone)</span>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>تأیید شماره موبایل واردشده</span>
                   </button>
                 ) : (
                   <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-bold bg-emerald-950/40 p-2 rounded-xl border border-emerald-800">
@@ -971,9 +1103,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 >
                   {isSubmittingRegistration
                     ? 'در حال ثبت در سرور ربات...'
-                    : referralCode.trim().startsWith('REF-')
-                    ? 'ورود به مینی‌اپ و دریافت ۱۰ امتیاز هدیه ✨'
-                    : 'ورود به مینی‌اپ و دریافت ۵ امتیاز ✨'}
+                    : 'تکمیل ثبت‌نام و ورود ✨'}
                 </PushButton>
               </div>
             </div>

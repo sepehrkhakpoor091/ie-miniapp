@@ -2,7 +2,7 @@ export type ThemeMode = 'night' | 'day';
 
 export type TabType = 'home' | 'achievements' | 'events' | 'profile';
 
-export type KycStatus = 'verified' | 'kyc_locked' | 'pending_review';
+export type KycStatus = 'verified' | 'required' | 'kyc_locked' | 'pending_review';
 
 export interface UserProfile {
   id: string;
@@ -355,6 +355,7 @@ export interface AdminStudentDossier {
   fullName: string;
   studentId: string;
   telegramUserId?: string;
+  telegramId?: string;
   cohortYear: '1400' | '1401' | '1402' | '1403' | '1404' | '1405' | 'سایر';
   phone: string;
   avatar?: string;
