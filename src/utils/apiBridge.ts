@@ -532,6 +532,14 @@ export async function fetchMiniAppBootstrap(
         ? rawOnlineUsers.length
         : undefined;
 
+    const rawChats = Array.isArray(json.supportTickets)
+      ? json.supportTickets
+      : Array.isArray(json.chats)
+      ? json.chats
+      : Array.isArray(rawRecord.tickets)
+      ? (rawRecord.tickets as SupportTicket[])
+      : undefined;
+
     return {
       ok: true,
       completedProfile: Boolean(
@@ -566,6 +574,8 @@ export async function fetchMiniAppBootstrap(
         : undefined,
       pendingApprovals: normalizedApprovals,
       receipts: normalizedApprovals,
+      supportTickets: rawChats ? normalizeSupportTicketsList(rawChats) : undefined,
+      chats: rawChats ? normalizeSupportTicketsList(rawChats) : undefined,
       allowStudentTimers:
         typeof json.allowStudentTimers === 'boolean' ? json.allowStudentTimers : undefined,
       siteSwitches: rawSiteSwitches,
@@ -1285,5 +1295,341 @@ export async function sendHeartbeatToBot(
     onlineUsers: list,
   };
 }
+
+export const SUPPORT_CHATS_STORAGE_KEY = 'ie_support_chats_catalog_v1';
+
+export function normalizeSupportTicket(raw: unknown, idx = 0): SupportTicket {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Partial<SupportTicket> &
+    Record<string, unknown>;
+  const rawCategory = String(obj.category || 'council').toLowerCase();
+  const category: SupportTicket['category'] =
+    rawCategory === 'tech'
+      ? 'tech'
+      : rawCategory === 'educational'
+      ? 'educational'
+      : rawCategory === 'direct'
+      ? 'direct'
+      : 'council';
+
+  const rawStatus = String(obj.status || 'open').toLowerCase();
+  const status: SupportTicket['status'] =
+    rawStatus === 'closed'
+      ? 'closed'
+      : rawStatus === 'answered'
+      ? 'answered'
+      : 'open';
+
+  const rawMsgs = Array.isArray(obj.messages) ? obj.messages : [];
+  const messages = rawMsgs
+    .filter((m) => m && typeof m === 'object')
+    .map((m, mIdx) => {
+      const msgObj = m as unknown as Record<string, unknown>;
+      const rawSender = String(
+        msgObj.sender || msgObj.senderRole || msgObj.role || 'user'
+      ).toLowerCase();
+      const isSupport =
+        rawSender === 'support' ||
+        rawSender === 'admin' ||
+        rawSender === 'bot' ||
+        rawSender.includes('ادمین') ||
+        rawSender.includes('پشتیبانی');
+      return {
+        id: String(msgObj.id || `msg-${idx}-${mIdx}`),
+        sender: (isSupport ? 'support' : 'user') as 'user' | 'support',
+        senderName: String(
+          msgObj.senderName ||
+            (isSupport ? 'پشتیبانی انجمن علمی صنایع' : obj.studentName || 'دانشجو')
+        ),
+        text: String(msgObj.text || msgObj.message || '').trim(),
+        time: String(
+          msgObj.time ||
+            msgObj.timestamp ||
+            new Date().toLocaleTimeString('fa-IR', {
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+        ),
+        date: String(
+          msgObj.date || new Date().toLocaleDateString('fa-IR')
+        ),
+      };
+    });
+
+  const resolvedId = String(obj.id || obj.ticketId || obj.chatId || `TKT-${1000 + idx}`);
+  return {
+    id: resolvedId,
+    chatId: resolvedId,
+    title: String(
+      obj.title || obj.subject || 'گفتگو با پشتیبانی انجمن علمی مهندسی صنایع'
+    ),
+    category,
+    status,
+    updatedAt: String(
+      obj.updatedAt ||
+        obj.lastUpdate ||
+        new Date().toLocaleDateString('fa-IR')
+    ),
+    createdAt: obj.createdAt ? String(obj.createdAt) : undefined,
+    studentId: obj.studentId ? String(obj.studentId) : undefined,
+    studentName: obj.studentName ? String(obj.studentName) : undefined,
+    telegramUserId: obj.telegramUserId
+      ? String(obj.telegramUserId)
+      : obj.telegramId
+      ? String(obj.telegramId)
+      : undefined,
+    cohortYear: obj.cohortYear ? String(obj.cohortYear) : undefined,
+    closedAt: obj.closedAt ? String(obj.closedAt) : undefined,
+    closedBy: obj.closedBy ? String(obj.closedBy) : undefined,
+    closedByAdmin: status === 'closed' || Boolean(obj.closedByAdmin),
+    messages,
+  };
+}
+
+export function normalizeSupportTicketsList(rawList: unknown): SupportTicket[] {
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .filter((item) => item && typeof item === 'object')
+    .map((item, idx) => normalizeSupportTicket(item, idx));
+}
+
+export function loadStoredSupportChats(): SupportTicket[] {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(SUPPORT_CHATS_STORAGE_KEY);
+      const parsed = safeJsonParse<unknown>(raw, []);
+      return normalizeSupportTicketsList(parsed);
+    }
+  } catch {
+    // Ignore
+  }
+  return [];
+}
+
+export function saveStoredSupportChats(chats: SupportTicket[]): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(
+        SUPPORT_CHATS_STORAGE_KEY,
+        JSON.stringify(normalizeSupportTicketsList(chats))
+      );
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+/**
+ * 19. GET ${BOT_WORKER_BASE_URL}/api/miniapp/my-chats
+ * Loads the student's list of chats/tickets and full message history.
+ */
+export async function fetchStudentChatsFromBot(
+  user?: Partial<UserProfile> | null,
+  timeoutMs = 5500
+): Promise<{ ok: boolean; chats: SupportTicket[] }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const tgUser = getRealTelegramUser();
+  const resolvedTgId =
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : user?.telegramUserId || '');
+  const cleanStudentId = (user?.studentId || '').trim();
+
+  try {
+    const queryParams = new URLSearchParams();
+    if (resolvedTgId) queryParams.set('telegramUserId', resolvedTgId);
+    if (cleanStudentId) queryParams.set('studentId', cleanStudentId);
+    queryParams.set('ts', String(Date.now()));
+    const url = `${getBotApiBaseUrl()}/api/miniapp/my-chats?${queryParams.toString()}`;
+
+    const response = await secureFetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        'X-Telegram-Init-Data': getTelegramInitDataRaw(),
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (response.ok) {
+      const text = await response.text();
+      const json = safeJsonParse<{
+        ok?: boolean;
+        chats?: unknown[];
+        tickets?: unknown[];
+        supportTickets?: unknown[];
+      } | null>(text, null);
+      const list = Array.isArray(json?.chats)
+        ? json!.chats
+        : Array.isArray(json?.tickets)
+        ? json!.tickets
+        : Array.isArray(json?.supportTickets)
+        ? json!.supportTickets
+        : undefined;
+      if (list) {
+        const normalized = normalizeSupportTicketsList(list);
+        return { ok: true, chats: normalized };
+      }
+    }
+  } catch {
+    clearTimeout(timer);
+  }
+  return { ok: false, chats: [] };
+}
+
+/**
+ * 20. POST ${BOT_WORKER_BASE_URL}/api/miniapp/chat-send
+ * Sends a student chat message or opens a new conversation when the chat is not closed (`status !== 'closed'`).
+ */
+export async function sendStudentChatMessageToBot(payload: {
+  ticketId?: string;
+  chatId?: string;
+  title: string;
+  category: SupportTicket['category'];
+  text: string;
+  user: UserProfile;
+  isNewTicket?: boolean;
+}): Promise<{ ok: boolean; ticket?: SupportTicket }> {
+  const tgUser = getRealTelegramUser();
+  const resolvedTgId =
+    tgUser?.id ||
+    (typeof window !== 'undefined' &&
+    window.Telegram?.WebApp?.initDataUnsafe?.user?.id
+      ? String(window.Telegram.WebApp.initDataUnsafe.user.id)
+      : payload.user.telegramUserId || '');
+
+  const nowTime = new Date().toLocaleTimeString('fa-IR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const nowDate = new Date().toLocaleDateString('fa-IR');
+  const resolvedChatId = payload.ticketId || payload.chatId || `TKT-${Date.now()}`;
+
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    ticket?: SupportTicket;
+    chat?: SupportTicket;
+  }>('/api/miniapp/chat-send', {
+    ticketId: resolvedChatId,
+    chatId: resolvedChatId,
+    id: resolvedChatId,
+    title: payload.title,
+    subject: payload.title,
+    category: payload.category,
+    text: payload.text,
+    message: payload.text,
+    isNewTicket: Boolean(payload.isNewTicket),
+    studentId: payload.user.studentId,
+    studentName: payload.user.fullName,
+    cohortYear: payload.user.cohortYear,
+    phone: payload.user.verifiedTelegramPhone,
+    telegramUserId: resolvedTgId,
+    time: nowTime,
+    date: nowDate,
+  });
+
+  const returnedTicket = res.data?.ticket || res.data?.chat;
+  return {
+    ok: res.ok,
+    ticket: returnedTicket ? normalizeSupportTicket(returnedTicket) : undefined,
+  };
+}
+
+/**
+ * 21. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-chat-send
+ * Allows Admin to send a reply or start a new direct chat with a student from MiniApp,
+ * saving it in the MiniApp chat history AND dispatching it to the student in Telegram.
+ */
+export async function sendAdminChatMessageToBot(payload: {
+  ticketId?: string;
+  chatId?: string;
+  targetUserId?: string;
+  title?: string;
+  studentId: string;
+  studentName: string;
+  telegramUserId?: string;
+  cohortYear?: string;
+  text: string;
+  adminName?: string;
+  adminTelegramId?: string;
+}): Promise<{ ok: boolean; ticket?: SupportTicket }> {
+  const nowTime = new Date().toLocaleTimeString('fa-IR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const nowDate = new Date().toLocaleDateString('fa-IR');
+  const resolvedChatId = payload.ticketId || payload.chatId || `TKT-${Date.now()}`;
+  const resolvedTargetTgId = payload.telegramUserId || payload.targetUserId;
+
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    ticket?: SupportTicket;
+    chat?: SupportTicket;
+  }>('/api/miniapp/admin-chat-send', {
+    ticketId: resolvedChatId,
+    chatId: resolvedChatId,
+    id: resolvedChatId,
+    targetUserId: resolvedTargetTgId || payload.studentId,
+    title: payload.title || `گفتگوی مستقیم مدیریت با ${payload.studentName}`,
+    studentId: payload.studentId,
+    studentName: payload.studentName,
+    telegramUserId: resolvedTargetTgId,
+    telegramId: resolvedTargetTgId,
+    cohortYear: payload.cohortYear || '1402',
+    text: payload.text,
+    message: payload.text,
+    sender: 'support',
+    senderName: payload.adminName || 'پشتیبانی انجمن علمی صنایع',
+    adminId: payload.adminTelegramId || MASTER_ADMIN_TELEGRAM_ID,
+    time: nowTime,
+    date: nowDate,
+  });
+
+  const returnedTicket = res.data?.ticket || res.data?.chat;
+  return {
+    ok: res.ok,
+    ticket: returnedTicket ? normalizeSupportTicket(returnedTicket) : undefined,
+  };
+}
+
+/**
+ * 22. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-chat-close
+ * Closes an active student-admin chat (`status: 'closed'`) so no further messages can be sent in that thread.
+ */
+export async function closeAdminChatOnBot(payload: {
+  ticketId?: string;
+  chatId?: string;
+  targetUserId?: string;
+  studentId?: string;
+  studentName?: string;
+  telegramUserId?: string;
+  adminName?: string;
+  adminTelegramId?: string;
+}): Promise<{ ok: boolean }> {
+  const resolvedChatId = payload.ticketId || payload.chatId || '';
+  const resolvedTargetTgId = payload.telegramUserId || payload.targetUserId;
+  const res = await postToMiniAppApi<{ ok: boolean }>(
+    '/api/miniapp/admin-chat-close',
+    {
+      ticketId: resolvedChatId,
+      chatId: resolvedChatId,
+      id: resolvedChatId,
+      targetUserId: resolvedTargetTgId || payload.studentId,
+      status: 'closed',
+      studentId: payload.studentId,
+      studentName: payload.studentName,
+      telegramUserId: resolvedTargetTgId,
+      closedBy: payload.adminName || 'مدیریت انجمن صنایع',
+      closedAt: new Date().toLocaleString('fa-IR'),
+      adminId: payload.adminTelegramId || MASTER_ADMIN_TELEGRAM_ID,
+    }
+  );
+  return {
+    ok: res.ok,
+  };
+}
+
 
 

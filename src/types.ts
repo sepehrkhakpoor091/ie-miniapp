@@ -76,14 +76,24 @@ export interface SupportTicketMessage {
   senderName: string;
   text: string;
   time: string;
+  date?: string;
 }
 
 export interface SupportTicket {
   id: string;
+  chatId?: string;
   title: string;
-  category: 'council' | 'tech' | 'educational';
+  category: 'council' | 'tech' | 'educational' | 'direct';
   status: 'open' | 'answered' | 'closed';
   updatedAt: string;
+  createdAt?: string;
+  studentId?: string;
+  studentName?: string;
+  telegramUserId?: string;
+  cohortYear?: string;
+  closedAt?: string;
+  closedBy?: string;
+  closedByAdmin?: boolean;
   messages: SupportTicketMessage[];
 }
 
@@ -111,6 +121,8 @@ export interface EventItem {
   date: string;
   time: string;
   location: string;
+  hasCapacityLimit?: boolean;
+  registeredCount?: number;
   capacityRemaining: number;
   capacityTotal: number;
   remainingCapacity?: number;
@@ -255,6 +267,8 @@ export interface BootstrapResponse {
   disputeTickets?: StudentIdDisputeTicket[];
   pendingApprovals?: AdminReceiptItem[];
   receipts?: AdminReceiptItem[];
+  supportTickets?: SupportTicket[];
+  chats?: SupportTicket[];
   allowStudentTimers?: boolean;
   siteSwitches?: Partial<SiteSwitches>;
   onlineCount?: number;
@@ -382,7 +396,8 @@ export interface AdminStudentDossier {
   attendedEvents: string[];
   badges: string[];
   payments: { title: string; amount: number; date: string; status: string }[];
-  chatLogs: { sender: string; text: string; time: string }[];
+  chatLogs: { sender: string; text: string; time: string; date?: string }[];
+  supportTickets?: SupportTicket[];
   referralCode?: string;
   referredBy?: string;
   referredCount?: number;

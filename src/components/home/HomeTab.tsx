@@ -18,7 +18,7 @@ import {
 import { PixelImage } from '../PixelImage';
 import { TactileCard } from '../ui/TactileCard';
 import { RollingNumber } from '../ui/RollingNumber';
-import { playTick, playCoin } from '../../utils/soundEngine';
+import { playTick, playCoin, playError } from '../../utils/soundEngine';
 import {
   DEFAULT_CHANNEL_URL,
   DEFAULT_ISEFUM_ANNOUNCEMENTS,
@@ -26,7 +26,7 @@ import {
   normalizeTelegramChannelHandle,
 } from '../../utils/channelSync';
 import { calculateLevelFromScore } from '../../utils/gamification';
-import { normalizeEvent } from '../../utils/events';
+import { isEventCapacityFull, normalizeEvent } from '../../utils/events';
 
 interface HomeTabProps {
   user: UserProfile;
@@ -122,12 +122,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   const activeFeaturedId = normalizedFeatured?.id || 'ev-project-mgmt';
   const activeFeaturedTitle = normalizedFeatured?.title || 'کارگاه مدیریت پروژه';
   const activeFeaturedDate = normalizedFeatured?.date || '۲۵ آبان ۱۴۰۴';
-  const activeFeaturedCap = Number(
-    normalizedFeatured?.remainingCapacity ??
-      normalizedFeatured?.capacityRemaining ??
-      normalizedFeatured?.capacity ??
-      45
-  );
+  const isFeaturedFull = isEventCapacityFull(normalizedFeatured);
 
   return (
     <div className="flex flex-col pb-24 lg:pb-10 select-none w-full">
@@ -559,7 +554,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             }}
             className="p-3.5 border-2 border-[#D4AB58]/60 flex items-center justify-between gap-3"
           >
-            <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
               <div className="w-12 h-12 rounded-2xl bg-[#354B40] border-2 border-[#D4AB58] flex items-center justify-center shrink-0 p-1.5 shadow">
                 <PixelImage
                   filename="20_badge_chart.png"
@@ -567,9 +562,9 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   className="w-full h-full object-contain"
                 />
               </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs lg:text-sm font-black truncate">
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs lg:text-sm font-black leading-snug whitespace-normal break-words">
                     🎓 چارت درسی و درخت پیش‌نیازها
                   </span>
                   <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-[#D4AB58] text-[#101622] shrink-0">
@@ -577,7 +572,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   </span>
                 </div>
                 <p
-                  className={`text-[11px] font-bold truncate mt-0.5 ${
+                  className={`text-[11px] font-bold leading-relaxed whitespace-normal break-words ${
                     isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                   }`}
                 >
@@ -595,10 +590,18 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           <div>
             <div
               onClick={() => {
+                if (isFeaturedFull) {
+                  playError();
+                  return;
+                }
                 playTick();
                 onOpenEventDetails(activeFeaturedId);
               }}
-              className={`rounded-2xl overflow-hidden border-2 border-b-[4px] relative cursor-pointer transition-all active:translate-y-[2px] active:border-b-[2px] h-[142px] lg:h-[168px] shadow-lg ${
+              className={`rounded-2xl overflow-hidden border-2 border-b-[4px] relative transition-all h-[142px] lg:h-[168px] shadow-lg ${
+                isFeaturedFull
+                  ? 'cursor-not-allowed opacity-90'
+                  : 'cursor-pointer active:translate-y-[2px] active:border-b-[2px]'
+              } ${
                 isNight
                   ? 'border-[#2C3E4C] border-b-[#182232]'
                   : 'border-[#C8BFA8] border-b-[#B5AA96]'
@@ -616,10 +619,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
               {/* Text Container placed on the LEFT 58% of the card */}
               <div className="absolute inset-y-0 left-0 w-[58%] p-3.5 lg:p-5 flex flex-col justify-between text-right text-[#F6F1E7]">
-                <div className="flex justify-start">
+                <div className="flex justify-start items-center gap-1.5">
                   <span className="px-2.5 py-0.5 rounded-full bg-[#E77F6E] text-[#101622] text-[10px] font-black shadow-sm">
                     رویداد ویژه
                   </span>
+                  {isFeaturedFull && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-rose-800 text-rose-100 text-[10px] font-black shadow-sm">
+                      🔒 تکمیل ظرفیت
+                    </span>
+                  )}
                 </div>
 
                 <div className="space-y-1">
@@ -629,9 +637,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   <p className="text-xs font-bold text-[#F6F1E7]/95 drop-shadow">
                     {activeFeaturedDate}
                   </p>
-                  <p className="text-[11px] font-extrabold text-[#FCE7A4] drop-shadow">
-                    ظرفیت باقی‌مانده: {activeFeaturedCap.toLocaleString('fa-IR')} نفر
-                  </p>
+                  {isFeaturedFull ? (
+                    <p className="text-[11px] font-extrabold text-rose-300 drop-shadow">
+                      🔒 تکمیل ظرفیت
+                    </p>
+                  ) : (
+                    <p className="text-[11px] font-extrabold text-[#FCE7A4] drop-shadow">
+                      ثبت‌نام و دریافت بلیط ←
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

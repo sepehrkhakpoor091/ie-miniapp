@@ -32,6 +32,7 @@ import {
   Professor,
   ScheduledTimer,
   StudentIdDisputeTicket,
+  SupportTicket,
   TabType,
   ThemeMode,
   TicketRecord,
@@ -77,12 +78,21 @@ import {
   INITIAL_WEEKLY_QUESTS,
   calculateLevelFromScore,
 } from './utils/gamification';
-import { EVENTS_DATA, normalizeEvent, normalizeEventsList } from './utils/events';
+import {
+  EVENTS_DATA,
+  decrementEventCapacityOnRegistration,
+  normalizeEvent,
+  normalizeEventsList,
+} from './utils/events';
 import {
   BOT_WORKER_BASE_URL,
   fetchMiniAppBootstrap,
   getLocalSiteSwitchesOverride,
+  loadStoredSupportChats,
+  normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
+  saveEventsOnBot,
+  saveStoredSupportChats,
   sendHeartbeatToBot,
   syncUserProfileToBot,
 } from './utils/apiBridge';
@@ -216,6 +226,9 @@ export default function App() {
   const [lootboxConfig, setLootboxConfig] =
     useState<LootboxConfig>(DEFAULT_LOOTBOX_CONFIG);
   const [disputeTickets, setDisputeTickets] = useState<StudentIdDisputeTicket[]>([]);
+  const [supportTicketsCatalog, setSupportTicketsCatalog] = useState<SupportTicket[]>(
+    () => loadStoredSupportChats()
+  );
   const [announcementsCatalog, setAnnouncementsCatalog] = useState<ChannelAnnouncement[]>(
     () => loadStoredAnnouncements()
   );
@@ -804,6 +817,14 @@ export default function App() {
           if (!locEv) return normSrv;
           return normalizeEvent({
             ...normSrv,
+            hasCapacityLimit:
+              (srvEv as Partial<EventItem>)?.hasCapacityLimit !== undefined
+                ? normSrv.hasCapacityLimit
+                : locEv.hasCapacityLimit,
+            registeredCount:
+              (srvEv as Partial<EventItem>)?.registeredCount !== undefined
+                ? normSrv.registeredCount
+                : locEv.registeredCount,
             allowPointsDiscount:
               (srvEv as Partial<EventItem>)?.allowPointsDiscount !== undefined
                 ? normSrv.allowPointsDiscount
@@ -891,7 +912,7 @@ export default function App() {
     }
 
     const serverApprovals = boot.pendingApprovals || boot.receipts;
-    if (Array.isArray(serverApprovals) && serverApprovals.length > 0) {
+    if (Array.isArray(serverApprovals)) {
       for (const item of serverApprovals) {
         if (item && item.id) {
           const isKycItem =
@@ -942,6 +963,37 @@ export default function App() {
         const mergedReceipts = Array.from(map.values());
         localStorage.setItem(RECEIPTS_STORAGE_KEY, JSON.stringify(mergedReceipts));
         return mergedReceipts;
+      });
+    }
+
+    const serverSupportChats = boot.supportTickets || boot.chats;
+    if (Array.isArray(serverSupportChats)) {
+      const normalizedServerChats = normalizeSupportTicketsList(serverSupportChats);
+      setSupportTicketsCatalog((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const map = new Map<string, SupportTicket>();
+        for (const sc of normalizedServerChats) {
+          map.set(sc.id, sc);
+        }
+        for (const loc of safePrev) {
+          if (!map.has(loc.id)) {
+            map.set(loc.id, loc);
+          } else {
+            const srv = map.get(loc.id)!;
+            const msgMap = new Map<string, SupportTicket['messages'][number]>();
+            for (const m of [...(loc.messages || []), ...(srv.messages || [])]) {
+              msgMap.set(m.id, m);
+            }
+            map.set(loc.id, {
+              ...loc,
+              ...srv,
+              messages: Array.from(msgMap.values()),
+            });
+          }
+        }
+        const mergedChats = Array.from(map.values());
+        saveStoredSupportChats(mergedChats);
+        return mergedChats;
       });
     }
 
@@ -1023,11 +1075,13 @@ export default function App() {
 
   const handleSyncWithBotServer = refreshFromServer;
 
-  // Live 5-second background polling + window focus/visibility sync so KYC images & bot approvals update immediately
+  // Live 20-second background polling (only when tab is visible) + window focus/visibility sync for Cloudflare Quota Optimization
   useEffect(() => {
     const interval = setInterval(() => {
-      void refreshFromServer();
-    }, 5000);
+      if (document.visibilityState === 'visible') {
+        void refreshFromServer();
+      }
+    }, 20000);
     const onFocusOrVisible = () => {
       if (document.visibilityState === 'visible') {
         void handleSyncWithBotServer();
@@ -1294,6 +1348,19 @@ export default function App() {
     setAllTickets(updatedTickets);
     localStorage.setItem(TICKETS_STORAGE_KEY, JSON.stringify(updatedTickets));
 
+    // Decrement workshop remaining capacity if hasCapacityLimit is enabled
+    if (ticket.eventId) {
+      setEventsCatalog((prev) => {
+        const updatedEvents = decrementEventCapacityOnRegistration(
+          Array.isArray(prev) ? prev : [],
+          ticket.eventId
+        );
+        localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(updatedEvents));
+        void saveEventsOnBot(updatedEvents);
+        return updatedEvents;
+      });
+    }
+
     if (pointsDeducted > 0) {
       appendTransaction({
         id: `tx-disc-${Date.now()}`,
@@ -1505,6 +1572,11 @@ export default function App() {
             discountRule={discountRule}
             lootboxConfig={lootboxConfig}
             disputeTickets={disputeTickets}
+            supportTickets={supportTicketsCatalog}
+            onUpdateSupportTickets={(nextChats) => {
+              setSupportTicketsCatalog(nextChats);
+              saveStoredSupportChats(nextChats);
+            }}
             announcements={announcementsCatalog}
             channelUrl={officialChannelUrl}
             featuredEventId={featuredEventId}
@@ -1931,6 +2003,11 @@ export default function App() {
           themeMode={themeMode}
           user={user}
           certificates={certificates}
+          supportTickets={supportTicketsCatalog}
+          onUpdateSupportTickets={(nextChats) => {
+            setSupportTicketsCatalog(nextChats);
+            saveStoredSupportChats(nextChats);
+          }}
           supportTicketsEnabled={featureFlags.supportTicketsEnabled}
           onTriggerStealthAdmin={() => setIsAdminVaultOpen(true)}
         />

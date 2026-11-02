@@ -10,12 +10,13 @@ import { EventCategory, EventItem, EventSortOption, ThemeMode } from '../../type
 import {
   EVENTS_DATA,
   filterAndSortEvents,
+  isEventCapacityFull,
   normalizeEvent,
   normalizeEventsList,
 } from '../../utils/events';
 import { PixelImage } from '../PixelImage';
 import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
-import { playTick, playCoin } from '../../utils/soundEngine';
+import { playTick, playCoin, playError } from '../../utils/soundEngine';
 import { ChevronRight, Filter, Search, X } from 'lucide-react';
 
 interface EventsTabProps {
@@ -186,46 +187,35 @@ export const EventsTab: React.FC<EventsTabProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {(displayedEvents || []).map((rawEvent, index) => {
               const event = normalizeEvent(rawEvent, index);
-              const totalCap = Number(
-                event.totalCapacity || event.capacityTotal || event.capacity || 40
-              );
-              const remCap = Number(
-                event.remainingCapacity ??
-                  event.capacityRemaining ??
-                  event.capacity ??
-                  totalCap
-              );
-              const rating = Number(event.rating || 4.9).toFixed(1);
+              const isFull = isEventCapacityFull(event);
 
               return (
                 <div
                   key={event.id}
                   onClick={() => {
+                    if (isFull) {
+                      playError();
+                      return;
+                    }
                     playTick();
                     onSelectEventForCheckout(event);
                   }}
                   style={{ animationDelay: `${index * 60}ms` }}
-                  className={`rounded-2xl p-3.5 border-2 border-b-[4px] transition-all duration-150 flex items-center gap-3.5 shadow-md cursor-pointer ${
+                  className={`rounded-2xl p-3.5 border-2 border-b-[4px] transition-all duration-150 flex items-center gap-3.5 shadow-md ${
+                    isFull ? 'cursor-not-allowed opacity-90' : 'cursor-pointer'
+                  } ${
                     isNight
                       ? 'bg-[#1A2424] border-[#2C3E4C] border-b-[#141C1C] text-[#F6F1E7]'
                       : 'bg-[#FFFFFF] border-[#C8BFA8] border-b-[#B5AA94] text-[#14201B]'
                   }`}
                 >
-                  {/* Left Column: Pixel Art Thumbnail + Star Pill */}
+                  {/* Left Column: Pixel Art Thumbnail */}
                   <div className="w-[100px] h-[100px] rounded-xl overflow-hidden relative shrink-0 shadow-sm border border-white/10 bg-black/30 flex items-center justify-center">
                     <PixelImage
                       filename={event.imageFilename || event.image || '12_event_python.png'}
                       alt={event.title}
                       className="w-full h-full object-cover"
                     />
-
-                    {/* Star Rating Floating Pill on bottom of thumbnail */}
-                    <div
-                      className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-[#101622]/90 backdrop-blur-sm text-[#F6F1E7] text-[10px] font-extrabold flex items-center gap-1 border border-white/10"
-                      dir="ltr"
-                    >
-                      <span className="text-[#D4AB58]">{rating} ★</span>
-                    </div>
                   </div>
 
                   {/* Right Column: Typography + 3D Register Pill */}
@@ -244,27 +234,41 @@ export const EventsTab: React.FC<EventsTabProps> = ({
                         }`}
                       >
                         <div>{event.date}</div>
-                        <div>ظرفیت: {remCap} نفر</div>
+                        <div className="truncate">{event.location}</div>
                       </div>
                     </div>
 
-                    {/* 3D Pushable Register Button */}
+                    {/* 3D Pushable Register Button (or 🔒 تکمیل ظرفیت when full) */}
                     <div className="flex justify-end pt-1">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          playTick();
-                          onSelectEventForCheckout(event);
-                        }}
-                        className={`rounded-full py-1 px-5 text-xs font-black transition-all duration-75 cursor-pointer border-b-[3px] active:translate-y-[2px] active:border-b-[1px] shadow-sm ${
-                          isNight
-                            ? 'bg-[#7FB69E] text-[#101622] hover:bg-[#8EC2AB] border-[#4F7CAC]'
-                            : 'bg-[#354B40] text-[#F6F1E7] hover:bg-[#3E584B] border-[#1F2E27]'
-                        }`}
-                      >
-                        ثبت نام
-                      </button>
+                      {isFull ? (
+                        <button
+                          type="button"
+                          disabled
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            playError();
+                          }}
+                          className="rounded-full py-1 px-4 text-xs font-black bg-rose-900/80 text-rose-200 border border-rose-500/40 cursor-not-allowed"
+                        >
+                          🔒 تکمیل ظرفیت
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            playTick();
+                            onSelectEventForCheckout(event);
+                          }}
+                          className={`rounded-full py-1 px-5 text-xs font-black transition-all duration-75 cursor-pointer border-b-[3px] active:translate-y-[2px] active:border-b-[1px] shadow-sm ${
+                            isNight
+                              ? 'bg-[#7FB69E] text-[#101622] hover:bg-[#8EC2AB] border-[#4F7CAC]'
+                              : 'bg-[#354B40] text-[#F6F1E7] hover:bg-[#3E584B] border-[#1F2E27]'
+                          }`}
+                        >
+                          ثبت نام
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -314,7 +318,6 @@ export const EventsTab: React.FC<EventsTabProps> = ({
               {[
                 { id: 'newest', label: 'جدیدترین رویدادها' },
                 { id: 'points', label: 'بیشترین امتیاز جایزه 💎' },
-                { id: 'capacity', label: 'کمترین ظرفیت باقیمانده' },
               ].map((opt) => (
                 <button
                   key={opt.id}

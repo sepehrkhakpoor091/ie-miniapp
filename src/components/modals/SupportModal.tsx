@@ -12,7 +12,14 @@ import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
 import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 import { playCoin, playError, playFanfare, playTick } from '../../utils/soundEngine';
-import { submitSupportTicketToBot } from '../../utils/apiBridge';
+import {
+  fetchStudentChatsFromBot,
+  loadStoredSupportChats,
+  normalizeSupportTicketsList,
+  saveStoredSupportChats,
+  sendStudentChatMessageToBot,
+  submitSupportTicketToBot,
+} from '../../utils/apiBridge';
 import { getScopedStorageKey, safeJsonParse } from '../../utils/security';
 import {
   X,
@@ -24,6 +31,7 @@ import {
   Calendar,
   ShieldCheck,
   Plus,
+  Lock,
 } from 'lucide-react';
 
 interface SupportModalProps {
@@ -32,6 +40,8 @@ interface SupportModalProps {
   themeMode: ThemeMode;
   user?: UserProfile;
   certificates?: CertificateInfo[];
+  supportTickets?: SupportTicket[];
+  onUpdateSupportTickets?: (nextTickets: SupportTicket[]) => void;
   supportTicketsEnabled?: boolean;
   onTriggerStealthAdmin?: () => void;
 }
@@ -59,12 +69,63 @@ const VERIFIED_CERTIFICATES: Record<string, CertificateInfo> = {
   },
 };
 
+function belongsToCurrentStudent(ticket: SupportTicket, user?: UserProfile): boolean {
+  if (!user) return true;
+  if (!ticket.studentId && !ticket.telegramUserId) return true;
+  if (user.studentId && ticket.studentId && ticket.studentId === user.studentId) {
+    return true;
+  }
+  if (
+    user.telegramUserId &&
+    ticket.telegramUserId &&
+    String(ticket.telegramUserId) === String(user.telegramUserId)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function mergeTicketCollections(lists: SupportTicket[][]): SupportTicket[] {
+  const map = new Map<string, SupportTicket>();
+  for (const list of lists) {
+    for (const rawItem of Array.isArray(list) ? list : []) {
+      if (!rawItem || !rawItem.id) continue;
+      const existing = map.get(rawItem.id);
+      if (!existing) {
+        map.set(rawItem.id, rawItem);
+      } else {
+        // Merge messages uniquely and prefer closed status if closed by admin
+        const msgMap = new Map<string, SupportTicket['messages'][number]>();
+        for (const m of [...(existing.messages || []), ...(rawItem.messages || [])]) {
+          if (m && m.id) {
+            msgMap.set(m.id, m);
+          }
+        }
+        map.set(rawItem.id, {
+          ...existing,
+          ...rawItem,
+          status:
+            rawItem.status === 'closed' || existing.status === 'closed'
+              ? 'closed'
+              : rawItem.status === 'answered' || existing.status === 'answered'
+              ? 'answered'
+              : 'open',
+          messages: Array.from(msgMap.values()),
+        });
+      }
+    }
+  }
+  return Array.from(map.values());
+}
+
 export const SupportModal: React.FC<SupportModalProps> = ({
   isOpen,
   onClose,
   themeMode,
   user,
   certificates = [],
+  supportTickets = [],
+  onUpdateSupportTickets,
   supportTicketsEnabled = true,
   onTriggerStealthAdmin,
 }) => {
@@ -79,30 +140,42 @@ export const SupportModal: React.FC<SupportModalProps> = ({
   const [tickets, setTickets] = useState<SupportTicket[]>(() => {
     try {
       const raw = localStorage.getItem(userTicketsStorageKey);
-      if (raw) {
-        const parsed = safeJsonParse<SupportTicket[]>(raw, []);
-        return Array.isArray(parsed) ? parsed : [];
-      }
+      const localUserList = raw ? safeJsonParse<SupportTicket[]>(raw, []) : [];
+      const globalShared = loadStoredSupportChats().filter((t) =>
+        belongsToCurrentStudent(t, user)
+      );
+      const fromProps = (Array.isArray(supportTickets) ? supportTickets : []).filter((t) =>
+        belongsToCurrentStudent(t, user)
+      );
+      return mergeTicketCollections([fromProps, globalShared, localUserList]);
     } catch {
-      // Ignore storage error
+      return [];
     }
-    return [];
   });
   const [selectedTicketId, setSelectedTicketId] = useState<string>('');
   const [newReplyText, setNewReplyText] = useState('');
   const [showNewTicketModal, setShowNewTicketModal] = useState(false);
   const [newTicketTitle, setNewTicketTitle] = useState('');
   const [newTicketMessage, setNewTicketMessage] = useState('');
+  const [isSendingChat, setIsSendingChat] = useState(false);
 
   useEffect(() => {
+    if (!isOpen) return;
     try {
       const raw = localStorage.getItem(userTicketsStorageKey);
       const parsed = raw ? safeJsonParse<SupportTicket[]>(raw, []) : [];
-      const safeList = Array.isArray(parsed) ? parsed : [];
-      setTickets(safeList);
-      if (safeList.length > 0) {
+      const safeLocal = Array.isArray(parsed) ? parsed : [];
+      const globalShared = loadStoredSupportChats().filter((t) =>
+        belongsToCurrentStudent(t, user)
+      );
+      const fromProps = (Array.isArray(supportTickets) ? supportTickets : []).filter((t) =>
+        belongsToCurrentStudent(t, user)
+      );
+      const merged = mergeTicketCollections([fromProps, globalShared, safeLocal]);
+      setTickets(merged);
+      if (merged.length > 0) {
         setSelectedTicketId((prev) =>
-          safeList.some((t) => t.id === prev) ? prev : safeList[0].id
+          merged.some((t) => t.id === prev) ? prev : merged[0].id
         );
       } else {
         setSelectedTicketId('');
@@ -110,7 +183,40 @@ export const SupportModal: React.FC<SupportModalProps> = ({
     } catch {
       setTickets([]);
     }
-  }, [userTicketsStorageKey, isOpen]);
+  }, [userTicketsStorageKey, isOpen, supportTickets, user?.studentId, user?.telegramUserId]);
+
+  useEffect(() => {
+    if (!isOpen || !user) return;
+    let cancelled = false;
+    void fetchStudentChatsFromBot(user).then((res) => {
+      if (cancelled || !Array.isArray(res.chats) || res.chats.length === 0) return;
+      const myServerChats = normalizeSupportTicketsList(res.chats).filter((t) =>
+        belongsToCurrentStudent(t, user)
+      );
+      if (myServerChats.length === 0) return;
+      setTickets((prev) => {
+        const merged = mergeTicketCollections([myServerChats, prev]);
+        try {
+          localStorage.setItem(userTicketsStorageKey, JSON.stringify(merged));
+        } catch {
+          // Ignore storage error
+        }
+        const allGlobal = mergeTicketCollections([
+          myServerChats,
+          loadStoredSupportChats(),
+        ]);
+        saveStoredSupportChats(allGlobal);
+        onUpdateSupportTickets?.(allGlobal);
+        return merged;
+      });
+      setSelectedTicketId((prev) =>
+        prev ? prev : myServerChats[0]?.id || ''
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, user?.studentId, user?.telegramUserId]);
 
   const persistUserTickets = (nextTickets: SupportTicket[]) => {
     setTickets(nextTickets);
@@ -119,6 +225,12 @@ export const SupportModal: React.FC<SupportModalProps> = ({
     } catch {
       // Ignore storage error
     }
+    const allGlobal = mergeTicketCollections([
+      nextTickets,
+      loadStoredSupportChats(),
+    ]);
+    saveStoredSupportChats(allGlobal);
+    onUpdateSupportTickets?.(allGlobal);
   };
 
   const [certQuery, setCertQuery] = useState('');
@@ -143,7 +255,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
     setCertQuery(val);
   };
 
-  const handleSendReply = (e: React.FormEvent) => {
+  const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newReplyText.trim().toLowerCase();
     if (trimmed === '#admin' || trimmed === '/admin') {
@@ -153,31 +265,59 @@ export const SupportModal: React.FC<SupportModalProps> = ({
       onTriggerStealthAdmin?.();
       return;
     }
-    if (!newReplyText.trim() || !currentTicket) return;
+    if (!newReplyText.trim() || !currentTicket || currentTicket.status === 'closed' || isSendingChat) {
+      return;
+    }
 
     playTick();
+    setIsSendingChat(true);
+    const nowDate = new Date().toLocaleDateString('fa-IR');
+    const nowTime = new Date().toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const messageText = newReplyText.trim();
     const newMsg = {
       id: `m-${Date.now()}`,
       sender: 'user' as const,
       senderName: user?.fullName || 'دانشجو',
-      text: newReplyText.trim(),
-      time: 'هم‌اکنون',
+      text: messageText,
+      time: nowTime,
+      date: nowDate,
+    };
+
+    const updatedTicket: SupportTicket = {
+      ...currentTicket,
+      studentId: currentTicket.studentId || user?.studentId || '',
+      studentName: currentTicket.studentName || user?.fullName || 'دانشجو',
+      telegramUserId: currentTicket.telegramUserId || user?.telegramUserId,
+      cohortYear: currentTicket.cohortYear || user?.cohortYear,
+      messages: [...currentTicket.messages, newMsg],
+      updatedAt: `${nowDate} ساعت ${nowTime}`,
     };
 
     const nextTickets = tickets.map((t) =>
-      t.id === currentTicket.id
-        ? {
-            ...t,
-            messages: [...t.messages, newMsg],
-            updatedAt: 'هم‌اکنون',
-          }
-        : t
+      t.id === currentTicket.id ? updatedTicket : t
     );
     persistUserTickets(nextTickets);
     setNewReplyText('');
+
+    try {
+      if (user) {
+        await sendStudentChatMessageToBot({
+          chatId: updatedTicket.id,
+          title: updatedTicket.title,
+          category: updatedTicket.category,
+          text: messageText,
+          user,
+        });
+      }
+    } finally {
+      setIsSendingChat(false);
+    }
   };
 
-  const handleCreateNewTicket = (e: React.FormEvent) => {
+  const handleCreateNewTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedTitle = newTicketTitle.trim().toLowerCase();
     const trimmedMsg = newTicketMessage.trim().toLowerCase();
@@ -194,22 +334,34 @@ export const SupportModal: React.FC<SupportModalProps> = ({
       onTriggerStealthAdmin?.();
       return;
     }
-    if (!newTicketTitle.trim() || !newTicketMessage.trim()) return;
+    if (!newTicketTitle.trim() || !newTicketMessage.trim() || isSendingChat) return;
 
     playFanfare();
+    setIsSendingChat(true);
+    const nowDate = new Date().toLocaleDateString('fa-IR');
+    const nowTime = new Date().toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
     const newTicket: SupportTicket = {
       id: `TK-${Math.floor(1000 + Math.random() * 9000)}`,
       title: newTicketTitle.trim(),
       category: 'council',
       status: 'open',
-      updatedAt: 'هم‌اکنون',
+      createdAt: `${nowDate} ساعت ${nowTime}`,
+      updatedAt: `${nowDate} ساعت ${nowTime}`,
+      studentId: user?.studentId || '',
+      studentName: user?.fullName || 'دانشجو',
+      telegramUserId: user?.telegramUserId,
+      cohortYear: user?.cohortYear,
       messages: [
         {
           id: `m-${Date.now()}`,
           sender: 'user',
           senderName: user?.fullName || 'دانشجو',
           text: newTicketMessage.trim(),
-          time: 'هم‌اکنون',
+          time: nowTime,
+          date: nowDate,
         },
       ],
     };
@@ -221,8 +373,21 @@ export const SupportModal: React.FC<SupportModalProps> = ({
     setNewTicketTitle('');
     setNewTicketMessage('');
 
-    if (user) {
-      void submitSupportTicketToBot(newTicket, user);
+    try {
+      if (user) {
+        await Promise.allSettled([
+          submitSupportTicketToBot(newTicket, user),
+          sendStudentChatMessageToBot({
+            chatId: newTicket.id,
+            title: newTicket.title,
+            category: newTicket.category,
+            text: newTicket.messages[0].text,
+            user,
+          }),
+        ]);
+      }
+    } finally {
+      setIsSendingChat(false);
     }
   };
 
@@ -447,7 +612,12 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                             : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
                         }`}
                       >
-                        {t.id} {t.status === 'answered' ? '✓' : '•'}
+                        {t.id}{' '}
+                        {t.status === 'closed'
+                          ? '🔒'
+                          : t.status === 'answered'
+                          ? '✓'
+                          : '•'}
                       </button>
                     ))}
                   </div>
@@ -459,7 +629,7 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                     }}
                     className="px-2.5 py-1 rounded-xl bg-[#D4AB58] hover:bg-[#DDB669] text-[#101622] font-black text-[11px] whitespace-nowrap flex-shrink-0 cursor-pointer"
                   >
-                    + تیکت جدید
+                    + گفتگوی جدید
                   </button>
                 </div>
 
@@ -467,37 +637,47 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                   <span className="font-black truncate">{currentTicket.title}</span>
                   <span
                     className={`px-2 py-0.5 rounded text-[10px] font-black ${
-                      currentTicket.status === 'answered'
+                      currentTicket.status === 'closed'
+                        ? 'bg-rose-950 text-rose-300 border border-rose-800'
+                        : currentTicket.status === 'answered'
                         ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
                         : 'bg-amber-950 text-amber-300 border border-amber-800'
                     }`}
                   >
-                    {currentTicket.status === 'answered' ? 'پاسخ داده شده' : 'در انتظار بررسی'}
+                    {currentTicket.status === 'closed'
+                      ? '🔒 بسته شده توسط ادمین'
+                      : currentTicket.status === 'answered'
+                      ? 'پاسخ داده شده ✓'
+                      : 'در انتظار بررسی ⏳'}
                   </span>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                <div className="flex-1 overflow-y-auto p-4 space-y-3" dir="rtl">
                   {currentTicket.messages.map((msg) => {
                     const isUser = msg.sender === 'user';
                     return (
                       <div
                         key={msg.id}
-                        className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+                        className={`flex flex-col ${isUser ? 'items-start' : 'items-end'}`}
                       >
                         <div
                           className={`text-[10px] font-bold px-1 mb-1 ${
                             isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                           }`}
                         >
-                          {msg.senderName} • {msg.time}
+                          {isUser
+                            ? `شما (${msg.senderName || user?.fullName || 'دانشجو'})`
+                            : `👨‍💼 ${msg.senderName || 'پشتیبانی انجمن علمی صنایع'}`}{' '}
+                          • {msg.date ? `${msg.date} ساعت ` : ''}
+                          {msg.time}
                         </div>
                         <div
                           className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed font-medium ${
                             isUser
-                              ? 'bg-[#354B40] text-[#F6F1E7] rounded-tl-sm'
+                              ? 'bg-[#354B40] text-[#F6F1E7] rounded-tr-sm border border-[#7FB69E]/40'
                               : isNight
-                              ? 'bg-white/10 border border-white/10 text-[#F6F1E7] rounded-tr-sm'
-                              : 'bg-[#EAE3D2] border border-[#C8BFA8] text-[#14201B] rounded-tr-sm'
+                              ? 'bg-[#1D2B3A] border border-[#D4AB58]/40 text-[#F6F1E7] rounded-tl-sm'
+                              : 'bg-[#EAE3D2] border border-[#8F6B24]/40 text-[#14201B] rounded-tl-sm'
                           }`}
                         >
                           {msg.text}
@@ -507,31 +687,50 @@ export const SupportModal: React.FC<SupportModalProps> = ({
                   })}
                 </div>
 
-                <form
-                  onSubmit={handleSendReply}
-                  className="p-3 border-t border-current/10 flex items-center gap-2 bg-black/15"
-                >
-                  <input
-                    type="text"
-                    value={newReplyText}
-                    onChange={(e) => setNewReplyText(e.target.value)}
-                    placeholder="پاسخ خود را بنویسید..."
-                    className={`flex-1 px-3 py-2 rounded-xl text-xs border focus:outline-none ${
-                      isNight
-                        ? 'bg-[#101622] border-[#2C3E4C] text-[#F6F1E7]'
-                        : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B]'
-                    }`}
-                  />
-                  <PushButton
-                    type="submit"
-                    variant="gold"
-                    size="sm"
-                    disabled={!newReplyText.trim()}
-                    icon={<Send className="w-3.5 h-3.5 rotate-180" />}
+                {currentTicket.status === 'closed' ? (
+                  <div className="p-3.5 border-t border-rose-500/30 bg-rose-950/30 flex flex-col sm:flex-row items-center justify-between gap-2.5 text-xs">
+                    <div className="flex items-center gap-1.5 font-black text-rose-300">
+                      <Lock className="w-4 h-4 shrink-0" />
+                      <span>🔒 این گفتگو توسط ادمین بسته شده است</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playTick();
+                        setShowNewTicketModal(true);
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-[#D4AB58] hover:bg-[#DDB669] text-[#101622] font-black text-xs cursor-pointer shadow shrink-0"
+                    >
+                      ➕ شروع گفتگوی جدید
+                    </button>
+                  </div>
+                ) : (
+                  <form
+                    onSubmit={handleSendReply}
+                    className="p-3 border-t border-current/10 flex items-center gap-2 bg-black/15"
                   >
-                    ارسال
-                  </PushButton>
-                </form>
+                    <input
+                      type="text"
+                      value={newReplyText}
+                      onChange={(e) => setNewReplyText(e.target.value)}
+                      placeholder="پیام خود را بنویسید..."
+                      className={`flex-1 px-3 py-2 rounded-xl text-xs border focus:outline-none ${
+                        isNight
+                          ? 'bg-[#101622] border-[#2C3E4C] text-[#F6F1E7]'
+                          : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B]'
+                      }`}
+                    />
+                    <PushButton
+                      type="submit"
+                      variant="gold"
+                      size="sm"
+                      disabled={!newReplyText.trim() || isSendingChat}
+                      icon={<Send className="w-3.5 h-3.5 rotate-180" />}
+                    >
+                      {isSendingChat ? '...' : 'ارسال'}
+                    </PushButton>
+                  </form>
+                )}
               </div>
             )}
           </div>

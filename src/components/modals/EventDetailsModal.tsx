@@ -6,10 +6,10 @@
 
 import React, { useRef, useState } from 'react';
 import { EventItem, ThemeMode } from '../../types';
-import { EVENTS_DATA, normalizeEvent } from '../../utils/events';
+import { EVENTS_DATA, isEventCapacityFull, normalizeEvent } from '../../utils/events';
 import { PixelImage } from '../PixelImage';
 import { PushButton } from '../ui/PushButton';
-import { playFanfare, playTick } from '../../utils/soundEngine';
+import { playError, playFanfare, playTick } from '../../utils/soundEngine';
 import {
   X,
   Calendar,
@@ -51,12 +51,13 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
     (EVENTS_DATA || []).find((e) => e.id === eventId) ||
     EVENTS_DATA[0];
   const event = normalizeEvent(matchedRaw);
-  const totalCap = Number(event.totalCapacity || event.capacityTotal || event.capacity || 40);
-  const remCap = Number(
-    event.remainingCapacity ?? event.capacityRemaining ?? event.capacity ?? totalCap
-  );
+  const isFull = isEventCapacityFull(event);
 
   const handleRegister = () => {
+    if (isFull) {
+      playError();
+      return;
+    }
     if (inFlightRequestRef.current || isSubmitting || isRegistered) return;
     inFlightRequestRef.current = true;
     setIsSubmitting(true);
@@ -132,8 +133,8 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
             <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
               <Users className="w-4 h-4 text-[#91B5BE]" />
               <div>
-                <span className="opacity-60 block text-[10px]">ظرفیت باقیمانده:</span>
-                <span className="font-bold text-emerald-400">ظرفیت: {remCap} نفر</span>
+                <span className="opacity-60 block text-[10px]">مدرس دوره:</span>
+                <span className="font-bold text-emerald-400">{event.instructor}</span>
               </div>
             </div>
           </div>
@@ -176,6 +177,16 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
                 <span>کد بلیط: TKT-IE-4029</span>
               </div>
             </div>
+          ) : isFull ? (
+            <PushButton
+              variant="secondary"
+              size="lg"
+              fullWidth
+              disabled
+              onClick={() => playError()}
+            >
+              🔒 تکمیل ظرفیت
+            </PushButton>
           ) : (
             <PushButton
               variant="gold"

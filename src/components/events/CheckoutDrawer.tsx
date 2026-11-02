@@ -18,6 +18,7 @@ import {
   calculateFinalPayable,
   formatToman,
   generateTicketPayload,
+  isEventCapacityFull,
   normalizeEvent,
   resolveEventDiscountRule,
 } from '../../utils/events';
@@ -78,7 +79,6 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   const isNight = themeMode === 'night';
 
   const [step, setStep] = useState<'checkout' | 'success'>('checkout');
-  const [userRating, setUserRating] = useState<number>(5);
   const [pointsToRedeem, setPointsToRedeem] = useState<number>(0);
   const [isDiamondShaking, setIsDiamondShaking] = useState(false);
 
@@ -103,6 +103,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   if (!isOpen || !rawEvent) return null;
 
   const event = normalizeEvent(rawEvent);
+  const isFull = isEventCapacityFull(event);
   const effectiveRule = resolveEventDiscountRule(event, discountRule);
 
   const { discountAmount, finalPrice, pointsUsed, discountCode } = calculateFinalPayable(
@@ -171,6 +172,10 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   };
 
   const handleConfirmOrder = async () => {
+    if (isFull) {
+      playError();
+      return;
+    }
     if (inFlightRequestRef.current || isSubmitting || step === 'success') {
       return;
     }
@@ -367,30 +372,6 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                     پس از حضور و اسکن بارکد QR، امتیاز و گواهی ثبت می‌شود.
                   </div>
                 </div>
-              </div>
-
-              <div className="flex items-center gap-1 flex-shrink-0" dir="ltr">
-                {[1, 2, 3, 4, 5].map((star) => (
-                  <button
-                    key={star}
-                    type="button"
-                    onClick={() => {
-                      playCoin();
-                      setUserRating(star);
-                    }}
-                    className="cursor-pointer hover:scale-125 transition-transform p-0.5"
-                    aria-label={`امتیاز ${star} ستاره`}
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      className={`w-4 h-4 ${
-                        star <= userRating ? 'fill-[#D4AB58]' : 'fill-zinc-700'
-                      }`}
-                    >
-                      <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
-                    </svg>
-                  </button>
-                ))}
               </div>
             </div>
 
@@ -602,19 +583,31 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
             )}
 
             <div className="pt-2">
-              <PushButton
-                variant="gold"
-                size="lg"
-                fullWidth
-                disabled={isSubmitting || (finalPrice > 0 && !receiptUploaded)}
-                onClick={handleConfirmOrder}
-              >
-                {isSubmitting
-                  ? 'در حال ثبت و صدور بلیط...'
-                  : finalPrice === 0
-                  ? 'تأیید و دریافت فوری بلیط رایگان ✨'
-                  : 'ثبت نهایی فیش و صدور بلیط الکترونیکی QR'}
-              </PushButton>
+              {isFull ? (
+                <PushButton
+                  variant="secondary"
+                  size="lg"
+                  fullWidth
+                  disabled
+                  onClick={() => playError()}
+                >
+                  🔒 تکمیل ظرفیت
+                </PushButton>
+              ) : (
+                <PushButton
+                  variant="gold"
+                  size="lg"
+                  fullWidth
+                  disabled={isSubmitting || (finalPrice > 0 && !receiptUploaded)}
+                  onClick={handleConfirmOrder}
+                >
+                  {isSubmitting
+                    ? 'در حال ثبت و صدور بلیط...'
+                    : finalPrice === 0
+                    ? 'تأیید و دریافت فوری بلیط رایگان ✨'
+                    : 'ثبت نهایی فیش و صدور بلیط الکترونیکی QR'}
+                </PushButton>
+              )}
             </div>
           </div>
         ) : (

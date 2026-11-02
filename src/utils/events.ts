@@ -114,8 +114,15 @@ export function normalizeEvent(
       ? 'سمینار'
       : 'کارگاه');
 
+  const hasCapacityLimit =
+    safeObj.hasCapacityLimit !== undefined
+      ? Boolean(safeObj.hasCapacityLimit)
+      : safeObj.unlimitedCapacity === true
+      ? false
+      : true;
+
   const parsedTotal = Number(
-    safeObj.totalCapacity || safeObj.capacityTotal || safeObj.capacity || 40
+    safeObj.totalCapacity ?? safeObj.capacityTotal ?? safeObj.capacity ?? 40
   );
   const totalCap =
     Number.isFinite(parsedTotal) && parsedTotal > 0 ? Math.floor(parsedTotal) : 40;
@@ -126,14 +133,23 @@ export function normalizeEvent(
     safeObj.capacity ??
     totalCap;
   const parsedRem = Number(rawRemSource);
-  const remCap =
-    rawRemSource !== null &&
-    rawRemSource !== undefined &&
-    String(rawRemSource).trim() !== '' &&
-    Number.isFinite(parsedRem) &&
-    parsedRem >= 0
-      ? Math.floor(parsedRem)
-      : totalCap;
+  const remCap = !hasCapacityLimit
+    ? 9999
+    : rawRemSource !== null &&
+      rawRemSource !== undefined &&
+      String(rawRemSource).trim() !== '' &&
+      Number.isFinite(parsedRem) &&
+      parsedRem >= 0
+    ? Math.floor(parsedRem)
+    : totalCap;
+
+  const parsedRegCount = Number(safeObj.registeredCount);
+  const registeredCount =
+    Number.isFinite(parsedRegCount) && parsedRegCount >= 0
+      ? Math.floor(parsedRegCount)
+      : hasCapacityLimit
+      ? Math.max(0, totalCap - remCap)
+      : 0;
 
   const parsedRating = Number(safeObj.rating || 4.9);
   const ratingFormatted = Number(
@@ -237,6 +253,8 @@ export function normalizeEvent(
       String(
         safeObj.location || safeObj.place || 'دانشکده مهندسی صنایع'
       ).trim() || 'دانشکده مهندسی صنایع',
+    hasCapacityLimit,
+    registeredCount,
     capacityTotal: totalCap,
     totalCapacity: totalCap,
     capacityRemaining: remCap,
@@ -264,6 +282,53 @@ export function normalizeEvent(
     discountMinPoints,
     discountMaxPoints,
   };
+}
+
+/**
+ * Returns true ONLY when the workshop has an active capacity limit (`hasCapacityLimit !== false`)
+ * and its remaining capacity is 0 or less (`remainingCapacity <= 0`).
+ */
+export function isEventCapacityFull(
+  ev?: Partial<EventItem> | Record<string, unknown> | null
+): boolean {
+  if (!ev || typeof ev !== 'object') return false;
+  const normalized = normalizeEvent(ev);
+  if (normalized.hasCapacityLimit === false) return false;
+  return (normalized.remainingCapacity ?? normalized.capacityRemaining ?? 1) <= 0;
+}
+
+/**
+ * Decrements a workshop's remainingCapacity by 1 (when hasCapacityLimit !== false)
+ * and increments registeredCount by 1 upon student registration.
+ */
+export function decrementEventCapacityOnRegistration(
+  events: EventItem[],
+  eventId: string
+): EventItem[] {
+  const safeList = Array.isArray(events) ? events : [];
+  return safeList.map((rawEv, idx) => {
+    const ev = normalizeEvent(rawEv, idx);
+    if (ev.id !== eventId) return ev;
+    const nextRegCount = (Number(ev.registeredCount) || 0) + 1;
+    if (ev.hasCapacityLimit === false) {
+      return {
+        ...ev,
+        registeredCount: nextRegCount,
+      };
+    }
+    const currentRem = Number(ev.remainingCapacity ?? ev.capacityRemaining ?? ev.totalCapacity ?? 40);
+    const nextRem = Math.max(0, currentRem - 1);
+    return normalizeEvent(
+      {
+        ...ev,
+        registeredCount: nextRegCount,
+        remainingCapacity: nextRem,
+        capacityRemaining: nextRem,
+        capacity: nextRem,
+      },
+      idx
+    );
+  });
 }
 
 export function normalizeEventsList(rawEvents: unknown): EventItem[] {

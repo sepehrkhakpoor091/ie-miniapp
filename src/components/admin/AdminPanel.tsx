@@ -40,6 +40,7 @@ import {
   ScheduledTimer,
   SiteSwitches,
   StudentIdDisputeTicket,
+  SupportTicket,
   ThemeMode,
   TicketRecord,
   UserProfile,
@@ -47,7 +48,9 @@ import {
 } from '../../types';
 import {
   EVENTS_DATA,
+  decrementEventCapacityOnRegistration,
   generateTicketPayload,
+  isEventCapacityFull,
   normalizeEvent,
   normalizeEventsList,
   resolveEventPixelImage,
@@ -75,22 +78,29 @@ import {
   extractCohortFromStudentId,
   findCheckedInTicketInLedger,
   generateCertificateCode,
+  getScopedStorageKey,
   isFakeTestAccount,
   isMasterAdminTelegramUser,
   isProtectedMasterAccount,
   recordTicketInCheckedInLedger,
   removeTicketFromCheckedInLedger,
+  safeJsonParse,
   saveAdminStudentOverride,
   touchAdminSession,
   validateUploadedImageFile,
   verifyTicketSignature,
 } from '../../utils/security';
 import {
+  closeAdminChatOnBot,
+  loadStoredSupportChats,
+  normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
   saveEventsOnBot,
   saveLootboxConfigOnBot,
   saveProfessorsOnBot,
   saveSiteSwitchesOnBot,
+  saveStoredSupportChats,
+  sendAdminChatMessageToBot,
   submitAdminReviewToBot,
   submitAdminUserActionToBot,
   toggleStudentTimersOnBot,
@@ -141,6 +151,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   Upload,
+  MessageSquare,
+  Send,
 } from 'lucide-react';
 
 // ============================================================================
@@ -444,6 +456,7 @@ interface AdminPanelProps {
   discountRule?: DiscountRuleConfig;
   lootboxConfig?: LootboxConfig;
   disputeTickets?: StudentIdDisputeTicket[];
+  supportTickets?: SupportTicket[];
   announcements?: ChannelAnnouncement[];
   channelUrl?: string;
   featuredEventId?: string;
@@ -461,6 +474,7 @@ interface AdminPanelProps {
   onUpdateBadges?: (nextBadges: BadgeItem[]) => void;
   onUpdateAvatars?: (nextAvatars: AvatarCatalogItem[]) => void;
   onUpdateTickets?: (nextTickets: TicketRecord[]) => void;
+  onUpdateSupportTickets?: (nextSupportTickets: SupportTicket[]) => void;
   onUpdateDiscountRule?: (nextRule: DiscountRuleConfig) => void;
   onUpdateLootboxConfig?: (nextLootboxConfig: LootboxConfig) => void;
   onUpdateAnnouncements?: (nextAnnouncements: ChannelAnnouncement[]) => void;
@@ -498,6 +512,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   discountRule: propDiscountRule,
   lootboxConfig: propLootboxConfig = DEFAULT_LOOTBOX_CONFIG,
   disputeTickets = [],
+  supportTickets: propSupportTickets = [],
   announcements: propAnnouncements = DEFAULT_ISEFUM_ANNOUNCEMENTS,
   channelUrl: propChannelUrl = DEFAULT_CHANNEL_URL,
   featuredEventId: propFeaturedEventId = 'ev-project-mgmt',
@@ -515,6 +530,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onUpdateBadges,
   onUpdateAvatars,
   onUpdateTickets,
+  onUpdateSupportTickets,
   onUpdateDiscountRule,
   onUpdateLootboxConfig,
   onUpdateAnnouncements,
@@ -574,6 +590,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [ticketList, setTicketList] = useState<TicketRecord[]>(() =>
     Array.isArray(userTickets) ? userTickets : []
   );
+  const [supportTicketList, setSupportTicketList] = useState<SupportTicket[]>(() => {
+    const fromProp = Array.isArray(propSupportTickets)
+      ? normalizeSupportTicketsList(propSupportTickets)
+      : [];
+    const fromStorage = loadStoredSupportChats();
+    const map = new Map<string, SupportTicket>();
+    for (const item of [...fromProp, ...fromStorage]) {
+      if (item && item.id) {
+        map.set(item.id, item);
+      }
+    }
+    return Array.from(map.values());
+  });
   const [flagsState, setFlagsState] = useState<FeatureFlags>(
     featureFlags || DEFAULT_FEATURE_FLAGS
   );
@@ -619,6 +648,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   useEffect(() => {
     if (Array.isArray(userTickets)) setTicketList(userTickets);
   }, [userTickets]);
+
+  useEffect(() => {
+    if (Array.isArray(propSupportTickets)) {
+      const normalized = normalizeSupportTicketsList(propSupportTickets);
+      setSupportTicketList((prev) => {
+        const map = new Map<string, SupportTicket>();
+        for (const item of [...normalized, ...(Array.isArray(prev) ? prev : [])]) {
+          if (item && item.id) {
+            map.set(item.id, item);
+          }
+        }
+        return Array.from(map.values());
+      });
+    }
+  }, [propSupportTickets]);
 
   useEffect(() => {
     if (featureFlags) setFlagsState(featureFlags);
@@ -698,6 +742,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTicketList((prev) => {
       const next = updater(Array.isArray(prev) ? prev : []);
       queueMicrotask(() => onUpdateTickets?.(next));
+      return next;
+    });
+  };
+
+  const updateSupportTicketsAndPersist = (
+    updater: (prev: SupportTicket[]) => SupportTicket[]
+  ) => {
+    setSupportTicketList((prev) => {
+      const next = updater(Array.isArray(prev) ? prev : []);
+      saveStoredSupportChats(next);
+      queueMicrotask(() => onUpdateSupportTickets?.(next));
       return next;
     });
   };
@@ -829,8 +884,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // ==========================================================================
-  // MODULE 3 STATE: Users, Cohort Filter, Custom Point Input & 360 Dossier
+  // MODULE 3 STATE: Users, Cohort Filter, Custom Point Input & 360 Dossier + Two-Way Chats
   // ==========================================================================
+  const [mod3SubView, setMod3SubView] = useState<'users' | 'chats'>('users');
+  const [selectedAdminChatId, setSelectedAdminChatId] = useState<string>('');
+  const [adminReplyText, setAdminReplyText] = useState<string>('');
+  const [directDossierMessageText, setDirectDossierMessageText] = useState<string>('');
+  const [isSendingAdminChat, setIsSendingAdminChat] = useState<boolean>(false);
   const [selectedCohort, setSelectedCohort] = useState<string>('همه');
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [selectedStudentIdForDossier, setSelectedStudentIdForDossier] = useState<string | null>(
@@ -894,6 +954,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [eventTimeInput, setEventTimeInput] = useState('۱۴:۰۰ الی ۱۷:۰۰');
   const [eventLocationInput, setEventLocationInput] = useState('آمفی‌تئاتر دانشکده صنایع');
   const [eventPriceInput, setEventPriceInput] = useState<number>(80000);
+  const [eventHasCapacityLimitInput, setEventHasCapacityLimitInput] = useState<boolean>(true);
   const [eventCapacityInput, setEventCapacityInput] = useState<number>(40);
   const [eventPointsInput, setEventPointsInput] = useState<number>(50);
   const [eventInstructorInput, setEventInstructorInput] = useState('دکتر محمدرضا رضایی');
@@ -2042,6 +2103,219 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   // ==========================================================================
+  // MODULE 3: TWO-WAY STUDENT-ADMIN CHAT HANDLERS (Send Reply / Start Direct Chat / Close Chat)
+  // ==========================================================================
+  const syncStudentLocalSupportTicketsIfSameBrowser = (
+    targetStudentId?: string,
+    targetTelegramUserId?: string,
+    updatedTicket?: SupportTicket
+  ) => {
+    if (!updatedTicket) return;
+    try {
+      const scopedKey = getScopedStorageKey(
+        `ie_user_support_tickets_v2_${targetStudentId || 'guest'}`,
+        targetTelegramUserId
+      );
+      const raw = localStorage.getItem(scopedKey);
+      const existing = raw ? safeJsonParse<SupportTicket[]>(raw, []) : [];
+      const safeExisting = Array.isArray(existing) ? existing : [];
+      const hasTicket = safeExisting.some((t) => t.id === updatedTicket.id);
+      const next = hasTicket
+        ? safeExisting.map((t) => (t.id === updatedTicket.id ? updatedTicket : t))
+        : [updatedTicket, ...safeExisting];
+      localStorage.setItem(scopedKey, JSON.stringify(next));
+    } catch {
+      // Ignore storage error
+    }
+  };
+
+  const handleAdminSendChatMessage = async (params: {
+    targetStudent?: AdminStudentDossier | null;
+    existingTicket?: SupportTicket | null;
+    text: string;
+    customTitle?: string;
+  }) => {
+    const cleanText = params.text.trim();
+    if (!cleanText || isSendingAdminChat) return;
+
+    playCoin();
+    setIsSendingAdminChat(true);
+
+    const nowDate = new Date().toLocaleDateString('fa-IR');
+    const nowTime = new Date().toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const studentId =
+      params.targetStudent?.studentId || params.existingTicket?.studentId || '';
+    const studentName =
+      params.targetStudent?.fullName ||
+      params.existingTicket?.studentName ||
+      'دانشجوی مهندسی صنایع';
+    const telegramUserId =
+      params.targetStudent?.telegramUserId || params.existingTicket?.telegramUserId;
+    const cohortYear =
+      params.targetStudent?.cohortYear || params.existingTicket?.cohortYear || '1402';
+
+    const newMsg = {
+      id: `adm-msg-${Date.now()}`,
+      sender: 'support' as const,
+      senderName: activeAdmin?.fullName || 'پشتیبانی انجمن علمی صنایع',
+      text: cleanText,
+      time: nowTime,
+      date: nowDate,
+    };
+
+    const ticketToSave: SupportTicket = params.existingTicket
+      ? {
+          ...params.existingTicket,
+          status: 'answered',
+          closedAt: undefined,
+          closedBy: undefined,
+          studentId: studentId || params.existingTicket.studentId,
+          studentName: studentName || params.existingTicket.studentName,
+          telegramUserId: telegramUserId || params.existingTicket.telegramUserId,
+          cohortYear: cohortYear || params.existingTicket.cohortYear,
+          updatedAt: `${nowDate} ساعت ${nowTime}`,
+          messages: [...(params.existingTicket.messages || []), newMsg],
+        }
+      : {
+          id: `TK-DIR-${Math.floor(1000 + Math.random() * 9000)}`,
+          title:
+            params.customTitle ||
+            `گفتگوی مستقیم مدیریت با ${studentName}`,
+          category: 'direct',
+          status: 'answered',
+          createdAt: `${nowDate} ساعت ${nowTime}`,
+          updatedAt: `${nowDate} ساعت ${nowTime}`,
+          studentId,
+          studentName,
+          telegramUserId,
+          cohortYear,
+          messages: [newMsg],
+        };
+
+    updateSupportTicketsAndPersist((prev) => {
+      const exists = prev.some((t) => t.id === ticketToSave.id);
+      return exists
+        ? prev.map((t) => (t.id === ticketToSave.id ? ticketToSave : t))
+        : [ticketToSave, ...prev];
+    });
+
+    syncStudentLocalSupportTicketsIfSameBrowser(
+      studentId,
+      telegramUserId,
+      ticketToSave
+    );
+
+    if (studentId || telegramUserId) {
+      updateStudentsAndPersist((prev) =>
+        prev.map((s) => {
+          const isMatch =
+            (studentId && s.studentId === studentId) ||
+            (telegramUserId && s.telegramUserId === telegramUserId);
+          if (!isMatch) return s;
+          const prevLogs = Array.isArray(s.chatLogs) ? s.chatLogs : [];
+          return {
+            ...s,
+            chatLogs: [
+              ...prevLogs,
+              {
+                sender: activeAdmin?.fullName || 'مدیریت انجمن صنایع',
+                text: cleanText,
+                time: `${nowDate} ساعت ${nowTime}`,
+              },
+            ],
+          };
+        })
+      );
+    }
+
+    setSelectedAdminChatId(ticketToSave.id);
+    setAdminReplyText('');
+    setDirectDossierMessageText('');
+
+    appendLog(
+      '💬 ارسال پیام در چت دوطرفه به دانشجو (مینی‌اپ + ربات تلگرام)',
+      `${studentName} (${studentId || telegramUserId || ticketToSave.id})`,
+      'success'
+    );
+    triggerToast(
+      `📤 پیام شما برای «${studentName}» در چت مینی‌اپ ثبت شد و از طریق ربات تلگرام ارسال گردید!`
+    );
+
+    try {
+      await sendAdminChatMessageToBot({
+        chatId: ticketToSave.id,
+        targetUserId: telegramUserId || studentId || ticketToSave.id,
+        studentId,
+        telegramUserId,
+        studentName,
+        title: ticketToSave.title,
+        text: cleanText,
+        adminName: activeAdmin?.fullName || 'مدیریت انجمن علمی صنایع',
+        adminTelegramId: activeAdmin?.telegramId || MASTER_ADMIN_TELEGRAM_ID,
+      });
+    } finally {
+      setIsSendingAdminChat(false);
+    }
+  };
+
+  const handleAdminCloseChat = async (ticket: SupportTicket) => {
+    if (!ticket || isSendingAdminChat) return;
+    playTick();
+    setIsSendingAdminChat(true);
+
+    const nowDate = new Date().toLocaleDateString('fa-IR');
+    const nowTime = new Date().toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const closedTicket: SupportTicket = {
+      ...ticket,
+      status: 'closed',
+      updatedAt: `${nowDate} ساعت ${nowTime}`,
+      closedAt: `${nowDate} ساعت ${nowTime}`,
+      closedBy: activeAdmin?.fullName || 'مدیریت انجمن علمی صنایع',
+    };
+
+    updateSupportTicketsAndPersist((prev) =>
+      prev.map((t) => (t.id === closedTicket.id ? closedTicket : t))
+    );
+
+    syncStudentLocalSupportTicketsIfSameBrowser(
+      closedTicket.studentId,
+      closedTicket.telegramUserId,
+      closedTicket
+    );
+
+    appendLog(
+      '🔒 بستن گفتگو/تیکت پشتیبانی توسط ادمین',
+      `${closedTicket.studentName || 'دانشجو'} (${closedTicket.id})`,
+      'warning'
+    );
+    triggerToast(
+      `🔒 گفتگو «${closedTicket.title}» (${closedTicket.id}) بسته شد.`
+    );
+
+    try {
+      await closeAdminChatOnBot({
+        chatId: closedTicket.id,
+        targetUserId:
+          closedTicket.telegramUserId || closedTicket.studentId || closedTicket.id,
+        studentId: closedTicket.studentId,
+        telegramUserId: closedTicket.telegramUserId,
+        adminName: activeAdmin?.fullName || 'مدیریت انجمن علمی صنایع',
+        adminTelegramId: activeAdmin?.telegramId || MASTER_ADMIN_TELEGRAM_ID,
+      });
+    } finally {
+      setIsSendingAdminChat(false);
+    }
+  };
+
+  // ==========================================================================
   // MODULE 4: Save or Create Event & Professor CRUD (Two-Way Sync with Telegram Bot)
   // ==========================================================================
   const handleSaveEvent = (e: React.FormEvent) => {
@@ -2066,7 +2340,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       categoryLabel,
     });
 
-    const parsedCap = Number(eventCapacityInput) || 40;
+    const parsedCap = Math.max(1, Number(eventCapacityInput) || 40);
     const parsedPrice = Number(eventPriceInput) || 0;
     const parsedPoints = Number(eventPointsInput) || 50;
     const safeDiscStep = Math.max(1, Number(eventDiscountStepInput) || discountRule.pointsStep || 20);
@@ -2087,7 +2361,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const updated = (Array.isArray(eventList) ? eventList : []).map((rawEv, idx) => {
         const ev = normalizeEvent(rawEv, idx);
         if (ev.id !== editingEventId) return ev;
-        const nextTotalCap = Math.max(parsedCap, ev.capacityTotal || 40);
+        const currentRegCount = Math.max(
+          0,
+          Number(ev.registeredCount) ||
+            Math.max(0, (ev.totalCapacity || ev.capacityTotal || parsedCap) - ev.capacityRemaining)
+        );
+        const nextTotalCap = eventHasCapacityLimitInput ? parsedCap : 999999;
+        const nextRemCap = eventHasCapacityLimitInput
+          ? Math.max(0, parsedCap - currentRegCount)
+          : 999999;
         return normalizeEvent(
           {
             ...ev,
@@ -2099,11 +2381,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             location: eventLocationInput,
             basePrice: parsedPrice,
             price: parsedPrice,
-            capacityRemaining: parsedCap,
-            remainingCapacity: parsedCap,
+            hasCapacityLimit: eventHasCapacityLimitInput,
+            registeredCount: currentRegCount,
+            capacityRemaining: nextRemCap,
+            remainingCapacity: nextRemCap,
             capacityTotal: nextTotalCap,
             totalCapacity: nextTotalCap,
-            capacity: parsedCap,
+            capacity: nextRemCap,
             rewardPoints: parsedPoints,
             points: parsedPoints,
             instructor: eventInstructorInput,
@@ -2127,6 +2411,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       );
       setEditingEventId(null);
     } else {
+      const effectiveCap = eventHasCapacityLimitInput ? parsedCap : 999999;
       const newEv: EventItem = normalizeEvent({
         id: `ev-custom-${Date.now()}`,
         title: eventTitleInput.trim(),
@@ -2135,11 +2420,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         date: eventDateInput,
         time: eventTimeInput,
         location: eventLocationInput,
-        capacityRemaining: parsedCap,
-        remainingCapacity: parsedCap,
-        capacityTotal: parsedCap,
-        totalCapacity: parsedCap,
-        capacity: parsedCap,
+        hasCapacityLimit: eventHasCapacityLimitInput,
+        registeredCount: 0,
+        capacityRemaining: effectiveCap,
+        remainingCapacity: effectiveCap,
+        capacityTotal: effectiveCap,
+        totalCapacity: effectiveCap,
+        capacity: effectiveCap,
         rating: 4.9,
         ratingCount: 12,
         imageFilename,
@@ -3807,250 +4094,532 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
 
         {/* ===================================================================
-            MODULE 3: 👥 ۳. مدیریت کاربران + قفل و بازکردن کامل + امتیاز دلخواه
+            MODULE 3: 👥 ۳. مدیریت کاربران + قفل و بازکردن کامل + امتیاز دلخواه + چت دوطرفه
            =================================================================== */}
         {activeModule === 3 && (
           <div className={`rounded-3xl p-4 lg:p-6 border space-y-4 ${cardSurfaceClass}`}>
-            <div className="flex items-center justify-between border-b border-current/10 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-3">
               <div>
                 <h2 className="text-sm lg:text-base font-black">
-                  👥 ۳. مدیریت کاربران، قفل/بازکردن دوطرفه حساب و تخصیص امتیاز دلخواه
+                  👥 ۳. مدیریت کاربران، پرونده ۳۶۰ درجه و گفتگوی دوطرفه با دانشجویان
                 </h2>
                 <p
                   className={`text-[11px] font-bold ${
                     isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                   }`}
                 >
-                  کنترل کامل قفل یا باز شدن KYC و حساب کاربری + افزودن یا کسر هر مقدار امتیاز دلخواه در پرونده ۳۶۰ درجه
+                  کنترل قفل/باز شدن KYC و حساب، امتیاز دلخواه و چت مستقیم دوطرفه با دانشجو (در مینی‌اپ و ربات تلگرام)
                 </p>
               </div>
+              <div className="flex items-center gap-2">
+                {onSyncWithBotServer && (
+                  <button
+                    type="button"
+                    onClick={() => void onSyncWithBotServer()}
+                    className="px-3 py-2 rounded-xl bg-[#D4AB58]/20 hover:bg-[#D4AB58]/30 text-[#D4AB58] border border-[#D4AB58]/40 font-black text-[11px] flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>بروزرسانی چت‌ها و کاربران</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleExportStudentsCsv}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] border-b-2 border-emerald-800 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  📊 دانلود اکسل (CSV)
+                </button>
+              </div>
+            </div>
+
+            {/* Module 3 Sub-View Switcher: Students List vs Two-Way Support Chats */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-black/20">
               <button
                 type="button"
-                onClick={handleExportStudentsCsv}
-                className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] border-b-2 border-emerald-800 flex items-center gap-1.5 cursor-pointer"
+                onClick={() => {
+                  playTick();
+                  setMod3SubView('users');
+                }}
+                className={`py-2.5 rounded-xl text-xs font-black cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                  mod3SubView === 'users'
+                    ? 'bg-[#D4AB58] text-[#101622] shadow'
+                    : 'opacity-75 hover:opacity-100'
+                }`}
               >
-                <Download className="w-3.5 h-3.5" />
-                📊 دانلود اکسل (CSV)
+                <Users className="w-4 h-4" />
+                <span>👥 لیست دانشجویان و پرونده ۳۶۰ ({filteredStudents.length.toLocaleString('fa-IR')})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  playTick();
+                  setMod3SubView('chats');
+                }}
+                className={`py-2.5 rounded-xl text-xs font-black cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                  mod3SubView === 'chats'
+                    ? 'bg-[#D4AB58] text-[#101622] shadow'
+                    : 'opacity-75 hover:opacity-100'
+                }`}
+              >
+                <MessageSquare className="w-4 h-4" />
+                <span>
+                  💬 تیکت‌ها و گفتگوی دوطرفه با دانشجویان ({supportTicketList.length.toLocaleString('fa-IR')})
+                </span>
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-              {['همه', '1400', '1401', '1402', '1403', '1404', '1405', 'سایر'].map((cohort) => (
-                <button
-                  key={cohort}
-                  type="button"
-                  onClick={() => {
-                    playTick();
-                    setSelectedCohort(cohort);
-                  }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black shrink-0 cursor-pointer transition-all ${
-                    selectedCohort === cohort
-                      ? 'bg-[#D4AB58] text-[#101622]'
-                      : subCardClass
-                  }`}
-                >
-                  {cohort === 'همه' ? 'همه ورودی‌ها' : `ورودی ${cohort}`}
-                </button>
-              ))}
-            </div>
-
-            <div className="relative">
-              <Search className="w-4 h-4 absolute right-3 top-2.5 opacity-60" />
-              <input
-                type="text"
-                value={userSearchQuery}
-                onChange={(e) => setUserSearchQuery(e.target.value)}
-                placeholder="جستجو بر اساس نام، شماره دانشجویی (مثلاً 402123456) یا تلفن..."
-                className={`w-full pr-9 pl-3 py-2 rounded-xl text-xs font-bold border focus:outline-none ${inputClass}`}
-              />
-            </div>
-
-            {Array.isArray(disputeTickets) && disputeTickets.length > 0 && (
-              <div className="p-3.5 rounded-2xl border-2 border-rose-500/50 bg-rose-950/30 space-y-2 text-xs">
-                <div className="font-black text-rose-300">
-                  🚨 تیکت‌های فوری اعتراض شماره دانشجویی ({disputeTickets.length.toLocaleString('fa-IR')} مورد):
-                </div>
-                {disputeTickets.map((dt) => (
-                  <div
-                    key={dt.id}
-                    className="p-2.5 rounded-xl bg-black/30 border border-rose-500/30 space-y-1"
-                  >
-                    <div className="flex items-center justify-between font-black">
-                      <span>
-                        {dt.reporterName || dt.fullName} • کد دانشجویی:{' '}
-                        <span className="font-mono text-[#D4AB58]">{dt.studentId}</span>
-                      </span>
-                      <span className="font-mono text-[11px]">{dt.phoneNumber || dt.phone}</span>
+            {mod3SubView === 'chats' ? (
+              <div className="space-y-4">
+                {supportTicketList.length === 0 ? (
+                  <div className={`p-6 rounded-2xl border text-center space-y-2 text-xs ${subCardClass}`}>
+                    <MessageSquare className="w-8 h-8 text-[#D4AB58] mx-auto" />
+                    <div className="font-black text-sm">
+                      هنوز هیچ تیکت یا گفتگوی فعالی ثبت نشده است
                     </div>
-                    <p className="text-[11px] opacity-90">{dt.explanation}</p>
+                    <p className="opacity-80 font-bold">
+                      می‌توانید از تب «👥 لیست دانشجویان» روی هر دانشجو کلیک کرده و با دکمه «💬 شروع چت جدید / ارسال پیام مستقیم به دانشجو» گفتگو را آغاز کنید.
+                    </p>
                   </div>
-                ))}
-              </div>
-            )}
-
-            {(Array.isArray(filteredStudents) ? filteredStudents : []).length === 0 ? (
-              <div className={`p-6 rounded-2xl border text-center space-y-1.5 text-xs ${subCardClass}`}>
-                <div className="font-black text-sm">
-                  هنوز کاربر ثبت‌نام‌شده‌ای در این بخش وجود ندارد
-                </div>
-                <p className="opacity-75 font-bold">
-                  تنها کاربران واقعی که در ربات تلگرام یا فرم ثبت‌نام احراز هویت کرده‌اند در این فهرست نمایش داده می‌شوند.
-                </p>
-              </div>
-            ) : null}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {(Array.isArray(filteredStudents) ? filteredStudents : []).map((st) => (
-                <div
-                  key={st.id}
-                  className={`p-3.5 rounded-2xl border space-y-2.5 transition-all hover:border-[#D4AB58] ${subCardClass}`}
-                >
-                  <div
-                    onClick={() => {
-                      playTick();
-                      setSelectedStudentIdForDossier(st.id);
-                      setDossierTab('overview');
-                    }}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-11 h-11 rounded-full overflow-hidden border border-[#D4AB58]/50 bg-black/20 shrink-0">
-                        <PixelImage
-                          filename={st.avatar || '01_avatar_boy.png'}
-                          alt={st.fullName}
-                          className="w-full h-full object-cover"
-                        />
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                    {/* Left Column: Tickets / Conversations List */}
+                    <div className={`p-3 rounded-2xl border space-y-2 max-h-[65vh] overflow-y-auto ${subCardClass}`}>
+                      <div className="text-xs font-black text-[#D4AB58] pb-1 border-b border-current/10">
+                        🗂 فهرست گفتگوهای دانشجویان ({supportTicketList.length.toLocaleString('fa-IR')}):
                       </div>
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-xs font-black">{st.fullName}</span>
-                          {isProtectedMasterAccount(st) && (
-                            <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/25 text-[#D4AB58] border border-[#D4AB58]/60 font-black">
-                              👑 مالک و مدیر ارشد کل (629890497)
-                            </span>
-                          )}
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-black/20 font-mono font-bold">
-                            {st.studentId}
-                          </span>
-                          {st.isBanned && !isProtectedMasterAccount(st) ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-600 text-white font-black">
-                              حساب قفل 🚫
-                            </span>
-                          ) : (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-600/20 text-emerald-400 font-black">
-                              حساب باز ✓
-                            </span>
-                          )}
-                        </div>
+                      {supportTicketList.map((tk) => {
+                        const isSelected =
+                          (selectedAdminChatId || supportTicketList[0]?.id) === tk.id;
+                        const lastMsg =
+                          Array.isArray(tk.messages) && tk.messages.length > 0
+                            ? tk.messages[tk.messages.length - 1]
+                            : null;
+                        return (
+                          <button
+                            key={tk.id}
+                            type="button"
+                            onClick={() => {
+                              playTick();
+                              setSelectedAdminChatId(tk.id);
+                            }}
+                            className={`w-full text-right p-3 rounded-xl border transition-all cursor-pointer space-y-1 ${
+                              isSelected
+                                ? 'border-2 border-[#D4AB58] bg-[#D4AB58]/15'
+                                : 'border-current/10 bg-black/15 hover:border-[#D4AB58]/50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-black truncate">
+                                {tk.studentName || 'دانشجو'}{' '}
+                                {tk.studentId ? `(${tk.studentId})` : ''}
+                              </span>
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-black shrink-0 ${
+                                  tk.status === 'closed'
+                                    ? 'bg-rose-900/70 text-rose-200'
+                                    : tk.status === 'answered'
+                                    ? 'bg-emerald-900/70 text-emerald-200'
+                                    : 'bg-amber-500 text-[#101622]'
+                                }`}
+                              >
+                                {tk.status === 'closed'
+                                  ? '🔒 بسته'
+                                  : tk.status === 'answered'
+                                  ? 'پاسخ داده شده ✓'
+                                  : 'در انتظار پاسخ'}
+                              </span>
+                            </div>
+                            <div className="text-[11px] font-bold text-[#D4AB58] truncate">
+                              {tk.title} ({tk.id})
+                            </div>
+                            {lastMsg && (
+                              <div className="text-[10px] opacity-75 truncate">
+                                {lastMsg.sender === 'user' ? '👤 دانشجو: ' : '👨‍💼 ادمین: '}
+                                {lastMsg.text}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Right Column: Active Chat Thread & Reply Box */}
+                    {(() => {
+                      const activeChat =
+                        supportTicketList.find((t) => t.id === selectedAdminChatId) ||
+                        supportTicketList[0];
+                      if (!activeChat) return null;
+                      const matchedStu = studentList.find(
+                        (s) =>
+                          (activeChat.studentId && s.studentId === activeChat.studentId) ||
+                          (activeChat.telegramUserId &&
+                            s.telegramUserId === activeChat.telegramUserId)
+                      );
+                      return (
                         <div
-                          className={`text-[11px] font-bold ${
-                            isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
-                          }`}
+                          className={`lg:col-span-2 p-4 rounded-2xl border flex flex-col justify-between space-y-3 ${subCardClass}`}
                         >
-                          ورودی {st.cohortYear} • سطح {st.level} • KYC:{' '}
-                          {isProtectedMasterAccount(st) || st.kycStatus === 'verified'
-                            ? 'باز و تایید شده ✅'
-                            : st.kycStatus === 'required' || st.kycStatus === 'kyc_locked'
-                            ? 'قفل شده (نیاز به کارت دانشجویی) 🔒'
-                            : 'در انتظار بررسی ⏳'}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-current/10">
+                            <div>
+                              <div className="text-xs font-black flex items-center gap-2">
+                                <span>{activeChat.title}</span>
+                                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-black/25 text-[#D4AB58]">
+                                  {activeChat.id}
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-bold opacity-80 mt-0.5">
+                                دانشجو: {activeChat.studentName || matchedStu?.fullName || 'دانشجو'} • شماره دانشجویی:{' '}
+                                <span className="font-mono">
+                                  {activeChat.studentId || matchedStu?.studentId || '---'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {matchedStu && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    playTick();
+                                    setSelectedStudentIdForDossier(matchedStu.id);
+                                    setDossierTab('chats');
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-[10px] font-black cursor-pointer"
+                                >
+                                  پرونده ۳۶۰ دانشجو
+                                </button>
+                              )}
+                              {activeChat.status !== 'closed' ? (
+                                <button
+                                  type="button"
+                                  disabled={isSendingAdminChat}
+                                  onClick={() => void handleAdminCloseChat(activeChat)}
+                                  className="px-3 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black cursor-pointer flex items-center gap-1 shadow"
+                                >
+                                  <Lock className="w-3.5 h-3.5" />
+                                  <span>🔒 بستن چت</span>
+                                </button>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-xl bg-rose-950 text-rose-300 border border-rose-700 text-[10px] font-black">
+                                  🔒 چت بسته شده است
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Messages Thread (Student on Right, Admin on Left in RTL) */}
+                          <div
+                            className="space-y-2.5 max-h-[42vh] overflow-y-auto p-3 rounded-xl bg-black/20 border border-current/10"
+                            dir="rtl"
+                          >
+                            {(Array.isArray(activeChat.messages) ? activeChat.messages : []).map(
+                              (msg) => {
+                                const isStudentMsg = msg.sender === 'user';
+                                return (
+                                  <div
+                                    key={msg.id}
+                                    className={`flex flex-col ${
+                                      isStudentMsg ? 'items-start' : 'items-end'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] font-bold opacity-75 px-1 mb-0.5">
+                                      {isStudentMsg
+                                        ? `👤 ${msg.senderName || activeChat.studentName || 'دانشجو'}`
+                                        : `👨‍💼 ${msg.senderName || 'پشتیبانی انجمن صنایع'}`}{' '}
+                                      • {msg.date ? `${msg.date} ساعت ` : ''}
+                                      {msg.time}
+                                    </div>
+                                    <div
+                                      className={`max-w-[85%] p-2.5 rounded-2xl text-xs font-medium leading-relaxed ${
+                                        isStudentMsg
+                                          ? 'bg-[#354B40] text-[#F6F1E7] rounded-tr-sm border border-[#7FB69E]/40'
+                                          : 'bg-[#1D2B3A] text-[#F6F1E7] rounded-tl-sm border border-[#D4AB58]/50'
+                                      }`}
+                                    >
+                                      {msg.text}
+                                    </div>
+                                  </div>
+                                );
+                              }
+                            )}
+                          </div>
+
+                          {/* Admin Reply Form */}
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              if (!adminReplyText.trim()) return;
+                              void handleAdminSendChatMessage({
+                                targetStudent: matchedStu || null,
+                                existingTicket: activeChat,
+                                text: adminReplyText,
+                              });
+                            }}
+                            className="flex flex-col sm:flex-row gap-2 pt-1"
+                          >
+                            <input
+                              type="text"
+                              value={adminReplyText}
+                              onChange={(e) => setAdminReplyText(e.target.value)}
+                              placeholder={
+                                activeChat.status === 'closed'
+                                  ? 'ارسال پیام جدید و بازگشایی مجدد این گفتگو...'
+                                  : 'پاسخ خود را بنویسید (ثبت در مینی‌اپ + ارسال در تلگرام دانشجو)...'
+                              }
+                              className={`flex-1 px-3 py-2.5 rounded-xl border text-xs font-bold ${inputClass}`}
+                            />
+                            <button
+                              type="submit"
+                              disabled={!adminReplyText.trim() || isSendingAdminChat}
+                              className="px-4 py-2.5 rounded-xl bg-[#D4AB58] hover:bg-[#e1b864] text-[#101622] font-black text-xs cursor-pointer flex items-center justify-center gap-1.5 shrink-0 disabled:opacity-50"
+                            >
+                              <Send className="w-3.5 h-3.5 rotate-180" />
+                              <span>
+                                {isSendingAdminChat
+                                  ? 'در حال ارسال...'
+                                  : '📤 ارسال به دانشجو (مینی‌اپ + تلگرام)'}
+                              </span>
+                            </button>
+                          </form>
                         </div>
-                      </div>
-                    </div>
-                    <div className="text-left shrink-0">
-                      <div className="text-xs font-black text-emerald-500">{st.score} 💎</div>
-                      <span className="text-[10px] font-black text-[#D4AB58] underline">
-                        پرونده ۳۶۰ ←
-                      </span>
-                    </div>
+                      );
+                    })()}
                   </div>
-
-                  {/* Direct Quick Two-Way Lock/Unlock Bar on Card */}
-                  <div className="pt-2 border-t border-current/10 flex flex-wrap items-center justify-between gap-1.5 text-[10px] font-black">
-                    {isProtectedMasterAccount(st) ? (
-                      <>
-                        <button
-                          type="button"
-                          disabled
-                          className="px-2.5 py-1 rounded-lg bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
-                        >
-                          🔒 قفل کارت دانشجویی (غیرفعال)
-                        </button>
-                        <button
-                          type="button"
-                          disabled
-                          className="px-2.5 py-1 rounded-lg bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
-                        >
-                          🔒 مسدودسازی (غیرفعال)
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleModifyStudentDossier(st, {
-                              explicitKycStatus:
-                                st.kycStatus === 'verified' ? 'required' : 'verified',
-                            })
-                          }
-                          className={`px-2.5 py-1 rounded-lg cursor-pointer ${
-                            st.kycStatus === 'verified'
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                              : 'bg-emerald-600 text-white'
-                          }`}
-                        >
-                          {st.kycStatus === 'verified'
-                            ? '🔒 قفل کردن KYC'
-                            : '🔓 باز کردن قفل KYC (تایید)'}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleModifyStudentDossier(st, {
-                              explicitBanStatus: !st.isBanned,
-                            })
-                          }
-                          className={`px-2.5 py-1 rounded-lg cursor-pointer ${
-                            st.isBanned
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-rose-700/80 text-white'
-                          }`}
-                        >
-                          {st.isBanned
-                            ? '🔓 باز کردن حساب'
-                            : '🚫 قفل حساب'}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteStudentUser(st)}
-                          className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-600 text-white cursor-pointer"
-                          title="حذف کامل کاربر از سایت و ربات"
-                        >
-                          🗑 حذف کاربر
-                        </button>
-                      </>
-                    )}
-
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  {['همه', '1400', '1401', '1402', '1403', '1404', '1405', 'سایر'].map((cohort) => (
                     <button
+                      key={cohort}
                       type="button"
                       onClick={() => {
                         playTick();
-                        setSelectedStudentIdForDossier(st.id);
-                        setDossierTab('overview');
+                        setSelectedCohort(cohort);
                       }}
-                      className="px-2.5 py-1 rounded-lg bg-[#D4AB58] text-[#101622] cursor-pointer"
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black shrink-0 cursor-pointer transition-all ${
+                        selectedCohort === cohort
+                          ? 'bg-[#D4AB58] text-[#101622]'
+                          : subCardClass
+                      }`}
                     >
-                      ✏️ ویرایش و امتیاز
+                      {cohort === 'همه' ? 'همه ورودی‌ها' : `ورودی ${cohort}`}
                     </button>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute right-3 top-2.5 opacity-60" />
+                  <input
+                    type="text"
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value)}
+                    placeholder="جستجو بر اساس نام، شماره دانشجویی (مثلاً 402123456) یا تلفن..."
+                    className={`w-full pr-9 pl-3 py-2 rounded-xl text-xs font-bold border focus:outline-none ${inputClass}`}
+                  />
+                </div>
+
+                {Array.isArray(disputeTickets) && disputeTickets.length > 0 && (
+                  <div className="p-3.5 rounded-2xl border-2 border-rose-500/50 bg-rose-950/30 space-y-2 text-xs">
+                    <div className="font-black text-rose-300">
+                      🚨 تیکت‌های فوری اعتراض شماره دانشجویی ({disputeTickets.length.toLocaleString('fa-IR')} مورد):
+                    </div>
+                    {disputeTickets.map((dt) => (
+                      <div
+                        key={dt.id}
+                        className="p-2.5 rounded-xl bg-black/30 border border-rose-500/30 space-y-1"
+                      >
+                        <div className="flex items-center justify-between font-black">
+                          <span>
+                            {dt.reporterName || dt.fullName} • کد دانشجویی:{' '}
+                            <span className="font-mono text-[#D4AB58]">{dt.studentId}</span>
+                          </span>
+                          <span className="font-mono text-[11px]">{dt.phoneNumber || dt.phone}</span>
+                        </div>
+                        <p className="text-[11px] opacity-90">{dt.explanation}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {(Array.isArray(filteredStudents) ? filteredStudents : []).length === 0 ? (
+                  <div className={`p-6 rounded-2xl border text-center space-y-1.5 text-xs ${subCardClass}`}>
+                    <div className="font-black text-sm">
+                      هنوز کاربر ثبت‌نام‌شده‌ای در این بخش وجود ندارد
+                    </div>
+                    <p className="opacity-75 font-bold">
+                      تنها کاربران واقعی که در ربات تلگرام یا فرم ثبت‌نام احراز هویت کرده‌اند در این فهرست نمایش داده می‌شوند.
+                    </p>
+                  </div>
+                ) : null}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {(Array.isArray(filteredStudents) ? filteredStudents : []).map((st) => (
+                    <div
+                      key={st.id}
+                      className={`p-3.5 rounded-2xl border space-y-2.5 transition-all hover:border-[#D4AB58] ${subCardClass}`}
+                    >
+                      <div
+                        onClick={() => {
+                          playTick();
+                          setSelectedStudentIdForDossier(st.id);
+                          setDossierTab('overview');
+                        }}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-11 h-11 rounded-full overflow-hidden border border-[#D4AB58]/50 bg-black/20 shrink-0">
+                            <PixelImage
+                              filename={st.avatar || '01_avatar_boy.png'}
+                              alt={st.fullName}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-xs font-black">{st.fullName}</span>
+                              {isProtectedMasterAccount(st) && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-lg bg-[#D4AB58]/25 text-[#D4AB58] border border-[#D4AB58]/60 font-black">
+                                  👑 مالک و مدیر ارشد کل (629890497)
+                                </span>
+                              )}
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-black/20 font-mono font-bold">
+                                {st.studentId}
+                              </span>
+                              {st.isBanned && !isProtectedMasterAccount(st) ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-600 text-white font-black">
+                                  حساب قفل 🚫
+                                </span>
+                              ) : (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-600/20 text-emerald-400 font-black">
+                                  حساب باز ✓
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              className={`text-[11px] font-bold ${
+                                isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                              }`}
+                            >
+                              ورودی {st.cohortYear} • سطح {st.level} • KYC:{' '}
+                              {isProtectedMasterAccount(st) || st.kycStatus === 'verified'
+                                ? 'باز و تایید شده ✅'
+                                : st.kycStatus === 'required' || st.kycStatus === 'kyc_locked'
+                                ? 'قفل شده (نیاز به کارت دانشجویی) 🔒'
+                                : 'در انتظار بررسی ⏳'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-left shrink-0">
+                          <div className="text-xs font-black text-emerald-500">{st.score} 💎</div>
+                          <span className="text-[10px] font-black text-[#D4AB58] underline">
+                            پرونده ۳۶۰ ←
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Direct Quick Two-Way Lock/Unlock Bar on Card */}
+                      <div className="pt-2 border-t border-current/10 flex flex-wrap items-center justify-between gap-1.5 text-[10px] font-black">
+                        {isProtectedMasterAccount(st) ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled
+                              className="px-2.5 py-1 rounded-lg bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                            >
+                              🔒 قفل کارت دانشجویی (غیرفعال)
+                            </button>
+                            <button
+                              type="button"
+                              disabled
+                              className="px-2.5 py-1 rounded-lg bg-zinc-700/40 text-zinc-400 border border-zinc-600/40 cursor-not-allowed opacity-60"
+                            >
+                              🔒 مسدودسازی (غیرفعال)
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleModifyStudentDossier(st, {
+                                  explicitKycStatus:
+                                    st.kycStatus === 'verified' ? 'required' : 'verified',
+                                })
+                              }
+                              className={`px-2.5 py-1 rounded-lg cursor-pointer ${
+                                st.kycStatus === 'verified'
+                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                                  : 'bg-emerald-600 text-white'
+                              }`}
+                            >
+                              {st.kycStatus === 'verified'
+                                ? '🔒 قفل کردن KYC'
+                                : '🔓 باز کردن قفل KYC (تایید)'}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleModifyStudentDossier(st, {
+                                  explicitBanStatus: !st.isBanned,
+                                })
+                              }
+                              className={`px-2.5 py-1 rounded-lg cursor-pointer ${
+                                st.isBanned
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-rose-700/80 text-white'
+                              }`}
+                            >
+                              {st.isBanned
+                                ? '🔓 باز کردن حساب'
+                                : '🚫 قفل حساب'}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteStudentUser(st)}
+                              className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-600 text-white cursor-pointer"
+                              title="حذف کامل کاربر از سایت و ربات"
+                            >
+                              🗑 حذف کاربر
+                            </button>
+                          </>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playTick();
+                            setSelectedStudentIdForDossier(st.id);
+                            setDossierTab('chats');
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#354B40] text-[#F6F1E7] border border-[#7FB69E]/40 cursor-pointer"
+                        >
+                          💬 چت مستقیم
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playTick();
+                            setSelectedStudentIdForDossier(st.id);
+                            setDossierTab('overview');
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#D4AB58] text-[#101622] cursor-pointer"
+                        >
+                          ✏️ ویرایش و امتیاز
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
 
             {/* ===============================================================
-                360° STUDENT DOSSIER MODAL (Edit Identity, Delete, KYC Lock/Unlock, Custom Points)
+                360° STUDENT DOSSIER MODAL (Edit Identity, Delete, KYC Lock/Unlock, Custom Points, Direct Chat)
                =============================================================== */}
             {activeDossierStudent && (
               <div
@@ -4094,6 +4663,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <X className="w-4 h-4" />
                     </button>
                   </div>
+
+                  {/* Quick CTA to Start Direct Chat with Student */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playTick();
+                      setDossierTab('chats');
+                    }}
+                    className="w-full py-2.5 px-3 rounded-2xl bg-[#354B40] hover:bg-[#3f594c] text-[#F6F1E7] border border-[#7FB69E]/50 font-black text-xs cursor-pointer shadow flex items-center justify-center gap-2"
+                  >
+                    <MessageSquare className="w-4 h-4 text-[#D4AB58]" />
+                    <span>💬 شروع چت جدید / ارسال پیام مستقیم به دانشجو</span>
+                  </button>
 
                   {/* SECTION 0: EDIT USER FULL NAME & STUDENT ID + COMPLETE DELETE */}
                   <div className={`p-3.5 rounded-2xl border space-y-2.5 text-xs ${subCardClass}`}>
@@ -4427,106 +5009,235 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/20 text-xs font-black">
-                    <button
-                      type="button"
-                      onClick={() => setDossierTab('overview')}
-                      className={`py-1.5 rounded-lg cursor-pointer ${
-                        dossierTab === 'overview' ? 'bg-[#D4AB58] text-[#101622]' : ''
-                      }`}
-                    >
-                      کارگاه‌ها ({activeDossierStudent.attendedEvents.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDossierTab('payments')}
-                      className={`py-1.5 rounded-lg cursor-pointer ${
-                        dossierTab === 'payments' ? 'bg-[#D4AB58] text-[#101622]' : ''
-                      }`}
-                    >
-                      پرداختی‌ها ({activeDossierStudent.payments.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDossierTab('chats')}
-                      className={`py-1.5 rounded-lg cursor-pointer ${
-                        dossierTab === 'chats' ? 'bg-[#D4AB58] text-[#101622]' : ''
-                      }`}
-                    >
-                      چت‌ها ({activeDossierStudent.chatLogs.length})
-                    </button>
-                  </div>
+                  {(() => {
+                    const studentTickets = supportTicketList.filter(
+                      (tk) =>
+                        (activeDossierStudent.studentId &&
+                          tk.studentId === activeDossierStudent.studentId) ||
+                        (activeDossierStudent.telegramUserId &&
+                          tk.telegramUserId === activeDossierStudent.telegramUserId)
+                    );
+                    const totalChatCount =
+                      studentTickets.reduce(
+                        (sum, tk) => sum + (Array.isArray(tk.messages) ? tk.messages.length : 0),
+                        0
+                      ) || activeDossierStudent.chatLogs.length;
 
-                  {dossierTab === 'overview' && (
-                    <div className="space-y-2 text-xs">
-                      <div className="font-black text-[11px]">کارگاه‌های شرکت‌کرده:</div>
-                      {(Array.isArray(activeDossierStudent.attendedEvents)
-                        ? activeDossierStudent.attendedEvents
-                        : []
-                      ).map((evName, idx) => (
-                        <div
-                          key={idx}
-                          className="p-2.5 rounded-xl bg-black/10 border border-current/10 font-bold"
-                        >
-                          ✅ {evName}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {dossierTab === 'payments' && (
-                    <div className="space-y-2 text-xs">
-                      {(Array.isArray(activeDossierStudent.payments)
-                        ? activeDossierStudent.payments
-                        : []
-                      ).length === 0 ? (
-                        <div className="p-4 text-center font-bold opacity-70">
-                          تراکنش مالی ثبت نشده است.
-                        </div>
-                      ) : (
-                        activeDossierStudent.payments.map((pay, idx) => (
-                          <div
-                            key={idx}
-                            className="p-2.5 rounded-xl bg-black/10 border border-current/10 flex items-center justify-between font-bold"
+                    return (
+                      <>
+                        <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/20 text-xs font-black">
+                          <button
+                            type="button"
+                            onClick={() => setDossierTab('overview')}
+                            className={`py-1.5 rounded-lg cursor-pointer ${
+                              dossierTab === 'overview' ? 'bg-[#D4AB58] text-[#101622]' : ''
+                            }`}
                           >
-                            <div>
-                              <div className="font-black">{pay.title}</div>
-                              <div className="text-[10px] opacity-75">{pay.date}</div>
-                            </div>
-                            <span className="font-black text-emerald-500">
-                              {pay.amount.toLocaleString('fa-IR')} تومان
-                            </span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-
-                  {dossierTab === 'chats' && (
-                    <div className="space-y-2 text-xs">
-                      {(Array.isArray(activeDossierStudent.chatLogs)
-                        ? activeDossierStudent.chatLogs
-                        : []
-                      ).length === 0 ? (
-                        <div className="p-4 text-center font-bold opacity-70">
-                          سابقه گفتگویی ثبت نشده است.
-                        </div>
-                      ) : (
-                        activeDossierStudent.chatLogs.map((chat, idx) => (
-                          <div
-                            key={idx}
-                            className="p-2.5 rounded-xl bg-black/10 border border-current/10 font-bold"
+                            کارگاه‌ها ({activeDossierStudent.attendedEvents.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDossierTab('payments')}
+                            className={`py-1.5 rounded-lg cursor-pointer ${
+                              dossierTab === 'payments' ? 'bg-[#D4AB58] text-[#101622]' : ''
+                            }`}
                           >
-                            <div className="flex justify-between text-[10px] opacity-75 mb-1">
-                              <span>{chat.sender}</span>
-                              <span>{chat.time}</span>
-                            </div>
-                            <div>{chat.text}</div>
+                            پرداختی‌ها ({activeDossierStudent.payments.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDossierTab('chats')}
+                            className={`py-1.5 rounded-lg cursor-pointer ${
+                              dossierTab === 'chats' ? 'bg-[#D4AB58] text-[#101622]' : ''
+                            }`}
+                          >
+                            چت‌ها ({totalChatCount})
+                          </button>
+                        </div>
+
+                        {dossierTab === 'overview' && (
+                          <div className="space-y-2 text-xs">
+                            <div className="font-black text-[11px]">کارگاه‌های شرکت‌کرده:</div>
+                            {(Array.isArray(activeDossierStudent.attendedEvents)
+                              ? activeDossierStudent.attendedEvents
+                              : []
+                            ).map((evName, idx) => (
+                              <div
+                                key={idx}
+                                className="p-2.5 rounded-xl bg-black/10 border border-current/10 font-bold"
+                              >
+                                ✅ {evName}
+                              </div>
+                            ))}
                           </div>
-                        ))
-                      )}
-                    </div>
-                  )}
+                        )}
+
+                        {dossierTab === 'payments' && (
+                          <div className="space-y-2 text-xs">
+                            {(Array.isArray(activeDossierStudent.payments)
+                              ? activeDossierStudent.payments
+                              : []
+                            ).length === 0 ? (
+                              <div className="p-4 text-center font-bold opacity-70">
+                                تراکنش مالی ثبت نشده است.
+                              </div>
+                            ) : (
+                              activeDossierStudent.payments.map((pay, idx) => (
+                                <div
+                                  key={idx}
+                                  className="p-2.5 rounded-xl bg-black/10 border border-current/10 flex items-center justify-between font-bold"
+                                >
+                                  <div>
+                                    <div className="font-black">{pay.title}</div>
+                                    <div className="text-[10px] opacity-75">{pay.date}</div>
+                                  </div>
+                                  <span className="font-black text-emerald-500">
+                                    {pay.amount.toLocaleString('fa-IR')} تومان
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
+
+                        {dossierTab === 'chats' && (
+                          <div className="space-y-3 text-xs">
+                            {(() => {
+                              const latestTicket =
+                                studentTickets.find((t) => t.status !== 'closed') ||
+                                studentTickets[0] ||
+                                null;
+                              return (
+                                <>
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="font-black text-[#D4AB58]">
+                                      💬 گفتگوی دوطرفه با {activeDossierStudent.fullName}:
+                                    </span>
+                                    {latestTicket && latestTicket.status !== 'closed' && (
+                                      <button
+                                        type="button"
+                                        disabled={isSendingAdminChat}
+                                        onClick={() => void handleAdminCloseChat(latestTicket)}
+                                        className="px-2.5 py-1 rounded-xl bg-rose-700 hover:bg-rose-600 text-white text-[10px] font-black cursor-pointer flex items-center gap-1"
+                                      >
+                                        <Lock className="w-3 h-3" />
+                                        <span>🔒 بستن چت ({latestTicket.id})</span>
+                                      </button>
+                                    )}
+                                    {latestTicket && latestTicket.status === 'closed' && (
+                                      <span className="px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-700 text-[10px] font-black">
+                                        🔒 آخرین گفتگو بسته شده است
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div
+                                    className="space-y-2 max-h-56 overflow-y-auto p-3 rounded-2xl bg-black/20 border border-current/10"
+                                    dir="rtl"
+                                  >
+                                    {studentTickets.length > 0 ? (
+                                      studentTickets.flatMap((tk) =>
+                                        (Array.isArray(tk.messages) ? tk.messages : []).map(
+                                          (msg) => {
+                                            const isStu = msg.sender === 'user';
+                                            return (
+                                              <div
+                                                key={`${tk.id}-${msg.id}`}
+                                                className={`flex flex-col ${
+                                                  isStu ? 'items-start' : 'items-end'
+                                                }`}
+                                              >
+                                                <div className="text-[10px] font-bold opacity-75 px-1 mb-0.5">
+                                                  {isStu
+                                                    ? `👤 ${msg.senderName || activeDossierStudent.fullName}`
+                                                    : `👨‍💼 ${msg.senderName || 'پشتیبانی انجمن صنایع'}`}{' '}
+                                                  • {msg.date ? `${msg.date} ساعت ` : ''}
+                                                  {msg.time}
+                                                </div>
+                                                <div
+                                                  className={`max-w-[85%] p-2.5 rounded-2xl text-xs font-medium leading-relaxed ${
+                                                    isStu
+                                                      ? 'bg-[#354B40] text-[#F6F1E7] rounded-tr-sm border border-[#7FB69E]/40'
+                                                      : 'bg-[#1D2B3A] text-[#F6F1E7] rounded-tl-sm border border-[#D4AB58]/50'
+                                                  }`}
+                                                >
+                                                  {msg.text}
+                                                </div>
+                                              </div>
+                                            );
+                                          }
+                                        )
+                                      )
+                                    ) : (Array.isArray(activeDossierStudent.chatLogs)
+                                        ? activeDossierStudent.chatLogs
+                                        : []
+                                      ).length === 0 ? (
+                                      <div className="p-3 text-center font-bold opacity-75">
+                                        هنوز گفتگویی با این دانشجو ثبت نشده است. با ارسال پیام در کادر زیر، گفتگوی مستقیم آغاز می‌شود.
+                                      </div>
+                                    ) : (
+                                      activeDossierStudent.chatLogs.map((chat, idx) => (
+                                        <div
+                                          key={idx}
+                                          className="p-2.5 rounded-xl bg-black/10 border border-current/10 font-bold"
+                                        >
+                                          <div className="flex justify-between text-[10px] opacity-75 mb-1">
+                                            <span>{chat.sender}</span>
+                                            <span>{chat.time}</span>
+                                          </div>
+                                          <div>{chat.text}</div>
+                                        </div>
+                                      ))
+                                    )}
+                                  </div>
+
+                                  <form
+                                    onSubmit={(e) => {
+                                      e.preventDefault();
+                                      if (!directDossierMessageText.trim()) return;
+                                      void handleAdminSendChatMessage({
+                                        targetStudent: activeDossierStudent,
+                                        existingTicket:
+                                          latestTicket && latestTicket.status !== 'closed'
+                                            ? latestTicket
+                                            : null,
+                                        text: directDossierMessageText,
+                                      });
+                                    }}
+                                    className="space-y-2 pt-1"
+                                  >
+                                    <textarea
+                                      rows={2}
+                                      value={directDossierMessageText}
+                                      onChange={(e) =>
+                                        setDirectDossierMessageText(e.target.value)
+                                      }
+                                      placeholder={`پیام مستقیم به ${activeDossierStudent.fullName} (نمایش در چت مینی‌اپ + ارسال در ربات تلگرام)...`}
+                                      className={`w-full px-3 py-2 rounded-xl border text-xs font-bold ${inputClass}`}
+                                    />
+                                    <button
+                                      type="submit"
+                                      disabled={
+                                        !directDossierMessageText.trim() || isSendingAdminChat
+                                      }
+                                      className="w-full py-2.5 px-3 rounded-xl bg-[#D4AB58] hover:bg-[#e1b864] text-[#101622] font-black text-xs cursor-pointer shadow flex items-center justify-center gap-1.5 disabled:opacity-50"
+                                    >
+                                      <Send className="w-3.5 h-3.5 rotate-180" />
+                                      <span>
+                                        {isSendingAdminChat
+                                          ? 'در حال ارسال...'
+                                          : '📤 ارسال پیام مستقیم به دانشجو (مینی‌اپ + تلگرام)'}
+                                      </span>
+                                    </button>
+                                  </form>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             )}
@@ -4629,7 +5340,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       {(Array.isArray(eventList) ? eventList : []).map((ev) => (
                         <option key={ev.id} value={ev.id}>
                           {ev.id === selectedFeaturedEventId ? '🌟 [رویداد ویژه فعلی] ' : ''}
-                          {ev.title} ({ev.date} • ظرفیت باقی‌مانده: {ev.capacityRemaining} نفر)
+                          {ev.title} ({ev.date} •{' '}
+                          {ev.hasCapacityLimit === false
+                            ? '♾️ ظرفیت نامحدود'
+                            : `ظرفیت باقی‌مانده: ${ev.capacityRemaining} نفر`}
+                          )
                         </option>
                       ))}
                     </select>
@@ -4697,7 +5412,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       className={`px-2.5 py-2 rounded-xl border text-xs font-bold ${inputClass}`}
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <div>
                       <span className="text-[10px] font-bold block mb-0.5">هزینه (تومان):</span>
                       <input
@@ -4708,13 +5423,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       />
                     </div>
                     <div>
-                      <span className="text-[10px] font-bold block mb-0.5">ظرفیت:</span>
-                      <input
-                        type="number"
-                        value={eventCapacityInput}
-                        onChange={(e) => setEventCapacityInput(Number(e.target.value))}
-                        className={`w-full px-2.5 py-1.5 rounded-xl border text-xs font-bold ${inputClass}`}
-                      />
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-[10px] font-bold">تعیین سقف ظرفیت:</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playSwitch();
+                            setEventHasCapacityLimitInput((prev) => !prev);
+                          }}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-black cursor-pointer ${
+                            eventHasCapacityLimitInput
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-amber-500/20 text-[#D4AB58] border border-[#D4AB58]/40'
+                          }`}
+                        >
+                          {eventHasCapacityLimitInput ? '✅ دارای سقف ظرفیت' : '♾️ ظرفیت نامحدود'}
+                        </button>
+                      </div>
+                      {eventHasCapacityLimitInput ? (
+                        <input
+                          type="number"
+                          min={1}
+                          value={eventCapacityInput}
+                          onChange={(e) =>
+                            setEventCapacityInput(Math.max(1, Number(e.target.value) || 1))
+                          }
+                          placeholder="سقف ظرفیت (مثلاً ۴۰)"
+                          className={`w-full px-2.5 py-1.5 rounded-xl border text-xs font-bold ${inputClass}`}
+                        />
+                      ) : (
+                        <div className="px-2.5 py-1.5 rounded-xl border border-dashed border-[#D4AB58]/40 bg-black/20 text-[11px] font-black text-[#D4AB58] text-center">
+                          ♾️ ظرفیت نامحدود (بدون قفل تکمیل ظرفیت)
+                        </div>
+                      )}
                     </div>
                     <div>
                       <span className="text-[10px] font-bold block mb-0.5">پاداش امتیاز:</span>
@@ -4875,6 +5616,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       ev.discountTomansPerStep || discountRule.discountTomansPerStep || 10000;
                     const evMin = ev.discountMinPoints || discountRule.minPoints || evStep;
                     const evMax = ev.discountMaxPoints || discountRule.maxPoints || 100;
+                    const hasCapLimit = ev.hasCapacityLimit !== false;
+                    const totalCap = ev.totalCapacity || ev.capacityTotal || 40;
+                    const remCap = Math.max(0, ev.capacityRemaining ?? ev.remainingCapacity ?? 0);
+                    const regCount =
+                      ev.registeredCount ??
+                      (hasCapLimit ? Math.max(0, totalCap - remCap) : 0);
+                    const isFull = isEventCapacityFull(ev);
                     return (
                       <div
                         key={ev.id}
@@ -4892,6 +5640,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   🌟 رویداد ویژه صفحه اول
                                 </span>
                               )}
+                              {isFull && (
+                                <span className="px-2 py-0.5 rounded-full bg-rose-700 text-white text-[10px] font-black">
+                                  🔒 تکمیل ظرفیت
+                                </span>
+                              )}
                               <span className="font-black truncate">{ev.title}</span>
                             </div>
                             <div
@@ -4899,8 +5652,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                               }`}
                             >
-                              {ev.date} • ظرفیت: {ev.capacityRemaining}/{ev.capacityTotal} • +
-                              {ev.rewardPoints} امتیاز
+                              {ev.date} •{' '}
+                              {hasCapLimit
+                                ? `ظرفیت کل: ${totalCap.toLocaleString('fa-IR')} • ثبت‌نام‌شده: ${regCount.toLocaleString('fa-IR')} • باقی‌مانده واقعی: ${remCap.toLocaleString('fa-IR')} نفر`
+                                : `♾️ ظرفیت نامحدود • ثبت‌نام‌شده: ${regCount.toLocaleString('fa-IR')} نفر`}{' '}
+                              • +{ev.rewardPoints} امتیاز
                             </div>
                             {ev.basePrice > 0 && (
                               <div className="text-[10px] font-bold text-[#D4AB58] mt-1">
@@ -4976,7 +5732,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 setEventTimeInput(ev.time);
                                 setEventLocationInput(ev.location);
                                 setEventPriceInput(ev.basePrice);
-                                setEventCapacityInput(ev.capacityRemaining);
+                                setEventHasCapacityLimitInput(ev.hasCapacityLimit !== false);
+                                setEventCapacityInput(
+                                  ev.hasCapacityLimit !== false
+                                    ? ev.totalCapacity || ev.capacityTotal || 40
+                                    : 40
+                                );
                                 setEventPointsInput(ev.rewardPoints);
                                 setEventInstructorInput(ev.instructor);
                                 setEventAllowDiscountInput(ev.allowPointsDiscount !== false);

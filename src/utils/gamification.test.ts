@@ -31,9 +31,15 @@ import {
   resolveEventPixelImage,
   resolveEventDiscountRule,
   calculateFinalPayable,
+  isEventCapacityFull,
+  decrementEventCapacityOnRegistration,
 } from './events';
 import { ensureContinuousPinnedAnnouncements } from './channelSync';
-import { resolveReceiptOrKycImageUrl } from './apiBridge';
+import {
+  resolveReceiptOrKycImageUrl,
+  normalizeSupportTicket,
+  normalizeSupportTicketsList,
+} from './apiBridge';
 import { AdminStudentDossier, TicketRecord, UserProfile } from '../types';
 
 const MOCK_USER: UserProfile = {
@@ -454,4 +460,77 @@ test('resolveReceiptOrKycImageUrl resolves imageUrl or constructs tg-photo endpo
     'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/tg-photo?fileId=AgACAgQAAxkBAAIC02Y1xyz987654321'
   );
 });
+
+test('isEventCapacityFull and decrementEventCapacityOnRegistration handle limited and unlimited workshops accurately', () => {
+  const limitedEv = normalizeEvent({
+    id: 'ev-limited',
+    title: 'کارگاه تحلیل داده',
+    hasCapacityLimit: true,
+    totalCapacity: 2,
+    remainingCapacity: 1,
+    registeredCount: 1,
+  });
+  assert.equal(isEventCapacityFull(limitedEv), false);
+
+  // Decrementing remaining capacity from 1 -> 0 marks it full
+  const afterReg = decrementEventCapacityOnRegistration([limitedEv], 'ev-limited');
+  assert.equal(afterReg[0].remainingCapacity, 0);
+  assert.equal(afterReg[0].capacityRemaining, 0);
+  assert.equal(afterReg[0].registeredCount, 2);
+  assert.equal(isEventCapacityFull(afterReg[0]), true);
+
+  // Unlimited capacity workshop (hasCapacityLimit: false) never locks even if remainingCapacity is 0
+  const unlimitedEv = normalizeEvent({
+    id: 'ev-unlimited',
+    title: 'سمینار آزاد مهندسی صنایع',
+    hasCapacityLimit: false,
+    totalCapacity: 0,
+    remainingCapacity: 0,
+    registeredCount: 15,
+  });
+  assert.equal(isEventCapacityFull(unlimitedEv), false);
+
+  const afterUnlimitedReg = decrementEventCapacityOnRegistration([unlimitedEv], 'ev-unlimited');
+  assert.equal(isEventCapacityFull(afterUnlimitedReg[0]), false);
+  assert.equal(afterUnlimitedReg[0].registeredCount, 16);
+});
+
+test('normalizeSupportTicket and normalizeSupportTicketsList normalize student/admin messages and closed status', () => {
+  const rawTicket = {
+    id: 'TKT-9012',
+    studentId: '4019998877',
+    studentName: 'علی محمدی',
+    subject: 'سوال درباره گواهی کارگاه پایتون',
+    status: 'closed',
+    messages: [
+      {
+        id: 'm1',
+        sender: 'student',
+        senderName: 'علی محمدی',
+        text: 'سلام، گواهی کی صادر می‌شود؟',
+        timestamp: '۱۴۰۴/۰۸/۲۰ - ۱۰:۱۵',
+      },
+      {
+        id: 'm2',
+        sender: 'admin',
+        senderName: 'مدیریت انجمن علمی صنایع',
+        text: 'سلام، گواهی شما صادر شد و در بخش پروفایل قابل دریافت است.',
+        timestamp: '۱۴۰۴/۰۸/۲۰ - ۱۰:۳۰',
+      },
+    ],
+  };
+
+  const normalized = normalizeSupportTicket(rawTicket);
+  assert.ok(normalized);
+  assert.equal(normalized.id, 'TKT-9012');
+  assert.equal(normalized.status, 'closed');
+  assert.equal(normalized.messages.length, 2);
+  assert.equal(normalized.messages[0].sender, 'user');
+  assert.equal(normalized.messages[1].sender, 'support');
+
+  const list = normalizeSupportTicketsList([rawTicket]);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].closedByAdmin, true);
+});
+
 
