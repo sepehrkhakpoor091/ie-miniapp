@@ -31,7 +31,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۱۴ آبان ۱۴۰۴',
     tier: 'gold',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:19_badge_trophy:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:19_badge_trophy:402100000'),
     description: 'اعطا شده به پاس کسب مقام اول تیمی در ماراتن مدل‌سازی ریاضی و زنجیره تامین دانشکده مهندسی صنایع.',
     nextTierRequirement: 'کسب ۲ مقام دیگر در مسابقات ملی مهندسی صنایع برای ارتقا به کاپ الماس.',
   },
@@ -43,7 +43,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۲ مهر ۱۴۰۴',
     tier: 'cyan',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:20_badge_shield:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:20_badge_shield:402100000'),
     description: 'نشان رسمی بازرسان و اعضای پرتلاش برگزاری رویدادهای علمی و کارگاه‌های تخصصی انجمن صنایع.',
     nextTierRequirement: 'همکاری در برگزاری ۵ رویداد بزرگ دانشکده برای دریافت سپر طلایی.',
   },
@@ -55,7 +55,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۲۲ مهر ۱۴۰۴',
     tier: 'emerald',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:22_badge_book:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:22_badge_book:402100000'),
     description: 'تکمیل موفقیت‌آمیز بیش از ۴۰ ساعت دوره آموزشی تخصصی پایتون، شبیه‌سازی و تحلیل سیستم‌ها.',
     nextTierRequirement: 'چاپ ۱ مقاله علمی-ترویجی در نشریه تخصصی مهندسی صنایع.',
   },
@@ -67,7 +67,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۱۰ آبان ۱۴۰۴',
     tier: 'gold',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:21_badge_medal:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:21_badge_medal:402100000'),
     description: 'انتشار مقاله تحلیلی پیرامون کاربرد هوش مصنوعی در برنامه‌ریزی تولید در نشریه علمی دانشجویی.',
     nextTierRequirement: 'سردبیری ویژهنامه سالانه انجمن علمی مهندسی صنایع.',
   },
@@ -79,7 +79,7 @@ export const SHOWCASE_BADGES: BadgeItem[] = [
     earnedDate: '۲۵ آبان ۱۴۰۴',
     tier: 'royal',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:24_badge_crown:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:24_badge_crown:402100000'),
     description: 'قرارگیری در جمع ۵ دانشجوی پرامتیاز و برتر در جدول رده‌بندی کل انجمن.',
     nextTierRequirement: 'حفظ جایگاه در سکوی ۳ نفر اول تا پایان نیم‌سال تحصیلی.',
   },
@@ -95,7 +95,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۲۶ آبان ۱۴۰۴',
     tier: 'cyan',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:23_badge_diamond:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:23_badge_diamond:402100000'),
     description: 'عبور از مرز ۲۵۰ امتیاز خالص در فعالیت‌های علمی، کارگاه‌ها و ماموریت‌های هفتگی.',
     nextTierRequirement: 'رسیدن به مرز ۵۰۰ امتیاز برای دریافت الماس درخشان.',
   },
@@ -107,7 +107,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۱ مهر ۱۴۰۲',
     tier: 'emerald',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:25_rank_lvl1:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:25_rank_lvl1:402100000'),
     description: 'ورود رسمی به خانواده بزرگ انجمن علمی مهندسی صنایع و احراز هویت تلگرامی.',
     nextTierRequirement: 'تکمیل شده ✓',
   },
@@ -119,7 +119,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۱۵ اردیبهشت ۱۴۰۳',
     tier: 'cyan',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:26_rank_lvl2:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:26_rank_lvl2:402100000'),
     description: 'کسب مهارت‌های پایه در برنامه‌ریزی، کنترل پروژه و مشارکت در بازدیدهای صنعتی.',
     nextTierRequirement: 'تکمیل شده ✓',
   },
@@ -131,7 +131,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
     earnedDate: '۱ آبان ۱۴۰۴',
     tier: 'gold',
     isUnlocked: true,
-    verificationHash: computeSignatureHash('BADGE:27_rank_lvl3:4011234567'),
+    verificationHash: computeSignatureHash('BADGE:27_rank_lvl3:402100000'),
     description: 'تسلط بر ابزارهای نوین تحلیل داده و حضور مستمر در رویدادهای تخصصی دانشکده.',
     nextTierRequirement: 'کسب امتیاز بیشتر برای ارتقا به سطح ۴ (مشاور ارشد).',
   },
@@ -151,7 +151,7 @@ export const EXTENDED_BADGES: BadgeItem[] = [
 
 export const DEFAULT_CERTIFICATES: CertificateInfo[] = [
   {
-    certificateId: generateCertificateCode('401', 'PMBOK-MSP', '4011234567'),
+    certificateId: generateCertificateCode('401', 'PMBOK-MSP', '402100000'),
     studentName: 'علی محمدی',
     courseTitle: 'کارگاه تخصصی کنترل پروژه با MSP و استاندارد PMBOK',
     instructor: 'دکتر علی محمدی',
@@ -159,10 +159,10 @@ export const DEFAULT_CERTIFICATES: CertificateInfo[] = [
     grade: 'عالی (۹۸ از ۱۰۰)',
     isValid: true,
     hours: 16,
-    signatureHash: computeSignatureHash('CERT:PMBOK-MSP:4011234567'),
+    signatureHash: computeSignatureHash('CERT:PMBOK-MSP:402100000'),
   },
   {
-    certificateId: generateCertificateCode('401', 'PYTHON-IE', '4011234567'),
+    certificateId: generateCertificateCode('401', 'PYTHON-IE', '402100000'),
     studentName: 'علی محمدی',
     courseTitle: 'بوت‌کمپ تحلیل داده‌های صنعتی با Python و Pandas',
     instructor: 'مهندس آرش شمس',
@@ -170,7 +170,7 @@ export const DEFAULT_CERTIFICATES: CertificateInfo[] = [
     grade: 'عالی (۹۵ از ۱۰۰)',
     isValid: true,
     hours: 24,
-    signatureHash: computeSignatureHash('CERT:PYTHON-IE:4011234567'),
+    signatureHash: computeSignatureHash('CERT:PYTHON-IE:402100000'),
   },
 ];
 
@@ -588,14 +588,14 @@ export function redeemLootboxChest(
     ? Number(activeConfig.goldCost) || 100
     : Number(activeConfig.bronzeCost) || 50;
 
-  // 1. Verify anti-tamper state integrity first!
+  // 1. Verify state integrity first!
   if (!verifyStateIntegrity(user, storedChecksum)) {
     return {
       success: false,
       tamperDetected: true,
       costPoints: 0,
       errorReason:
-        '🚨 هشدار امنیتی ضد تقلب: دستکاری غیرمجاز امتیاز در حافظه مرورگر شناسایی شد! امتیاز به مقدار تاییدشده بازنشانی گردید.',
+        '⚠️ عدم تطابق موجودی امتیاز شناسایی شد. موجودی شما با اطلاعات سرور انجمن همگام‌سازی گردید.',
     };
   }
 
@@ -899,36 +899,36 @@ export function evaluateDynamicBadges(
       userGrantedBadges.has(file) || userGrantedBadges.has(badge.id);
 
     let unlocked = explicitlyGranted;
-    let nextReq = badge.nextTierRequirement;
+    let defaultReq = badge.nextTierRequirement;
 
     if (file === '20_badge_shield.png') {
       unlocked = unlocked || isOnboarded;
-      nextReq = unlocked
+      defaultReq = unlocked
         ? 'تکمیل شده ✓ (هویت دانشجویی تایید شد)'
         : 'تکمیل فرم ثبت‌نام اولیه و تایید شماره دانشجویی در سامانه.';
     } else if (file === '22_badge_book.png' || file === '20_badge_chart.png') {
       unlocked = unlocked || hasRegisteredWorkshop || score >= 150;
-      nextReq = unlocked
+      defaultReq = unlocked
         ? 'تکمیل شده ✓ (ثبت‌نام در کارگاه تخصصی)'
         : 'ثبت‌نام در اولین کارگاه یا رویداد علمی انجمن مهندسی صنایع.';
     } else if (file === '21_badge_medal.png' || file === '21_badge_code.png') {
       unlocked = unlocked || hasActiveParticipation;
-      nextReq = unlocked
+      defaultReq = unlocked
         ? 'تکمیل شده ✓ (مشارکت فعال در چارت درسی / ماموریت هفتگی)'
         : 'تکمیل حداقل ۱ ماموریت هفتگی یا بروزرسانی چارت درسی ۱۴۲ واحدی.';
     } else if (file === '23_badge_diamond.png') {
       unlocked = unlocked || score >= 100;
-      nextReq = unlocked
+      defaultReq = unlocked
         ? 'تکمیل شده ✓ (عبور از مرز ۱۰۰ امتیاز الماس)'
         : `کسب ${(100 - score).toLocaleString('fa-IR')} امتیاز دیگر برای رسیدن به ۱۰۰ الماس.`;
     } else if (file === '19_badge_trophy.png' || file === '19_badge_Gear.png') {
       unlocked = unlocked || hasThreeWorkshops || score >= 200;
-      nextReq = unlocked
+      defaultReq = unlocked
         ? 'تکمیل شده ✓ (حضور تاییدشده در کارگاه‌های انجمن)'
         : 'ثبت‌نام در ۳ رویداد یا اسکن بارکد حضور در حداقل ۱ کارگاه حضوری.';
     } else if (file === '24_badge_crown.png' || file === '24_badge_trophy.png') {
       unlocked = unlocked || score >= 300;
-      nextReq = unlocked
+      defaultReq = unlocked
         ? 'تکمیل شده ✓ (عضو تالار نخبگان مهندسی صنایع)'
         : `کسب ${Math.max(0, 300 - score).toLocaleString('fa-IR')} امتیاز دیگر برای رسیدن به سطح ۴ (۳۰۰ امتیاز).`;
     } else if (file === '25_rank_lvl1.png') {
@@ -943,8 +943,11 @@ export function evaluateDynamicBadges(
       unlocked = Boolean(badge.isUnlocked || explicitlyGranted);
     }
 
+    const customReq = (badge.nextTierRequirement || '').trim();
+    const nextReq = customReq || defaultReq;
+
     const verificationHash = unlocked
-      ? computeSignatureHash(`BADGE:${file}:${user.studentId || '4011234567'}`)
+      ? computeSignatureHash(`BADGE:${file}:${user.studentId || '402100000'}`)
       : computeSignatureHash(`BADGE:${file}:LOCKED`);
 
     return {
@@ -959,5 +962,210 @@ export function evaluateDynamicBadges(
       verificationHash,
     };
   });
+}
+
+export const BADGE_STATS_CACHE_KEY = 'ie_badge_stats_cache_v1';
+export const BADGE_STATS_CACHE_TTL_MS = 3600000; // 1 Hour (3,600,000 ms)
+
+export interface BadgeHolderStats {
+  holderCount: number;
+  totalStudents: number;
+  percentage: number;
+  updatedAt: number;
+}
+
+interface CachedBadgeStatsPayload {
+  updatedAt: number;
+  totalStudents: number;
+  counts: Record<string, number>;
+}
+
+function doesStudentQualifyForBadge(
+  stu: {
+    studentId?: string;
+    score?: number;
+    badges?: string[];
+    workshopsAttended?: string[];
+  },
+  badge: Pick<BadgeItem, 'id' | 'filename' | 'title'>
+): boolean {
+  const granted = Array.isArray(stu.badges) ? stu.badges : [];
+  if (
+    granted.includes(badge.filename) ||
+    granted.includes(badge.id) ||
+    granted.includes(badge.title)
+  ) {
+    return true;
+  }
+  const score = Math.max(0, Number(stu.score) || 0);
+  const workshopsCount = Array.isArray(stu.workshopsAttended)
+    ? stu.workshopsAttended.length
+    : 0;
+  const hasValidId = Boolean(stu.studentId && String(stu.studentId).trim().length >= 6);
+  const file = badge.filename;
+
+  if (file === '20_badge_shield.png' || file === '25_rank_lvl1.png') {
+    return hasValidId;
+  }
+  if (file === '22_badge_book.png' || file === '20_badge_chart.png') {
+    return workshopsCount >= 1 || score >= 150;
+  }
+  if (
+    file === '21_badge_medal.png' ||
+    file === '21_badge_code.png' ||
+    file === '26_rank_lvl2.png'
+  ) {
+    return score >= 50;
+  }
+  if (file === '23_badge_diamond.png') {
+    return score >= 100;
+  }
+  if (file === '19_badge_trophy.png' || file === '19_badge_Gear.png') {
+    return workshopsCount >= 3 || score >= 200;
+  }
+  if (file === '27_rank_lvl3.png') {
+    return score >= 150;
+  }
+  if (
+    file === '24_badge_crown.png' ||
+    file === '24_badge_trophy.png' ||
+    file === '28_rank_lvl4.png'
+  ) {
+    return score >= 300;
+  }
+  return false;
+}
+
+/**
+ * Calculates real badge holder statistics across all authenticated students in the association,
+ * caching the result in `localStorage` under `ie_badge_stats_cache_v1` for 1 hour (3,600,000 ms).
+ */
+export function getBadgeHolderStats(
+  badge: BadgeItem,
+  realStudents: AdminStudentDossier[] = [],
+  currentUser?: Partial<UserProfile> | null,
+  nowMs = Date.now()
+): BadgeHolderStats {
+  const safeReal = Array.isArray(realStudents) ? realStudents : [];
+  const studentMap = new Map<
+    string,
+    {
+      studentId: string;
+      score: number;
+      badges: string[];
+      workshopsAttended: string[];
+    }
+  >();
+
+  for (const stu of safeReal) {
+    if (!stu || !stu.studentId || !String(stu.studentId).trim()) continue;
+    const key = String(stu.studentId).trim();
+    studentMap.set(key, {
+      studentId: key,
+      score: Math.max(0, Number(stu.score) || 0),
+      badges: Array.isArray(stu.badges) ? stu.badges : [],
+      workshopsAttended: Array.isArray(stu.workshopsAttended) ? stu.workshopsAttended : [],
+    });
+  }
+
+  const currentUserId = currentUser?.studentId ? String(currentUser.studentId).trim() : '';
+  if (currentUserId.length >= 6) {
+    const existing = studentMap.get(currentUserId);
+    studentMap.set(currentUserId, {
+      studentId: currentUserId,
+      score: Math.max(existing?.score || 0, Number(currentUser?.score) || 0),
+      badges: Array.from(
+        new Set([...(existing?.badges || []), ...(Array.isArray(currentUser?.badges) ? currentUser!.badges! : [])])
+      ),
+      workshopsAttended: existing?.workshopsAttended || [],
+    });
+  }
+
+  const allStudents = Array.from(studentMap.values());
+  const totalStudents = Math.max(allStudents.length, badge.isUnlocked ? 1 : 0);
+  const badgeKey = badge.id || badge.filename;
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const rawCache = window.localStorage.getItem(BADGE_STATS_CACHE_KEY);
+      if (rawCache) {
+        const parsed = JSON.parse(rawCache) as CachedBadgeStatsPayload;
+        if (
+          parsed &&
+          typeof parsed.updatedAt === 'number' &&
+          nowMs - parsed.updatedAt < BADGE_STATS_CACHE_TTL_MS &&
+          parsed.totalStudents === totalStudents &&
+          parsed.counts &&
+          typeof parsed.counts[badgeKey] === 'number'
+        ) {
+          const cachedHolderCount = Math.max(
+            badge.isUnlocked ? 1 : 0,
+            Math.min(totalStudents, parsed.counts[badgeKey])
+          );
+          const percentage =
+            totalStudents > 0 ? Math.min(100, Math.round((cachedHolderCount / totalStudents) * 100)) : 0;
+          return {
+            holderCount: cachedHolderCount,
+            totalStudents,
+            percentage,
+            updatedAt: parsed.updatedAt,
+          };
+        }
+      }
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+
+  let computedCount = 0;
+  for (const stu of allStudents) {
+    if (doesStudentQualifyForBadge(stu, badge)) {
+      computedCount += 1;
+    }
+  }
+  if (badge.isUnlocked && computedCount === 0) {
+    computedCount = 1;
+  }
+
+  const holderCount = Math.min(Math.max(totalStudents, computedCount), computedCount);
+  const finalTotal = Math.max(totalStudents, holderCount);
+  const percentage =
+    finalTotal > 0 ? Math.min(100, Math.round((holderCount / finalTotal) * 100)) : 0;
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      let existingCounts: Record<string, number> = {};
+      const prevRaw = window.localStorage.getItem(BADGE_STATS_CACHE_KEY);
+      if (prevRaw) {
+        const prevParsed = JSON.parse(prevRaw) as CachedBadgeStatsPayload;
+        if (
+          prevParsed &&
+          typeof prevParsed.updatedAt === 'number' &&
+          nowMs - prevParsed.updatedAt < BADGE_STATS_CACHE_TTL_MS &&
+          prevParsed.counts
+        ) {
+          existingCounts = prevParsed.counts;
+        }
+      }
+      const nextPayload: CachedBadgeStatsPayload = {
+        updatedAt: nowMs,
+        totalStudents: finalTotal,
+        counts: {
+          ...existingCounts,
+          [badgeKey]: holderCount,
+        },
+      };
+      window.localStorage.setItem(BADGE_STATS_CACHE_KEY, JSON.stringify(nextPayload));
+    }
+  } catch {
+    // Ignore storage write errors
+  }
+
+  return {
+    holderCount,
+    totalStudents: finalTotal,
+    percentage,
+    updatedAt: nowMs,
+  };
 }
 

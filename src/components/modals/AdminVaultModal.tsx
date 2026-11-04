@@ -183,11 +183,17 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
 
     try {
       const safeAdmins = Array.isArray(admins) ? admins : [];
-      // 1. Check Salted Cryptographic Master Hash (Zero Plaintext in Source Code)
-      const isMasterMatch = verifyMasterPasswordHash(trimmed);
       const passwordHash = computeAdminPasswordHash(trimmed);
 
-      // 2. Check custom delegated RBAC admin passwords (if any non-master admin was added)
+      // 1. Verify against Cloudflare Server (POST /api/miniapp/admin-auth)
+      const botAuth = await verifyAdminPasswordWithBot(
+        passwordHash,
+        realTgUser?.id,
+        trimmed
+      );
+      const isBackendVerified = botAuth.verified;
+
+      // 2. Check custom delegated RBAC admin passwords created in Module 7
       const matchedDelegatedAdmin = safeAdmins.find(
         (adm) =>
           !adm.isFrozen &&
@@ -197,17 +203,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
             computeAdminPasswordHash(adm.personalPassword.trim()) === passwordHash)
       );
 
-      // 3. If locally matched, unlock immediately and notify bot in background (zero UI lag!)
-      let isBackendVerified = false;
-      if (isMasterMatch) {
-        void verifyAdminPasswordWithBot(passwordHash);
-        isBackendVerified = true;
-      } else if (!matchedDelegatedAdmin) {
-        const botAuth = await verifyAdminPasswordWithBot(passwordHash);
-        isBackendVerified = botAuth.verified;
-      }
-
-      if (isMasterMatch || isBackendVerified || matchedDelegatedAdmin) {
+      if (isBackendVerified || matchedDelegatedAdmin) {
         playFanfare();
         setErrorMessage(null);
         setPasswordInput('');
@@ -215,12 +211,11 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
         localStorage.removeItem(FAILED_ATTEMPTS_KEY);
         localStorage.removeItem(LOCKOUT_STORAGE_KEY);
 
-        const resolvedAdmin =
-          isMasterMatch || isBackendVerified
-            ? resolveSupremeAdmin()
-            : matchedDelegatedAdmin;
+        const resolvedAdmin = isBackendVerified
+          ? resolveSupremeAdmin()
+          : matchedDelegatedAdmin;
 
-        // Bind to expiring sessionStorage cryptographic token (20-min inactivity TTL)
+        // Bind to expiring sessionStorage token (20-min inactivity TTL)
         createAdminSession(resolvedAdmin?.id || SUPREME_MASTER_ADMIN_RECORD.id);
 
         onUnlockSuccess(resolvedAdmin);
@@ -352,7 +347,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
           >
             {isLockedOut ? (
               <div className="flex items-center justify-between">
-                <span>⛔ قفل ضد نفوذ (Brute-Force Lock) فعال است:</span>
+                <span>⛔ قفل موقت امنیتی فعال است:</span>
                 <span className="font-mono font-black text-sm text-[#EF4444]">
                   {formatCountdown(remainingSeconds)}
                 </span>
@@ -362,7 +357,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-[#7FB69E]" />
-                    <span>سپر رمزنگاری Salted Hash فعال</span>
+                    <span>احراز هویت مستقیم از طریق سرور انجمن</span>
                   </span>
                   <div className="flex items-center gap-1" title="تلاش‌های مجاز باقی‌مانده">
                     {[0, 1, 2].map((idx) => (
@@ -392,7 +387,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                 <span className="font-mono">ID: {MASTER_ADMIN_TELEGRAM_ID}</span>
               </div>
               <p className="text-[11px] opacity-90">
-                اکانت تلگرام شما به عنوان «سطح ۵ - مدیر ارشد انجمن» با دسترسی کامل به هر ۸ ماژول شناسایی شد.
+                اکانت تلگرام شما به عنوان «سطح ۵ - مدیر ارشد انجمن» با دسترسی کامل به تمام ماژول‌ها شناسایی شد.
               </p>
               <PushButton
                 variant="primary"
@@ -412,7 +407,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
               <div className="flex items-center justify-between mb-1.5">
                 <label className="flex items-center gap-1.5 text-xs font-extrabold">
                   <KeyRound className="w-3.5 h-3.5 text-[#D4AB58]" />
-                  <span>رمز عبور امنیتی ادمین:</span>
+                  <span>رمز عبور پنل مدیریت:</span>
                 </label>
                 <span className="text-[10px] font-bold opacity-75">
                   {showPassword ? '👁️ در حال نمایش رمز' : '🔒 حالت مخفی'}
@@ -484,7 +479,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                 icon={<Lock className="w-4 h-4" />}
               >
                 {isVerifying
-                  ? 'در حال اعتبارسنجی رمزنگاری...'
+                  ? 'در حال بررسی رمز با سرور انجمن...'
                   : 'بازگشایی خزانه و ورود به پنل مدیریت'}
               </PushButton>
             </div>

@@ -9,6 +9,7 @@
 
 import { GoogleGenAI, Type } from '@google/genai';
 import { LootiModelId, Professor, ScheduledTimer } from '../types';
+import { askMiniAppAiOnBot } from './apiBridge';
 import { sanitizeAiPrompt } from './security';
 
 export const getSafeApiKey = (): string => {
@@ -50,13 +51,17 @@ export function buildLocalAdminLootiReply(query: string): string {
     return 'حله رفیق! 🎯 کارگاه تحلیل داده با پایتون ۱۸ نفر ظرفیت خالی داره و کارگاه مدیریت پروژه ۴۵ نفر. از بخش «مدیریت کارگاه‌ها و اساتید» می‌تونی ظرفیت یا امتیاز هر کارگاه رو درجا تغییر بدی ستون!';
   }
   if (q.includes('تخفیف') || q.includes('امتیاز') || q.includes('مدال')) {
-    return 'روی چشمم ستون! 🏆 الان فرمول تخفیف روی «هر ۱۰ امتیاز = ۵۰,۰۰۰ تومان تخفیف» تنظیم شده. از ماژول ۶ می‌تونی ضریب تخفیف رو عوض کنی یا به بچه‌های فعال مدال پیکسلی بدی!';
+    return 'روی چشمم ستون! 🏆 الان فرمول تخفیف روی «هر ۲۰ امتیاز = ۱۰,۰۰۰ تومان تخفیف» تنظیم شده. از ماژول ۶ می‌تونی ضریب تخفیف رو عوض کنی یا به بچه‌های فعال مدال پیکسلی بدی!';
   }
   return 'سلام ستون! 🤖 دستیار ویژه انجمن علمی مهندسی صنایع آماده خدمت‌رسانیه. برای تبدیل متن خام برنامه اساتید، ساخت تایمر هوشمند، یا تحلیل آمار ورودی‌ها هر امری داری بگو، روی چشمم، حله رفیق!';
 }
 
 /**
- * Ask Admin Looti AI with multi-layer fallback (Backend proxy -> Safe Direct SDK -> Local Mashdi Fallback)
+ * Ask Admin Looti AI with multi-layer fallback:
+ * 1) Live Cloudflare Worker AI Engine (`POST /api/miniapp/ai-chat`)
+ * 2) Local Server Proxy (`/api/ai/looti`)
+ * 3) Safe Direct SDK (if env key present)
+ * 4) Deterministic Local Fallback
  */
 export async function askAdminLootiAi(
   rawPrompt: string,
@@ -65,12 +70,34 @@ export async function askAdminLootiAi(
   const check = sanitizeAiPrompt(rawPrompt);
   if (!check.isSafe) {
     return {
-      reply: check.blockedReason || '⚠️ هشدار امنیتی سپر ادمین: ورودی نامعتبر.',
+      reply: check.blockedReason || '⚠️ هشدار امنیتی: ورودی نامعتبر.',
       modelUsed: modelId,
     };
   }
 
-  // 1. Try server-side proxy route first
+  // 1. Send request directly to Cloudflare Worker Bot AI Engine (POST /api/miniapp/ai-chat)
+  try {
+    const botAiRes = await askMiniAppAiOnBot({
+      prompt: check.sanitized,
+      modelId,
+      systemInstruction:
+        'تو دستیار هوشمند و مشتی پنل ادمین انجمن علمی مهندسی صنایع هستی. با تکیه‌کلام‌های محترمانه و صمیمی مثل «سلام ستون!»، «روی چشمم» و «حله رفیق» به فارسی پاسخ کوتاه و کاربردی بده.',
+      context: {
+        fullName: 'مدیر ارشد انجمن علمی مهندسی صنایع',
+        cohortYear: '۱۴۰۲',
+      },
+    });
+    if (botAiRes.ok && botAiRes.reply) {
+      return {
+        reply: botAiRes.reply,
+        modelUsed: (botAiRes.modelUsed as LootiModelId) || modelId,
+      };
+    }
+  } catch {
+    // Fall through to local proxy / fallback
+  }
+
+  // 2. Try local server-side proxy route
   try {
     if (typeof fetch !== 'undefined') {
       const response = await fetch('/api/ai/looti', {
@@ -101,7 +128,7 @@ export async function askAdminLootiAi(
     // Continue to safe SDK or local fallback
   }
 
-  // 2. Safe client-side SDK check ONLY if getSafeApiKey() returns a non-empty string
+  // 3. Safe client-side SDK check ONLY if getSafeApiKey() returns a non-empty string
   const apiKey = getSafeApiKey();
   if (apiKey && apiKey.trim().length > 5) {
     try {

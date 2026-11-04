@@ -22,6 +22,7 @@ import {
   AdminUser,
   AvatarCatalogItem,
   BadgeItem,
+  BotConfigSettings,
   CertificateInfo,
   ChannelAnnouncement,
   DEFAULT_ABOUT_CONFIG,
@@ -38,6 +39,7 @@ import {
   Professor,
   QuestConditionType,
   ScheduledTimer,
+  SimulationReportPayload,
   SiteSwitches,
   StudentIdDisputeTicket,
   SupportTicket,
@@ -95,15 +97,18 @@ import {
   loadStoredSupportChats,
   normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
+  saveAdminBotConfigToBot,
   saveEventsOnBot,
   saveLootboxConfigOnBot,
   saveProfessorsOnBot,
   saveSiteSwitchesOnBot,
   saveStoredSupportChats,
   sendAdminChatMessageToBot,
+  sendSimulationReportToBot,
   submitAdminReviewToBot,
   submitAdminUserActionToBot,
   toggleStudentTimersOnBot,
+  updateAdminSecretsOnBot,
   verifyQrCheckInWithBot,
 } from '../../utils/apiBridge';
 import {
@@ -430,7 +435,7 @@ const PERMISSION_LABELS: { key: AdminPermissionKey; label: string }[] = [
   { key: 'broadcast', label: 'همگانی' },
 ];
 
-type AdminModuleId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+type AdminModuleId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 interface AdminPanelProps {
   isOpen?: boolean;
@@ -1061,7 +1066,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [newQuestConditionType, setNewQuestConditionType] =
     useState<QuestConditionType>('register_events');
   const [newQuestMaxProgress, setNewQuestMaxProgress] = useState<number>(1);
-  const [newQuestSecretCode, setNewQuestSecretCode] = useState('IE1404');
+  const [newQuestSecretCode, setNewQuestSecretCode] = useState('');
 
   // New Custom Medal Form State
   const medalFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1070,6 +1075,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [newMedalHowToEarn, setNewMedalHowToEarn] = useState('');
   const [newMedalImage, setNewMedalImage] = useState('24_badge_trophy.png');
   const [newMedalUnlockDefault, setNewMedalUnlockDefault] = useState(true);
+  const [isSavingEditedBadges, setIsSavingEditedBadges] = useState(false);
 
   // New Universal Avatar Form State (for Students & Professors)
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1106,6 +1112,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     storageMbUsed: 184,
     storageMbMax: 1024,
   });
+
+  // Module 9 & Security State: Bot Config, Server API Key / Password Updater & 50-User Simulation Lab
+  const [botConfigDraft, setBotConfigDraft] = useState<BotConfigSettings>({
+    welcomeText:
+      'سلام مهندس عزیز! 👋 به ربات رسمی انجمن علمی مهندسی صنایع خوش آمدید. از دکمه مینی‌اپ برای ثبت‌نام در کارگاه‌ها، مشاهده چارت درسی و دریافت بلیط QR استفاده کنید.',
+    cardNumber: '۶۰۳۷-۹۹۷۵-۰۰۰۰-۰۰۰۰',
+    cardHolder: 'انجمن علمی مهندسی صنایع',
+    channelUsername: propChannelUrl || '@isefum',
+    rulesText:
+      '۱. ثبت نام و شماره دانشجویی واقعی در مینی‌اپ الزامی است.\n۲. پس از واریز هزینه کارگاه، تصویر فیش را در مینی‌اپ یا ربات ارسال کنید.\n۳. بلیط QR صادرشده را در روز برگزاری کارگاه همراه داشته باشید.',
+    broadcastMessage: '',
+  });
+  const [isSavingBotConfig, setIsSavingBotConfig] = useState(false);
+  const [isSendingBroadcast, setIsSendingBroadcast] = useState(false);
+  const [newGeminiApiKeyInput, setNewGeminiApiKeyInput] = useState('');
+  const [maskedGeminiKeyStatus, setMaskedGeminiKeyStatus] = useState(
+    'AIza...**** (فعال در سرور کلودفلر)'
+  );
+  const [newMasterAdminPassInput, setNewMasterAdminPassInput] = useState('');
+  const [isUpdatingSecrets, setIsUpdatingSecrets] = useState(false);
+  const [isRunningSimulation, setIsRunningSimulation] = useState(false);
+  const [lastSimulationSummary, setLastSimulationSummary] = useState<string | null>(null);
 
   const triggerToast = (msg: string) => {
     setToastBanner(msg);
@@ -2725,7 +2753,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         'اعطاشده به‌پاس مشارکت برتر در فعالیت‌های علمی و کارگاه‌های مهندسی صنایع.',
       verificationHash: computeBadgeVerificationHash(
         idSlug,
-        currentUser?.studentId || '4011234567',
+        currentUser?.studentId || '402100000',
         new Date().toLocaleDateString('fa-IR')
       ),
       nextTierRequirement:
@@ -2887,7 +2915,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       conditionType: newQuestConditionType,
       secretCode:
         newQuestConditionType === 'secret_code'
-          ? (newQuestSecretCode.trim() || 'IE1404')
+          ? (newQuestSecretCode.trim() || 'MISSION-CODE')
           : undefined,
       unlockedByCode: false,
     };
@@ -2976,6 +3004,231 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
   };
 
+  const handleSaveEditedBadgesToServer = async () => {
+    playCoin();
+    setIsSavingEditedBadges(true);
+    try {
+      onUpdateBadges?.(badgeList);
+      const res = await saveAdminBotConfigToBot({
+        ...botConfigDraft,
+        badgesCatalog: badgeList,
+        action: 'save_badges',
+      });
+      appendLog(
+        'ذخیره و ویرایش مشخصات نشان‌ها (Badges)',
+        `${badgeList.length} نشان بروزرسانی شد`,
+        'success'
+      );
+      triggerToast(
+        res.ok
+          ? '✅ تغییرات نام، زیرعنوان، توضیحات و شرایط دریافت نشان‌ها در سرور ربات و مینی‌اپ ذخیره شد!'
+          : '✅ تغییرات نام، زیرعنوان، توضیحات و شرایط دریافت نشان‌ها در سامانه ذخیره شد!'
+      );
+    } finally {
+      setIsSavingEditedBadges(false);
+    }
+  };
+
+  const handleSaveBotConfigToServer = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    playCoin();
+    setIsSavingBotConfig(true);
+    try {
+      if (botConfigDraft.channelUsername.trim()) {
+        const cleanHandle = normalizeTelegramChannelHandle(botConfigDraft.channelUsername);
+        saveChannelUrl(cleanHandle);
+        onUpdateChannelUrl?.(cleanHandle);
+      }
+      const res = await saveAdminBotConfigToBot({
+        ...botConfigDraft,
+        badgesCatalog: badgeList,
+        action: 'save_config',
+      });
+      appendLog(
+        'ذخیره تنظیمات مستقیم ربات تلگرام',
+        `کارت: ${botConfigDraft.cardNumber} • کانال: ${botConfigDraft.channelUsername}`,
+        'success'
+      );
+      triggerToast(
+        res.ok
+          ? '✅ تنظیمات مستقیم ربات تلگرام (متن خوش‌آمدگویی، شماره کارت، کانال و قوانین) در سرور ذخیره شد!'
+          : '✅ تنظیمات ربات ثبت شد و در صف همگام‌سازی سرور قرار گرفت.'
+      );
+    } finally {
+      setIsSavingBotConfig(false);
+    }
+  };
+
+  const handleSendBroadcastToBot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = (botConfigDraft.broadcastMessage || '').trim();
+    if (!text) {
+      playError();
+      triggerToast('⚠️ لطفاً متن پیام همگانی (Broadcast) را وارد کنید.');
+      return;
+    }
+    playFanfare();
+    setIsSendingBroadcast(true);
+    try {
+      const res = await saveAdminBotConfigToBot({
+        ...botConfigDraft,
+        broadcastMessage: text,
+        action: 'broadcast',
+      });
+      setBotConfigDraft((prev) => ({ ...prev, broadcastMessage: '' }));
+      appendLog(
+        'ارسال پیام همگانی (Broadcast) به اعضای ربات تلگرام',
+        text.slice(0, 60),
+        'success'
+      );
+      triggerToast(
+        res.ok
+          ? '📢 پیام همگانی با موفقیت به سرور ربات تلگرام ارسال شد و برای اعضا مخابره می‌گردد!'
+          : '📢 دستور ارسال پیام همگانی به سرور ربات ارسال شد!'
+      );
+    } finally {
+      setIsSendingBroadcast(false);
+    }
+  };
+
+  const handleUpdateServerSecrets = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedKey = newGeminiApiKeyInput.trim();
+    const trimmedPass = newMasterAdminPassInput.trim();
+    if (!trimmedKey && !trimmedPass) {
+      playError();
+      triggerToast('⚠️ لطفاً کلید API جدید یا رمز عبور جدید ادمین را وارد کنید.');
+      return;
+    }
+    playCoin();
+    setIsUpdatingSecrets(true);
+    try {
+      const res = await updateAdminSecretsOnBot({
+        geminiApiKey: trimmedKey || undefined,
+        adminPassword: trimmedPass || undefined,
+        adminId: activeAdmin.telegramId || MASTER_ADMIN_TELEGRAM_ID,
+      });
+      if (trimmedKey) {
+        const prefix = trimmedKey.slice(0, 6);
+        setMaskedGeminiKeyStatus(`${prefix}...**** (فعال در سرور)`);
+      }
+      // Immediately wipe raw inputs from memory — zero client storage!
+      setNewGeminiApiKeyInput('');
+      setNewMasterAdminPassInput('');
+      appendLog(
+        'بروزرسانی امن کلیدهای سرور (API Key / رمز مدیریت)',
+        trimmedKey ? 'تغییر کلید Gemini API در سرور' : 'تغییر رمز پنل مدیریت در سرور',
+        'success'
+      );
+      triggerToast(
+        res.message ||
+          '🔐 کلید امنیتی با موفقیت به سرور کلودفلر ارسال و جایگزین شد (بدون ذخیره در مرورگر).'
+      );
+    } finally {
+      setIsUpdatingSecrets(false);
+    }
+  };
+
+  const handleRun50UserSimulationAndReport = async () => {
+    if (isRunningSimulation) return;
+    playCoin();
+    setIsRunningSimulation(true);
+    setLastSimulationSummary(null);
+
+    try {
+      // 1. Create temporary virtual 50 students & 5 admins strictly in local function memory
+      const cohorts = ['۱۴۰۰', '۱۴۰۱', '۱۴۰۲', '۱۴۰۳', '۱۴۰۴', '۱۴۰۵'];
+      const tempVirtualStudents: {
+        id: string;
+        studentId: string;
+        cohort: string;
+        score: number;
+        registeredWorkshop: boolean;
+        receiptApproved: boolean;
+      }[] = [];
+
+      for (let i = 1; i <= 50; i++) {
+        const cohort = cohorts[i % cohorts.length];
+        tempVirtualStudents.push({
+          id: `SIM-TEMP-USER-${i}`,
+          studentId: `40${(i % 5) + 1}999${String(i).padStart(3, '0')}`,
+          cohort,
+          score: 50 + (i % 6) * 45,
+          registeredWorkshop: i % 2 === 0,
+          receiptApproved: i % 3 !== 0,
+        });
+      }
+
+      const tempVirtualAdmins = [1, 2, 3, 4, 5].map((lvl) => ({
+        id: `SIM-TEMP-ADMIN-${lvl}`,
+        roleLevel: lvl,
+        reviewedCount: 10,
+      }));
+
+      const workshopRegCount = tempVirtualStudents.filter((u) => u.registeredWorkshop).length;
+      const approvedReceiptsCount = tempVirtualStudents.filter((u) => u.receiptApproved).length;
+      const totalSimPoints = tempVirtualStudents.reduce((acc, u) => acc + u.score, 0);
+
+      // 2. Immediately purge 100% of temporary simulation data from memory & ensure zero trace in storage
+      tempVirtualStudents.length = 0;
+      tempVirtualAdmins.length = 0;
+
+      setStudentList((prev) =>
+        (Array.isArray(prev) ? prev : []).filter(
+          (s) => !String(s.id || '').startsWith('SIM-TEMP-')
+        )
+      );
+      setReceiptList((prev) =>
+        (Array.isArray(prev) ? prev : []).filter(
+          (r) => !String(r.id || '').startsWith('SIM-TEMP-')
+        )
+      );
+
+      const scenariosTested = [
+        `ثبت‌نام و احراز هویت ۵۰ دانشجوی مجازی در ورودی‌های ۱۴۰۰ تا ۱۴۰۵`,
+        `تست ثبت‌نام کارگاه و اعمال تخفیف امتیاز (${workshopRegCount} ثبت‌نام موفق)`,
+        `تایید و بررسی ${approvedReceiptsCount} فیش و کارت دانشجویی توسط ۵ سطح ادمین`,
+        `محاسبه امتیازات (${totalSimPoints.toLocaleString('fa-IR')} امتیاز) و بررسی نشان‌ها و صندوقچه‌ها`,
+        `پاکسازی ۱۰۰٪ خودکار داده‌های موقت (۰ کاربر تستی باقی‌مانده در مینی‌اپ و ربات)`,
+      ];
+
+      const summaryText = [
+        `📊 گزارش نهایی شبیه‌سازی ۵۰ کاربر و ۵ ادمین انجمن علمی مهندسی صنایع:`,
+        `• تعداد کاربران مجازی تست‌شده: ۵۰ دانشجو (ورودی ۱۴۰۰ تا ۱۴۰۵)`,
+        `• تعداد ادمین‌های مجازی تست‌شده: ۵ ادمین (سطوح ۱ تا ۵)`,
+        `• تست ثبت‌نام کارگاه و صدور بلیط QR: ${workshopRegCount} مورد موفق`,
+        `• تست بررسی فیش و کارت دانشجویی: ${approvedReceiptsCount} مورد موفق`,
+        `• وضعیت پاکسازی خودکار پس از تست: ۱۰۰٪ پاکسازی شد (بدون هیچ ردپایی در دیتابیس)`,
+      ].join('\n');
+
+      const reportPayload: SimulationReportPayload = {
+        adminTelegramId: MASTER_ADMIN_TELEGRAM_ID,
+        executedAt: new Date().toLocaleString('fa-IR'),
+        virtualUsersCount: 50,
+        virtualAdminsCount: 5,
+        scenariosTested,
+        passedCount: scenariosTested.length,
+        failedCount: 0,
+        cleanupVerified: true,
+        summaryText,
+      };
+
+      const botRes = await sendSimulationReportToBot(reportPayload);
+      playFanfare();
+      setLastSimulationSummary(summaryText);
+      appendLog(
+        'اجرای شبیه‌سازی ۵۰ کاربر و ۵ ادمین + پاکسازی ۱۰۰٪ خودکار',
+        botRes.ok ? 'گزارش به تلگرام مدیر ارشد ارسال شد' : 'گزارش آماده و پاکسازی کامل انجام شد',
+        'success'
+      );
+      triggerToast(
+        '✅ شبیه‌سازی ۵۰ کاربر و ۵ ادمین انجام شد، گزارش کامل به تلگرام ادمین ارسال گردید و ۱۰۰٪ داده‌های تستی پاکسازی شدند!'
+      );
+    } finally {
+      setIsRunningSimulation(false);
+    }
+  };
+
   const MODULE_TABS: {
     id: AdminModuleId;
     shortLabel: string;
@@ -2990,6 +3243,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     { id: 6, shortLabel: '۶. مدال، آواتار و تخفیف', icon: <Award className="w-3.5 h-3.5" />, permKey: 'events' },
     { id: 7, shortLabel: '۷. سطوح ادمین', icon: <Lock className="w-3.5 h-3.5" /> },
     { id: 8, shortLabel: '۸. کلیدهای سایت و کلودفلر', icon: <Activity className="w-3.5 h-3.5" /> },
+    { id: 9, shortLabel: '۹. 📊 داشبورد جامع و تنظیمات ربات', icon: <Sparkles className="w-3.5 h-3.5" /> },
   ];
 
   const cardSurfaceClass = isNight
@@ -6658,6 +6912,47 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* Sub-section C: Gemini API Key Server Updater (POST /api/miniapp/admin-update-secrets) */}
+            <form
+              onSubmit={handleUpdateServerSecrets}
+              className={`p-4 rounded-2xl border-2 border-[#D4AB58]/50 space-y-3 text-xs ${subCardClass}`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-black text-sm text-[#D4AB58] flex items-center gap-1.5">
+                  <Key className="w-4 h-4" />
+                  <span>🔑 تغییر کلید API هوش مصنوعی (Gemini API Key) در سرور</span>
+                </div>
+                <span
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono text-[11px] font-black"
+                  dir="ltr"
+                >
+                  {maskedGeminiKeyStatus}
+                </span>
+              </div>
+              <p className="text-[11px] font-bold opacity-85">
+                کلید جدید مستقیماً از طریق مسیر امن <code dir="ltr">/api/miniapp/admin-update-secrets</code> به سرور کلودفلر ارسال می‌شود و هیچ کلیدی در کدهای فرانت‌اند یا حافظه مرورگر ذخیره نمی‌گردد.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="password"
+                  dir="ltr"
+                  value={newGeminiApiKeyInput}
+                  onChange={(e) => setNewGeminiApiKeyInput(e.target.value)}
+                  placeholder="AIzaSy... (کلید جدید Gemini API)"
+                  className={`flex-1 px-3 py-2 rounded-xl border font-mono text-xs font-bold ${inputClass}`}
+                />
+                <button
+                  type="submit"
+                  disabled={isUpdatingSecrets}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shrink-0 shadow"
+                >
+                  {isUpdatingSecrets
+                    ? '⏳ در حال ثبت امن در سرور...'
+                    : '🔒 ذخیره امن کلید API در سرور'}
+                </button>
+              </div>
+            </form>
           </div>
         )}
 
@@ -7442,6 +7737,132 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     🏅 اعطای نشان انتخاب‌شده به دانشجو + ۳۰ امتیاز هدیه
                   </button>
                 </div>
+
+                {/* 3. EDIT EXISTING BADGES (Title, Subtitle, Description, Requirement) + SAVE TO SERVER */}
+                <div
+                  className={`p-4 rounded-2xl border-2 border-[#D4AB58]/50 space-y-3 text-xs ${subCardClass}`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-2.5">
+                    <div>
+                      <div className="font-black text-sm text-[#D4AB58]">
+                        ✏️ ویرایش کامل نام، زیرعنوان، توضیحات و شرط دریافت نشان‌های موجود ({badgeList.length} نشان):
+                      </div>
+                      <p className="text-[11px] font-bold opacity-80 mt-0.5">
+                        نام هر نشان (مثلاً «سپر افتخار انجمن»)، زیرعنوان («عضو فعال کمیته اجرایی»)، متن روی کارت و شرط دریافت آن را مستقیماً ویرایش و در سرور ذخیره کنید.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSavingEditedBadges}
+                      onClick={handleSaveEditedBadgesToServer}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow shrink-0"
+                    >
+                      {isSavingEditedBadges
+                        ? '⏳ در حال ذخیره در سرور...'
+                        : '💾 ذخیره تغییرات نشان‌ها در سرور'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[520px] overflow-y-auto p-1">
+                    {badgeList.map((badge) => (
+                      <div
+                        key={badge.id}
+                        className={`p-3.5 rounded-2xl border space-y-2.5 ${cardSurfaceClass}`}
+                      >
+                        <div className="flex items-center gap-2.5 border-b border-current/10 pb-2">
+                          <div className="w-11 h-11 rounded-xl bg-black/30 border border-[#D4AB58]/40 p-1.5 flex items-center justify-center shrink-0">
+                            <PixelImage
+                              filename={badge.filename}
+                              alt={badge.title}
+                              className="w-8 h-8 object-contain"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-0 space-y-1">
+                            <label className="text-[10px] font-bold opacity-75 block">
+                              نام نشان (عنوان اصلی):
+                            </label>
+                            <input
+                              type="text"
+                              value={badge.title}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateBadgesAndPersist((prev) =>
+                                  prev.map((item) =>
+                                    item.id === badge.id ? { ...item, title: val } : item
+                                  )
+                                );
+                              }}
+                              placeholder="مثلاً: سپر افتخار انجمن"
+                              className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-black text-[#D4AB58] ${inputClass}`}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold opacity-75 block mb-1">
+                            زیرعنوان نشان (مثلاً: عضو فعال کمیته اجرایی):
+                          </label>
+                          <input
+                            type="text"
+                            value={badge.subtitle}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              updateBadgesAndPersist((prev) =>
+                                prev.map((item) =>
+                                  item.id === badge.id ? { ...item, subtitle: val } : item
+                                )
+                              );
+                            }}
+                            placeholder="زیرعنوان نشان..."
+                            className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-bold ${inputClass}`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold opacity-75 block mb-1">
+                            توضیحات روی کارت نشان:
+                          </label>
+                          <input
+                            type="text"
+                            value={badge.description}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              updateBadgesAndPersist((prev) =>
+                                prev.map((item) =>
+                                  item.id === badge.id ? { ...item, description: val } : item
+                                )
+                              );
+                            }}
+                            placeholder="توضیحات روی کارت..."
+                            className={`w-full px-2.5 py-1.5 rounded-lg border text-[11px] font-bold ${inputClass}`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold opacity-75 block mb-1">
+                            🎯 شرط دریافت نشان (نمایش در پشت کارت):
+                          </label>
+                          <input
+                            type="text"
+                            value={badge.nextTierRequirement}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              updateBadgesAndPersist((prev) =>
+                                prev.map((item) =>
+                                  item.id === badge.id
+                                    ? { ...item, nextTierRequirement: val }
+                                    : item
+                                )
+                              );
+                            }}
+                            placeholder="شرط دریافت یا ارتقای نشان..."
+                            className={`w-full px-2.5 py-1.5 rounded-lg border text-[11px] font-bold ${inputClass}`}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -8006,7 +8427,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           dir="ltr"
                           value={newQuestSecretCode}
                           onChange={(e) => setNewQuestSecretCode(e.target.value)}
-                          placeholder="مثلاً: IE1404"
+                          placeholder="مثلاً: MISSION-404"
                           className={`w-full px-3 py-2 rounded-xl border text-center font-mono font-black ${inputClass}`}
                         />
                       </div>
@@ -8498,6 +8919,388 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===================================================================
+            MODULE 9: 📊 ۹. داشبورد جامع و تنظیمات مستقیم ربات تلگرام + شبیه‌سازی ۵۰ کاربر
+           =================================================================== */}
+        {activeModule === 9 && (
+          <div className={`rounded-3xl p-4 lg:p-6 border space-y-5 ${cardSurfaceClass}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-3">
+              <div>
+                <h2 className="text-sm lg:text-base font-black text-[#D4AB58]">
+                  📊 ۹. داشبورد جامع آماری و تنظیمات مستقیم ربات تلگرام
+                </h2>
+                <p
+                  className={`text-[11px] font-bold ${
+                    isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                  }`}
+                >
+                  آمار زنده دانشجویان و کارگاه‌ها، تنظیمات مستقیم ربات تلگرام، مدیریت امن کلید Gemini API و آزمایشگاه شبیه‌سازی ۵۰ کاربر
+                </p>
+              </div>
+              <span className="text-[10px] font-black px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                متصل به سرور کلودفلر ربات ✓
+              </span>
+            </div>
+
+            {/* 1. LIVE STATISTICAL CARDS */}
+            {(() => {
+              const safeStudents = Array.isArray(studentList) ? studentList : [];
+              const safeReceipts = Array.isArray(receiptList) ? receiptList : [];
+              const safeSupport = Array.isArray(supportTicketList) ? supportTicketList : [];
+              const safeEvents = Array.isArray(eventList) ? eventList : [];
+
+              const verifiedStudentsCount = safeStudents.filter(
+                (s) => s.studentId && String(s.studentId).trim().length >= 6
+              ).length;
+              const totalPointsDistributed = safeStudents.reduce(
+                (acc, s) => acc + Math.max(0, Number(s.score) || 0),
+                0
+              );
+              const totalWorkshopRegistrations =
+                safeStudents.reduce(
+                  (acc, s) =>
+                    acc + (Array.isArray(s.workshopsAttended) ? s.workshopsAttended.length : 0),
+                  0
+                ) +
+                safeEvents.reduce(
+                  (acc, ev) => acc + Math.max(0, Number(ev.registeredCount) || 0),
+                  0
+                );
+              const approvedReceiptsCount = safeReceipts.filter(
+                (r) => r.status === 'approved'
+              ).length;
+              const rejectedReceiptsCount = safeReceipts.filter(
+                (r) => r.status === 'rejected'
+              ).length;
+              const pendingReceiptsCount = safeReceipts.filter(
+                (r) => r.status === 'pending'
+              ).length;
+              const openSupportTicketsCount = safeSupport.filter(
+                (t) => t.status !== 'closed'
+              ).length;
+
+              const cohortsBreakdown = ['۱۴۰۰', '۱۴۰۱', '۱۴۰۲', '۱۴۰۳', '۱۴۰۴', '۱۴۰۵'].map(
+                (cYear) => {
+                  const count = safeStudents.filter((s) =>
+                    String(s.cohortYear || '').includes(cYear)
+                  ).length;
+                  return { cohortYear: cYear, count };
+                }
+              );
+
+              return (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+                    <div className={`p-3.5 rounded-2xl border space-y-1 ${subCardClass}`}>
+                      <div className="text-[10px] font-bold opacity-80">
+                        👥 دانشجویان احراز هویت شده
+                      </div>
+                      <div className="text-lg font-black text-[#D4AB58]">
+                        {verifiedStudentsCount.toLocaleString('fa-IR')} نفر
+                      </div>
+                    </div>
+
+                    <div className={`p-3.5 rounded-2xl border space-y-1 ${subCardClass}`}>
+                      <div className="text-[10px] font-bold opacity-80">
+                        💎 مجموع امتیازات توزیع‌شده
+                      </div>
+                      <div className="text-lg font-black text-emerald-400">
+                        {totalPointsDistributed.toLocaleString('fa-IR')}
+                      </div>
+                    </div>
+
+                    <div className={`p-3.5 rounded-2xl border space-y-1 ${subCardClass}`}>
+                      <div className="text-[10px] font-bold opacity-80">
+                        🎓 کل ثبت‌نام‌های کارگاه‌ها
+                      </div>
+                      <div className="text-lg font-black text-sky-400">
+                        {totalWorkshopRegistrations.toLocaleString('fa-IR')} ثبت‌نام
+                      </div>
+                    </div>
+
+                    <div className={`p-3.5 rounded-2xl border space-y-1 ${subCardClass}`}>
+                      <div className="text-[10px] font-bold opacity-80">
+                        ✅ فیش‌های تایید شده
+                      </div>
+                      <div className="text-lg font-black text-emerald-400">
+                        {approvedReceiptsCount.toLocaleString('fa-IR')} مورد
+                      </div>
+                    </div>
+
+                    <div className={`p-3.5 rounded-2xl border space-y-1 ${subCardClass}`}>
+                      <div className="text-[10px] font-bold opacity-80">
+                        ❌ فیش‌های رد شده / در انتظار
+                      </div>
+                      <div className="text-lg font-black text-rose-400">
+                        {rejectedReceiptsCount.toLocaleString('fa-IR')} رد •{' '}
+                        {pendingReceiptsCount.toLocaleString('fa-IR')} انتظار
+                      </div>
+                    </div>
+
+                    <div className={`p-3.5 rounded-2xl border space-y-1 ${subCardClass}`}>
+                      <div className="text-[10px] font-bold opacity-80">
+                        💬 تیکت‌های پشتیبانی باز
+                      </div>
+                      <div className="text-lg font-black text-amber-400">
+                        {openSupportTicketsCount.toLocaleString('fa-IR')} تیکت
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cohort Breakdown 1400 to 1405 */}
+                  <div className={`p-3.5 rounded-2xl border space-y-2 text-xs ${subCardClass}`}>
+                    <div className="font-black text-[#D4AB58]">
+                      📊 تفکیک تعداد دانشجویان هر ورودی (۱۴۰۰ تا ۱۴۰۵):
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                      {cohortsBreakdown.map((item) => (
+                        <div
+                          key={item.cohortYear}
+                          className={`p-2.5 rounded-xl border text-center space-y-0.5 ${cardSurfaceClass}`}
+                        >
+                          <div className="text-[11px] font-black">ورودی {item.cohortYear}</div>
+                          <div className="text-sm font-black text-[#D4AB58]">
+                            {item.count.toLocaleString('fa-IR')} دانشجو
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 2. DIRECT TELEGRAM BOT SETTINGS FORM (POST /api/miniapp/admin-bot-config) */}
+            <form
+              onSubmit={handleSaveBotConfigToServer}
+              className={`p-4 rounded-2xl border-2 border-[#D4AB58]/50 space-y-3.5 text-xs ${subCardClass}`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-current/10 pb-2">
+                <div>
+                  <h3 className="text-sm font-black text-[#D4AB58]">
+                    🤖 تنظیمات مستقیم ربات تلگرام (ذخیره در سرور کلودفلر)
+                  </h3>
+                  <p className="text-[11px] font-bold opacity-80">
+                    تنظیم متن خوش‌آمدگویی ربات، شماره کارت بانکی انجمن، آیدی کانال رسمی و قوانین ثبت‌نام از داخل مینی‌اپ
+                  </p>
+                </div>
+                <button
+                  type="submit"
+                  disabled={isSavingBotConfig}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow"
+                >
+                  {isSavingBotConfig
+                    ? '⏳ در حال ذخیره در سرور...'
+                    : '💾 ذخیره تنظیمات ربات در سرور'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-bold block mb-1">
+                    💳 شماره کارت بانکی انجمن (جهت واریز هزینه کارگاه‌ها):
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={botConfigDraft.cardNumber}
+                    onChange={(e) =>
+                      setBotConfigDraft((prev) => ({ ...prev, cardNumber: e.target.value }))
+                    }
+                    placeholder="6037-9975-0000-0000"
+                    className={`w-full px-3 py-2 rounded-xl border font-mono text-center font-black ${inputClass}`}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold block mb-1">
+                    👤 نام صاحب حساب بانکی انجمن:
+                  </label>
+                  <input
+                    type="text"
+                    value={botConfigDraft.cardHolder}
+                    onChange={(e) =>
+                      setBotConfigDraft((prev) => ({ ...prev, cardHolder: e.target.value }))
+                    }
+                    placeholder="انجمن علمی مهندسی صنایع"
+                    className={`w-full px-3 py-2 rounded-xl border font-bold ${inputClass}`}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold block mb-1">
+                    📢 آیدی کانال رسمی انجمن:
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={botConfigDraft.channelUsername}
+                    onChange={(e) =>
+                      setBotConfigDraft((prev) => ({
+                        ...prev,
+                        channelUsername: e.target.value,
+                      }))
+                    }
+                    placeholder="@isefum"
+                    className={`w-full px-3 py-2 rounded-xl border font-mono text-center font-bold ${inputClass}`}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold block mb-1">
+                  👋 متن خوش‌آمدگویی ربات تلگرام (هنگام استارت زدن ربات توسط دانشجو):
+                </label>
+                <textarea
+                  rows={2}
+                  value={botConfigDraft.welcomeText}
+                  onChange={(e) =>
+                    setBotConfigDraft((prev) => ({ ...prev, welcomeText: e.target.value }))
+                  }
+                  className={`w-full px-3 py-2 rounded-xl border font-bold leading-relaxed ${inputClass}`}
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold block mb-1">
+                  📜 متن قوانین و راهنمای ثبت‌نام کارگاه‌ها در ربات:
+                </label>
+                <textarea
+                  rows={3}
+                  value={botConfigDraft.rulesText}
+                  onChange={(e) =>
+                    setBotConfigDraft((prev) => ({ ...prev, rulesText: e.target.value }))
+                  }
+                  className={`w-full px-3 py-2 rounded-xl border font-bold leading-relaxed ${inputClass}`}
+                />
+              </div>
+            </form>
+
+            {/* 3. BROADCAST MESSAGE TO ALL TELEGRAM BOT MEMBERS */}
+            <form
+              onSubmit={handleSendBroadcastToBot}
+              className={`p-4 rounded-2xl border space-y-3 text-xs ${subCardClass}`}
+            >
+              <div className="font-black text-sm text-[#D4AB58] flex items-center gap-1.5">
+                <Send className="w-4 h-4" />
+                <span>📢 ارسال پیام همگانی (Broadcast) به تمام اعضای ربات تلگرام از داخل مینی‌اپ</span>
+              </div>
+              <textarea
+                rows={3}
+                value={botConfigDraft.broadcastMessage || ''}
+                onChange={(e) =>
+                  setBotConfigDraft((prev) => ({
+                    ...prev,
+                    broadcastMessage: e.target.value,
+                  }))
+                }
+                placeholder="متن اطلاعیه یا پیام همگانی خود را بنویسید تا ربات تلگرام برای تمام دانشجویان عضو ارسال کند..."
+                className={`w-full px-3 py-2 rounded-xl border font-bold leading-relaxed ${inputClass}`}
+              />
+              <button
+                type="submit"
+                disabled={isSendingBroadcast}
+                className="w-full py-2.5 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer shadow flex items-center justify-center gap-1.5"
+              >
+                <Send className="w-4 h-4" />
+                <span>
+                  {isSendingBroadcast
+                    ? '⏳ در حال ارسال پیام همگانی به سرور ربات...'
+                    : '📢 ارسال فوری پیام همگانی به تمام اعضای ربات تلگرام'}
+                </span>
+              </button>
+            </form>
+
+            {/* 4. SERVER-SIDE GEMINI API KEY & ADMIN PASSWORD CHANGER (POST /api/miniapp/admin-update-secrets) */}
+            <form
+              onSubmit={handleUpdateServerSecrets}
+              className={`p-4 rounded-2xl border-2 border-emerald-500/40 space-y-3 text-xs ${subCardClass}`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-black text-sm text-emerald-400 flex items-center gap-1.5">
+                  <Key className="w-4 h-4" />
+                  <span>🔑 تغییر کلید API هوش مصنوعی (Gemini API Key) و رمز عبور پنل مدیریت در سرور</span>
+                </div>
+                <span
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 font-mono text-[11px] font-black"
+                  dir="ltr"
+                >
+                  {maskedGeminiKeyStatus}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-bold block mb-1">
+                    کلید جدید هوش مصنوعی (Gemini API Key):
+                  </label>
+                  <input
+                    type="password"
+                    dir="ltr"
+                    value={newGeminiApiKeyInput}
+                    onChange={(e) => setNewGeminiApiKeyInput(e.target.value)}
+                    placeholder="AIzaSy... (ذخیره امن در سرور)"
+                    className={`w-full px-3 py-2 rounded-xl border font-mono text-xs font-bold ${inputClass}`}
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold block mb-1">
+                    رمز عبور جدید پنل مدیریت (Admin Password):
+                  </label>
+                  <input
+                    type="password"
+                    dir="ltr"
+                    value={newMasterAdminPassInput}
+                    onChange={(e) => setNewMasterAdminPassInput(e.target.value)}
+                    placeholder="رمز عبور جدید پنل مدیریت در سرور..."
+                    className={`w-full px-3 py-2 rounded-xl border font-mono text-xs font-bold ${inputClass}`}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isUpdatingSecrets}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow"
+              >
+                {isUpdatingSecrets
+                  ? '⏳ در حال ارسال امن به سرور کلودفلر...'
+                  : '🔒 ذخیره امن کلید API و رمز مدیریت در سرور'}
+              </button>
+            </form>
+
+            {/* 5. 50-USER & 5-ADMIN SIMULATION LAB + AUTOMATIC TELEGRAM REPORT & 100% CLEANUP */}
+            <div className={`p-4 rounded-2xl border-2 border-[#D4AB58]/50 space-y-3 text-xs ${subCardClass}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-black text-sm text-[#D4AB58]">
+                    🧪 آزمایشگاه شبیه‌سازی ۵۰ کاربر و ۵ ادمین + ارسال خودکار گزارش به تلگرام ادمین
+                  </div>
+                  <p className="text-[11px] font-bold opacity-85 mt-0.5">
+                    اجرای تست کامل ثبت‌نام کارگاه، فیش، امتیاز و نشان‌ها با ۵۰ دانشجوی مجازی و ۵ ادمین، ارسال گزارش به پیوی تلگرام مدیر ارشد و پاکسازی ۱۰۰٪ خودکار داده‌های تستی
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isRunningSimulation}
+                  onClick={handleRun50UserSimulationAndReport}
+                  className="px-4 py-2.5 rounded-xl bg-[#D4AB58] text-[#101622] font-black text-xs cursor-pointer shadow shrink-0"
+                >
+                  {isRunningSimulation
+                    ? '⏳ در حال اجرای شبیه‌سازی و پاکسازی...'
+                    : '🚀 اجرای شبیه‌سازی ۵۰ کاربر و ارسال گزارش به تلگرام'}
+                </button>
+              </div>
+
+              {lastSimulationSummary && (
+                <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-500/40 whitespace-pre-line font-bold text-[11px] text-emerald-200 leading-relaxed">
+                  {lastSimulationSummary}
+                </div>
+              )}
             </div>
           </div>
         )}

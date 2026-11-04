@@ -11,6 +11,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   AdminStudentDossier,
+  BadgeItem,
   DiscountVoucher,
   LootboxConfig,
   ThemeMode,
@@ -25,7 +26,10 @@ import { SectionMaintenanceBanner } from '../ui/SectionMaintenanceBanner';
 import {
   COHORT_FILTER_OPTIONS,
   DEFAULT_LOOTBOX_CONFIG,
+  EXTENDED_BADGES,
+  evaluateDynamicBadges,
   evaluateQuestsProgress,
+  getBadgeHolderStats,
   getCohortBattleStats,
   getFilteredLeaderboard,
   getNormalizedLootboxChests,
@@ -43,6 +47,7 @@ interface AchievementsTabProps {
   user: UserProfile;
   realStudents?: AdminStudentDossier[];
   userTickets?: TicketRecord[];
+  badgesCatalog?: BadgeItem[];
   lootboxConfig?: LootboxConfig;
   themeMode: ThemeMode;
   storedChecksum: string | null;
@@ -66,6 +71,7 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
   user,
   realStudents = [],
   userTickets = [],
+  badgesCatalog,
   lootboxConfig = DEFAULT_LOOTBOX_CONFIG,
   themeMode,
   storedChecksum,
@@ -96,6 +102,16 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
   const [copiedVoucherCode, setCopiedVoucherCode] = useState<string | null>(null);
   const [questCodeInputs, setQuestCodeInputs] = useState<Record<string, string>>({});
   const [questCodeError, setQuestCodeError] = useState<Record<string, string>>({});
+  const [selectedBadge, setSelectedBadge] = useState<BadgeItem | null>(null);
+  const [isBadgeFlipped, setIsBadgeFlipped] = useState(false);
+
+  const hydratedBadges: BadgeItem[] = evaluateDynamicBadges(
+    Array.isArray(badgesCatalog) && badgesCatalog.length > 0 ? badgesCatalog : EXTENDED_BADGES,
+    user,
+    userTickets,
+    quests,
+    user.score >= 50
+  );
 
   // Dynamically computed Leaderboard & Cohort Competition using ONLY real students from server + current registered user
   const leaderboard = getFilteredLeaderboard(selectedCohort, user, realStudents);
@@ -131,7 +147,7 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
           type: 'tamper',
           message:
             result.errorReason ||
-            'دستکاری غیرمجاز امتیاز شناسایی شد! امتیاز به حالت امن بازگردانی گردید.',
+            'موجودی امتیاز شما با اطلاعات سرور انجمن همگام‌سازی گردید.',
         });
         onTamperReset();
       } else {
@@ -1113,8 +1129,252 @@ export const AchievementsTab: React.FC<AchievementsTabProps> = ({
               })}
             </div>
           </div>
+
+          {/* 6. BADGES & MEDALS SHOWCASE IN ACHIEVEMENTS TAB */}
+          <div
+            className={`rounded-3xl p-4 border space-y-3 ${
+              isNight
+                ? 'bg-[#1A2424] border-[#2C3E4C] text-[#F6F1E7] shadow-[0_5px_0_#0B101B]'
+                : 'bg-[#FFFFFF] border-[#C8BFA8] text-[#14201B] shadow-[0_5px_0_#C8BFA8]'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black">
+                🏅 نشان‌ها و مدال‌های افتخار انجمن ({hydratedBadges.length.toLocaleString('fa-IR')})
+              </h3>
+              <span
+                className={`text-[10px] font-black ${
+                  isNight ? 'text-[#D4AB58]' : 'text-[#354B40]'
+                }`}
+              >
+                چرخش سه‌بعدی و آمار دارندگان
+              </span>
+            </div>
+
+            <div className="grid grid-cols-5 gap-2">
+              {hydratedBadges.map((badge) => (
+                <button
+                  key={badge.id}
+                  type="button"
+                  onClick={() => {
+                    playCoin();
+                    setSelectedBadge(badge);
+                    setIsBadgeFlipped(false);
+                  }}
+                  className={`group flex flex-col items-center p-1.5 rounded-xl border transition-all active:scale-95 cursor-pointer relative overflow-hidden ${
+                    isNight
+                      ? 'bg-[#101622] border-[#2C3E4C] text-[#F6F1E7] hover:border-[#D4AB58]'
+                      : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B] hover:border-[#354B40]'
+                  } ${!badge.isUnlocked ? 'opacity-50 grayscale' : ''}`}
+                  title={badge.title}
+                >
+                  <div className="w-10 h-10 flex items-center justify-center relative">
+                    <PixelImage
+                      filename={badge.filename}
+                      alt={badge.title}
+                      className="w-8 h-8 object-contain group-hover:scale-110 transition-transform"
+                    />
+                  </div>
+                  <span className="text-[9px] font-black text-center leading-tight line-clamp-2 mt-1">
+                    {badge.title}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <p
+              className={`text-[10px] font-bold text-center ${
+                isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+              }`}
+            >
+              برای مشاهده آمار دارندگان نشان در انجمن و شرایط دریافت، روی هر نشان بزنید
+            </p>
+          </div>
         </div>
       </div>
+
+      {/* 3D BADGE FLIP MODAL WITH REAL HOLDER STATS */}
+      <AnimatePresence>
+        {selectedBadge && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-5 select-none">
+            <motion.div
+              initial={{ scale: 0.88, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.88, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+              className="w-full max-w-sm"
+            >
+              <div
+                onClick={() => {
+                  playSwitch();
+                  setIsBadgeFlipped((prev) => !prev);
+                }}
+                className="cursor-pointer"
+                style={{ perspective: '1000px' }}
+              >
+                <motion.div
+                  animate={{ rotateY: isBadgeFlipped ? 180 : 0 }}
+                  transition={{ duration: 0.55, type: 'spring', stiffness: 260, damping: 24 }}
+                  style={{ transformStyle: 'preserve-3d' }}
+                  className={`rounded-3xl p-6 border-2 shadow-2xl relative ${
+                    isNight
+                      ? 'bg-gradient-to-b from-[#1D283A] to-[#121926] border-[#D4AB58] text-[#F6F1E7]'
+                      : 'bg-[#FFFFFF] border-[#8F6B24] text-[#14201B]'
+                  }`}
+                >
+                  {!isBadgeFlipped ? (
+                    <div className="flex flex-col items-center text-center space-y-4">
+                      <span className="text-[11px] font-black px-3 py-0.5 rounded-full bg-[#D4AB58] text-[#101622]">
+                        {selectedBadge.isUnlocked ? 'نشان رسمی تایید شده ✨' : 'نشان قفل شده 🔒'}
+                      </span>
+
+                      <div className="w-28 h-28 rounded-3xl bg-black/25 border border-[#D4AB58]/40 flex items-center justify-center p-3 shadow-inner relative">
+                        <PixelImage
+                          filename={selectedBadge.filename}
+                          alt={selectedBadge.title}
+                          className="w-22 h-22 object-contain drop-shadow-[0_6px_12px_rgba(212,171,88,0.4)]"
+                        />
+                      </div>
+
+                      <div>
+                        <h3
+                          className={`text-lg font-black ${
+                            isNight ? 'text-[#D4AB58]' : 'text-[#14201B]'
+                          }`}
+                        >
+                          {selectedBadge.title}
+                        </h3>
+                        <p
+                          className={`text-xs mt-1 font-bold ${
+                            isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
+                          }`}
+                        >
+                          {selectedBadge.subtitle}
+                        </p>
+                      </div>
+
+                      <p className="text-xs leading-relaxed font-medium px-2">
+                        {selectedBadge.description}
+                      </p>
+
+                      <div className="w-full pt-2 border-t border-current/10 flex items-center justify-between text-[11px] font-bold">
+                        <span>تاریخ دریافت: {selectedBadge.earnedDate}</span>
+                        <span className={isNight ? 'text-[#7FB69E]' : 'text-[#354B40]'}>
+                          🔄 ضربه برای چرخش کارت
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    (() => {
+                      const badgeStats = getBadgeHolderStats(selectedBadge, realStudents, user);
+                      return (
+                        <div
+                          style={{ transform: 'rotateY(180deg)' }}
+                          className="flex flex-col items-center text-center space-y-4"
+                        >
+                          <span className="text-[11px] font-black px-3 py-1 rounded-full bg-[#354B40] text-[#F6F1E7]">
+                            📊 آمار و اطلاعات نشان در انجمن صنایع
+                          </span>
+
+                          <div
+                            className={`w-full p-3.5 rounded-2xl border text-right space-y-2.5 text-xs ${
+                              isNight
+                                ? 'bg-black/30 border-white/10 text-[#F6F1E7]'
+                                : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">صاحب نشان:</span>
+                              <span className="font-black">{user.fullName}</span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">شماره دانشجویی:</span>
+                              <span className="font-mono font-bold">
+                                {user.studentId || 'ثبت‌نشده'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">تاریخ دریافت نشان:</span>
+                              <span className="font-bold">{selectedBadge.earnedDate}</span>
+                            </div>
+
+                            <div className="pt-2.5 border-t border-current/10 space-y-2">
+                              <div className="text-[11px] font-black text-[#D4AB58]">
+                                👥 تعداد دارندگان این نشان:{' '}
+                                {badgeStats.holderCount.toLocaleString('fa-IR')} دانشجو (از کل
+                                دانشجویان انجمن)
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[10px] font-bold opacity-90">
+                                  <span>درصد فراگیری نشان در انجمن:</span>
+                                  <span className="font-black text-emerald-400">
+                                    {badgeStats.percentage.toLocaleString('fa-IR')}٪ (
+                                    {badgeStats.holderCount.toLocaleString('fa-IR')} از{' '}
+                                    {badgeStats.totalStudents.toLocaleString('fa-IR')} نفر)
+                                  </span>
+                                </div>
+                                <div className="w-full h-2 rounded-full bg-black/30 overflow-hidden p-0.5">
+                                  <div
+                                    className="h-full rounded-full bg-gradient-to-l from-emerald-400 to-[#D4AB58]"
+                                    style={{
+                                      width: `${Math.max(6, badgeStats.percentage)}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div
+                            className={`w-full p-3 rounded-2xl border text-right ${
+                              isNight
+                                ? 'bg-[#D4AB58]/10 border-[#D4AB58]/30'
+                                : 'bg-[#EAE3D2] border-[#8F6B24]'
+                            }`}
+                          >
+                            <span className="text-[11px] font-black block mb-1">
+                              🎯 روش بدست آوردن / شرط دریافت نشان:
+                            </span>
+                            <p className="text-xs leading-relaxed font-medium">
+                              {selectedBadge.nextTierRequirement}
+                            </p>
+                          </div>
+
+                          <span className="text-[11px] font-black">
+                            🔄 ضربه برای بازگشت به روی کارت
+                          </span>
+                        </div>
+                      );
+                    })()
+                  )}
+                </motion.div>
+              </div>
+
+              <div className="mt-4 flex gap-2">
+                <PushButton
+                  variant="gold"
+                  fullWidth
+                  onClick={() => {
+                    playSwitch();
+                    setIsBadgeFlipped((prev) => !prev);
+                  }}
+                >
+                  🔄 چرخش سه‌بعدی کارت
+                </PushButton>
+                <PushButton
+                  variant="secondary"
+                  onClick={() => {
+                    playTick();
+                    setSelectedBadge(null);
+                  }}
+                >
+                  بستن
+                </PushButton>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };

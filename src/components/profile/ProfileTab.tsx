@@ -32,6 +32,7 @@ import {
   SHOWCASE_BADGES,
   calculateLevelFromScore,
   evaluateDynamicBadges,
+  getBadgeHolderStats,
 } from '../../utils/gamification';
 import {
   computeStateChecksum,
@@ -603,8 +604,8 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                       className="w-9 h-9 object-contain group-hover:scale-110 transition-transform"
                     />
                   </div>
-                  <span className="text-[9px] font-black text-center leading-tight line-clamp-1 mt-1">
-                    {badge.title.replace('سطح ', '').split(' ')[0]}
+                  <span className="text-[9px] font-black text-center leading-tight line-clamp-2 mt-1">
+                    {badge.title}
                   </span>
                 </button>
               ))}
@@ -615,7 +616,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                 isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
               }`}
             >
-              برای چرخش سه‌بعدی (3D Flip)، روش دریافت و بررسی کد اصالت هر نشان، روی آن بزنید
+              برای چرخش سه‌بعدی کارت، مشاهده آمار دارندگان و شرایط دریافت هر نشان، روی آن بزنید
             </p>
           </div>
 
@@ -673,7 +674,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                     >
                       {ticket.checkedIn
                         ? `حاضر شد ✅ (${ticket.checkedInAt || ''})`
-                        : 'امضای دیجیتال معتبر ✓'}
+                        : 'بلیط رسمی تاییدشده ✓'}
                     </span>
                   </div>
 
@@ -787,65 +788,87 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div
-                      style={{ transform: 'rotateY(180deg)' }}
-                      className="flex flex-col items-center text-center space-y-4"
-                    >
-                      <span className="text-[11px] font-black px-3 py-0.5 rounded-full bg-[#354B40] text-[#F6F1E7]">
-                        پشت کارت • شناسنامه اصالت رمزنگاری
-                      </span>
-
-                      <div
-                        className={`w-full p-3.5 rounded-2xl border text-right space-y-2 text-xs ${
-                          isNight
-                            ? 'bg-black/30 border-white/10 text-[#F6F1E7]'
-                            : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold">صاحب نشان:</span>
-                          <span className="font-black">{user.fullName}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold">شماره دانشجویی:</span>
-                          <span className="font-mono font-bold">{user.studentId}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold">تاریخ ثبت:</span>
-                          <span className="font-bold">{selectedBadge.earnedDate}</span>
-                        </div>
-                        <div className="pt-2 border-t border-current/10">
-                          <span className="block text-[10px] font-bold mb-1">
-                            امضای دیجیتال انجمن (SHA/FNV-1a):
+                    (() => {
+                      const badgeStats = getBadgeHolderStats(selectedBadge, realStudents, user);
+                      return (
+                        <div
+                          style={{ transform: 'rotateY(180deg)' }}
+                          className="flex flex-col items-center text-center space-y-4"
+                        >
+                          <span className="text-[11px] font-black px-3 py-1 rounded-full bg-[#354B40] text-[#F6F1E7]">
+                            📊 آمار و اطلاعات نشان در انجمن صنایع
                           </span>
+
                           <div
-                            className="p-1.5 rounded-lg bg-[#101622] font-mono text-[11px] text-emerald-400 text-center tracking-wider"
-                            dir="ltr"
+                            className={`w-full p-3.5 rounded-2xl border text-right space-y-2.5 text-xs ${
+                              isNight
+                                ? 'bg-black/30 border-white/10 text-[#F6F1E7]'
+                                : 'bg-[#EAE3D2] border-[#C8BFA8] text-[#14201B]'
+                            }`}
                           >
-                            SIG-{selectedBadge.verificationHash}
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">صاحب نشان:</span>
+                              <span className="font-black">{user.fullName}</span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">شماره دانشجویی:</span>
+                              <span className="font-mono font-bold">
+                                {user.studentId || 'ثبت‌نشده'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">تاریخ دریافت نشان:</span>
+                              <span className="font-bold">{selectedBadge.earnedDate}</span>
+                            </div>
+
+                            <div className="pt-2.5 border-t border-current/10 space-y-2">
+                              <div className="text-[11px] font-black text-[#D4AB58]">
+                                👥 تعداد دارندگان این نشان:{' '}
+                                {badgeStats.holderCount.toLocaleString('fa-IR')} دانشجو (از کل
+                                دانشجویان انجمن)
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[10px] font-bold opacity-90">
+                                  <span>درصد فراگیری نشان در انجمن:</span>
+                                  <span className="font-black text-emerald-400">
+                                    {badgeStats.percentage.toLocaleString('fa-IR')}٪ (
+                                    {badgeStats.holderCount.toLocaleString('fa-IR')} از{' '}
+                                    {badgeStats.totalStudents.toLocaleString('fa-IR')} نفر)
+                                  </span>
+                                </div>
+                                <div className="w-full h-2 rounded-full bg-black/30 overflow-hidden p-0.5">
+                                  <div
+                                    className="h-full rounded-full bg-gradient-to-l from-emerald-400 to-[#D4AB58]"
+                                    style={{
+                                      width: `${Math.max(6, badgeStats.percentage)}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
                           </div>
+
+                          <div
+                            className={`w-full p-3 rounded-2xl border text-right ${
+                              isNight
+                                ? 'bg-[#D4AB58]/10 border-[#D4AB58]/30'
+                                : 'bg-[#EAE3D2] border-[#8F6B24]'
+                            }`}
+                          >
+                            <span className="text-[11px] font-black block mb-1">
+                              🎯 روش بدست آوردن / شرط دریافت نشان:
+                            </span>
+                            <p className="text-xs leading-relaxed font-medium">
+                              {selectedBadge.nextTierRequirement}
+                            </p>
+                          </div>
+
+                          <span className="text-[11px] font-black">
+                            🔄 ضربه برای بازگشت به روی کارت
+                          </span>
                         </div>
-                      </div>
-
-                      <div
-                        className={`w-full p-3 rounded-2xl border text-right ${
-                          isNight
-                            ? 'bg-[#D4AB58]/10 border-[#D4AB58]/30'
-                            : 'bg-[#EAE3D2] border-[#8F6B24]'
-                        }`}
-                      >
-                        <span className="text-[11px] font-black block mb-1">
-                          🎯 روش بدست آوردن / شرط ارتقا:
-                        </span>
-                        <p className="text-xs leading-relaxed font-medium">
-                          {selectedBadge.nextTierRequirement}
-                        </p>
-                      </div>
-
-                      <span className="text-[11px] font-black">
-                        🔄 ضربه برای بازگشت به روی کارت
-                      </span>
-                    </div>
+                      );
+                    })()
                   )}
                 </motion.div>
               </div>
@@ -897,14 +920,14 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
 
               <div className="flex items-center justify-between pb-3 border-b border-current/10 shrink-0">
                 <div>
-                  <h3 className="font-black text-base">سوابق فعالیت‌ها و دفتر کل امتیازات</h3>
+                  <h3 className="font-black text-base">سوابق فعالیت‌ها و کارنامه امتیازات</h3>
                   <p
                     className={`text-[11px] font-bold mt-0.5 ${
                       isNight ? 'text-[#A3C1AD]' : 'text-[#3D5249]'
                     }`}
                   >
-                    امضای یکپارچگی حساب:{' '}
-                    <span className="font-mono text-emerald-500">{integrityChecksum}</span>
+                    وضعیت حساب دانشجویی:{' '}
+                    <span className="text-emerald-500 font-black">همگام‌سازی‌شده با انجمن ✓</span>
                   </p>
                 </div>
                 <button
@@ -1015,7 +1038,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                             >
                               {ticket.checkedIn
                                 ? `حاضر شد ✅ (${ticket.checkedInAt || ''})`
-                                : 'امضای دیجیتال معتبر!'}
+                                : 'بلیط رسمی معتبر ✓'}
                             </span>
                           </div>
 
@@ -1352,13 +1375,13 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
                 <div className="p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-between">
                   <div>
                     <div className="font-black text-emerald-500">
-                      سپر ضد تقلب امتیازات (Anti-Tamper) فعال است
+                      حساب دانشجویی شما با سامانه انجمن همگام است
                     </div>
                     <div className="text-[10px] font-bold mt-0.5">
-                      امضای دیجیتال امتیازات: {integrityChecksum}
+                      امتیازات و سوابق شما به صورت خودکار ذخیره و پشتیبانی می‌شوند
                     </div>
                   </div>
-                  <span className="text-xs font-black text-emerald-500">امن ✓</span>
+                  <span className="text-xs font-black text-emerald-500">فعال ✓</span>
                 </div>
 
                 <button

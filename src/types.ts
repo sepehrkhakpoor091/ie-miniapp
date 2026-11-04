@@ -254,6 +254,38 @@ export interface SiteSwitches {
   leaderboardEnabled: boolean;
 }
 
+export interface BotConfigSettings {
+  welcomeText: string;
+  cardNumber: string;
+  cardHolder: string;
+  channelUsername: string;
+  rulesText: string;
+  broadcastMessage?: string;
+  badgesCatalog?: BadgeItem[];
+  maskedGeminiKey?: string;
+  updatedAt?: string;
+}
+
+export interface SimulationReportPayload {
+  simulationId?: string;
+  targetAdminTelegramId?: string;
+  adminTelegramId?: string;
+  virtualUsersTested?: number;
+  virtualUsersCount?: number;
+  virtualAdminsTested?: number;
+  virtualAdminsCount?: number;
+  workshopsTested?: number;
+  receiptsProcessed?: number;
+  qrTicketsScanned?: number;
+  chatsTested?: number;
+  scenariosTested?: string[];
+  passedCount?: number;
+  failedCount?: number;
+  cleanupVerified: boolean;
+  summaryText: string;
+  executedAt: string;
+}
+
 export interface BootstrapResponse {
   ok: boolean;
   completedProfile?: boolean;
@@ -271,6 +303,8 @@ export interface BootstrapResponse {
   chats?: SupportTicket[];
   allowStudentTimers?: boolean;
   siteSwitches?: Partial<SiteSwitches>;
+  botConfig?: Partial<BotConfigSettings>;
+  badgesCatalog?: BadgeItem[];
   onlineCount?: number;
   onlineUsers?: OnlineSessionUser[];
   referralStats?: {
@@ -394,6 +428,7 @@ export interface AdminStudentDossier {
   kycStatus: KycStatus;
   isBanned: boolean;
   attendedEvents: string[];
+  workshopsAttended?: string[];
   badges: string[];
   payments: { title: string; amount: number; date: string; status: string }[];
   chatLogs: { sender: string; text: string; time: string; date?: string }[];

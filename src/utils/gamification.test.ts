@@ -12,6 +12,8 @@ import {
   parseFlexibleNumberInput,
   getNormalizedLootboxChests,
   syncLootboxConfigWithChests,
+  getBadgeHolderStats,
+  BADGE_STATS_CACHE_TTL_MS,
 } from './gamification';
 import {
   computeStateChecksum,
@@ -532,5 +534,62 @@ test('normalizeSupportTicket and normalizeSupportTicketsList normalize student/a
   assert.equal(list.length, 1);
   assert.equal(list[0].closedByAdmin, true);
 });
+
+test('getBadgeHolderStats computes real badge holder count and percentage with 1-hour cache TTL', () => {
+  assert.equal(BADGE_STATS_CACHE_TTL_MS, 3600000);
+  const realStudents: AdminStudentDossier[] = [
+    {
+      id: 'stu-1',
+      fullName: 'علی محمدی',
+      studentId: '4011112233',
+      cohortYear: '1401',
+      phone: '09121112233',
+      score: 320,
+      level: 4,
+      kycStatus: 'verified',
+      isBanned: false,
+      attendedEvents: ['ev-1'],
+      workshopsAttended: ['ev-1', 'ev-2', 'ev-3'],
+      badges: ['20_badge_shield.png', '24_badge_crown.png'],
+      payments: [],
+      chatLogs: [],
+    },
+    {
+      id: 'stu-2',
+      fullName: 'سارا حسینی',
+      studentId: '4022223344',
+      cohortYear: '1402',
+      phone: '09122223344',
+      score: 60,
+      level: 2,
+      kycStatus: 'verified',
+      isBanned: false,
+      attendedEvents: [],
+      workshopsAttended: [],
+      badges: ['20_badge_shield.png'],
+      payments: [],
+      chatLogs: [],
+    },
+  ];
+
+  const shieldBadge = SHOWCASE_BADGES.find((b) => b.filename === '20_badge_shield.png')!;
+  const crownBadge = SHOWCASE_BADGES.find((b) => b.filename === '24_badge_crown.png')!;
+
+  const shieldStats = getBadgeHolderStats(shieldBadge, realStudents, null, 1700000000000);
+  assert.equal(shieldStats.totalStudents, 2);
+  assert.equal(shieldStats.holderCount, 2);
+  assert.equal(shieldStats.percentage, 100);
+
+  const crownStats = getBadgeHolderStats(
+    { ...crownBadge, isUnlocked: false },
+    realStudents,
+    null,
+    1700000000000
+  );
+  assert.equal(crownStats.totalStudents, 2);
+  assert.equal(crownStats.holderCount, 1);
+  assert.equal(crownStats.percentage, 50);
+});
+
 
 

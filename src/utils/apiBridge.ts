@@ -9,12 +9,15 @@
 import {
   AdminReceiptItem,
   AdminStudentDossier,
+  BadgeItem,
   BootstrapResponse,
+  BotConfigSettings,
   ChannelAnnouncement,
   EventItem,
   LootboxConfig,
   OnlineSessionUser,
   Professor,
+  SimulationReportPayload,
   SiteSwitches,
   StudentIdDisputeTicket,
   SupportTicket,
@@ -25,6 +28,7 @@ import { normalizeEvent, normalizeEventsList } from './events';
 import {
   BOT_WORKER_BASE_URL as SECURITY_WORKER_BASE_URL,
   MASTER_ADMIN_TELEGRAM_ID,
+  computeAdminPasswordHash,
   getRealTelegramUser,
   getTelegramInitDataRaw,
   safeJsonParse,
@@ -404,24 +408,35 @@ export async function fetchChannelAnnouncementsFromWorker(
  * Verifies the admin password hash or Supreme Master Admin Telegram ID (629890497) on the server.
  */
 export async function verifyAdminPasswordWithBot(
-  passwordHash: string,
-  telegramId?: string
+  passwordHashOrRaw: string,
+  telegramId?: string,
+  rawPassword?: string
 ): Promise<{ ok: boolean; verified: boolean; sessionToken?: string }> {
   const realTgUser = getRealTelegramUser();
   const resolvedTgId = telegramId || realTgUser?.id || MASTER_ADMIN_TELEGRAM_ID;
+  const computedHash = rawPassword
+    ? computeAdminPasswordHash(rawPassword)
+    : passwordHashOrRaw;
+
   const res = await postToMiniAppApi<{
-    ok: boolean;
+    ok?: boolean;
     verified?: boolean;
+    authorized?: boolean;
     sessionToken?: string;
   }>('/api/miniapp/admin-auth', {
-    passwordHash,
+    password: rawPassword || passwordHashOrRaw,
+    passwordHash: computedHash,
     telegramId: resolvedTgId,
+    adminId: resolvedTgId,
   });
 
   if (res.ok && res.data) {
+    const isVerified = Boolean(
+      res.data.verified ?? res.data.authorized ?? res.data.ok
+    );
     return {
       ok: true,
-      verified: Boolean(res.data.verified),
+      verified: isVerified,
       sessionToken: res.data.sessionToken,
     };
   }
@@ -540,6 +555,19 @@ export async function fetchMiniAppBootstrap(
       ? (rawRecord.tickets as SupportTicket[])
       : undefined;
 
+    const rawBotConfig =
+      json.botConfig && typeof json.botConfig === 'object'
+        ? json.botConfig
+        : rawRecord.botSettings && typeof rawRecord.botSettings === 'object'
+        ? (rawRecord.botSettings as Partial<BotConfigSettings>)
+        : undefined;
+
+    const rawBadgesCatalog = Array.isArray(json.badgesCatalog)
+      ? json.badgesCatalog
+      : Array.isArray(rawRecord.badges)
+      ? (rawRecord.badges as BadgeItem[])
+      : undefined;
+
     return {
       ok: true,
       completedProfile: Boolean(
@@ -579,6 +607,8 @@ export async function fetchMiniAppBootstrap(
       allowStudentTimers:
         typeof json.allowStudentTimers === 'boolean' ? json.allowStudentTimers : undefined,
       siteSwitches: rawSiteSwitches,
+      botConfig: rawBotConfig,
+      badgesCatalog: rawBadgesCatalog,
       onlineCount: rawOnlineCount,
       onlineUsers: rawOnlineUsers,
       referralStats: json.referralStats,
@@ -1630,6 +1660,185 @@ export async function closeAdminChatOnBot(payload: {
     ok: res.ok,
   };
 }
+
+/**
+ * 23. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-bot-config
+ * Saves Telegram Bot configuration (welcomeText, cardNumber, cardHolder, channelUsername, rulesText, badgesCatalog)
+ * and optionally triggers a broadcast message to all Telegram Bot members.
+ */
+export async function saveAdminBotConfigToBot(
+  payload: Partial<BotConfigSettings> & {
+    badgesCatalog?: BadgeItem[];
+    action?: 'save_config' | 'broadcast' | 'save_badges';
+    broadcastMessage?: string;
+    targetAudience?: string;
+  }
+): Promise<{
+  ok: boolean;
+  savedAt: string;
+  sentCount?: number;
+}> {
+  const savedAt = new Date().toISOString();
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    savedAt?: string;
+    sentCount?: number;
+  }>('/api/miniapp/admin-bot-config', {
+    ...payload,
+    botConfig: {
+      welcomeText: payload.welcomeText,
+      cardNumber: payload.cardNumber,
+      cardHolder: payload.cardHolder,
+      channelUsername: payload.channelUsername,
+      rulesText: payload.rulesText,
+      updatedAt: savedAt,
+    },
+    badges: payload.badgesCatalog,
+    badgesCatalog: payload.badgesCatalog,
+    adminId: MASTER_ADMIN_TELEGRAM_ID,
+    updatedAt: savedAt,
+  });
+
+  if (payload.action === 'broadcast' && payload.broadcastMessage) {
+    void postToMiniAppApi('/api/miniapp/admin-broadcast', {
+      title: '📢 پیام همگانی انجمن علمی مهندسی صنایع',
+      message: payload.broadcastMessage,
+      text: payload.broadcastMessage,
+      targetAudience: payload.targetAudience || 'همه اعضای ربات تلگرام',
+      adminId: MASTER_ADMIN_TELEGRAM_ID,
+    });
+  }
+
+  return {
+    ok: res.ok,
+    savedAt: res.data?.savedAt || savedAt,
+    sentCount: res.data?.sentCount,
+  };
+}
+
+/**
+ * 24. POST ${BOT_WORKER_BASE_URL}/api/miniapp/ai-chat
+ * Sends MiniApp AI chat & smart extraction prompts directly to the Cloudflare Worker's active AI engine.
+ */
+export async function askMiniAppAiOnBot(payload: {
+  prompt: string;
+  modelId?: string;
+  systemInstruction?: string;
+  context?: Record<string, unknown>;
+}): Promise<{ ok: boolean; reply?: string; modelUsed?: string }> {
+  const res = await postToMiniAppApi<{
+    ok?: boolean;
+    reply?: string;
+    response?: string;
+    text?: string;
+    modelUsed?: string;
+  }>('/api/miniapp/ai-chat', {
+    prompt: payload.prompt,
+    message: payload.prompt,
+    query: payload.prompt,
+    modelId: payload.modelId || 'gemini-3.8-flash',
+    systemInstruction: payload.systemInstruction,
+    context: payload.context,
+    adminId: MASTER_ADMIN_TELEGRAM_ID,
+    timestamp: new Date().toISOString(),
+  });
+
+  const replyText = (
+    res.data?.reply ||
+    res.data?.response ||
+    res.data?.text ||
+    ''
+  ).trim();
+
+  if (res.ok && replyText) {
+    return {
+      ok: true,
+      reply: replyText,
+      modelUsed: res.data?.modelUsed || payload.modelId,
+    };
+  }
+  return { ok: false };
+}
+
+/**
+ * 25. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-update-secrets
+ * Securely updates the Gemini API Key and/or Admin Panel password on the Cloudflare Worker server.
+ * Zero plaintext keys or passwords are ever stored in localStorage or client state.
+ */
+export async function updateAdminSecretsOnBot(payload: {
+  geminiApiKey?: string;
+  newAdminPassword?: string;
+  adminPassword?: string;
+  adminTelegramId?: string;
+  adminId?: string;
+}): Promise<{
+  ok: boolean;
+  maskedGeminiKey?: string;
+  passwordUpdated?: boolean;
+  message?: string;
+}> {
+  const cleanApiKey = (payload.geminiApiKey || '').trim();
+  const cleanNewPassword = (payload.newAdminPassword || payload.adminPassword || '').trim();
+  const newPasswordHash = cleanNewPassword
+    ? computeAdminPasswordHash(cleanNewPassword)
+    : undefined;
+
+  const maskedKey =
+    cleanApiKey.length >= 8
+      ? `${cleanApiKey.slice(0, 6)}...**** (فعال در سرور)`
+      : undefined;
+
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    maskedGeminiKey?: string;
+    passwordUpdated?: boolean;
+    message?: string;
+  }>('/api/miniapp/admin-update-secrets', {
+    ...(cleanApiKey ? { geminiApiKey: cleanApiKey, apiKey: cleanApiKey } : {}),
+    ...(cleanNewPassword
+      ? {
+          newAdminPassword: cleanNewPassword,
+          adminPassword: cleanNewPassword,
+          newPasswordHash,
+        }
+      : {}),
+    adminId: payload.adminTelegramId || payload.adminId || MASTER_ADMIN_TELEGRAM_ID,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return {
+    ok: res.ok,
+    maskedGeminiKey: res.data?.maskedGeminiKey || maskedKey,
+    passwordUpdated: Boolean(res.data?.passwordUpdated ?? Boolean(cleanNewPassword)),
+    message: res.data?.message,
+  };
+}
+
+/**
+ * 26. POST ${BOT_WORKER_BASE_URL}/api/miniapp/simulation-report
+ * Sends the 50-User & 5-Admin Simulation Lab summary report directly to the Master Admin's
+ * Telegram private chat (629890497) and instructs the server to purge temporary simulation records.
+ */
+export async function sendSimulationReportToBot(
+  report: SimulationReportPayload
+): Promise<{ ok: boolean; deliveredToTelegram: boolean }> {
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    deliveredToTelegram?: boolean;
+  }>('/api/miniapp/simulation-report', {
+    ...report,
+    targetAdminTelegramId: report.targetAdminTelegramId || MASTER_ADMIN_TELEGRAM_ID,
+    adminId: MASTER_ADMIN_TELEGRAM_ID,
+    purgeTemporarySimulationData: true,
+    timestamp: new Date().toISOString(),
+  });
+
+  return {
+    ok: res.ok,
+    deliveredToTelegram: Boolean(res.data?.deliveredToTelegram ?? res.ok),
+  };
+}
+
 
 
 

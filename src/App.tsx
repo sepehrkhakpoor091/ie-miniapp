@@ -805,6 +805,18 @@ export default function App() {
       );
     }
 
+    const incomingBadges =
+      Array.isArray(boot.badgesCatalog) && boot.badgesCatalog.length > 0
+        ? boot.badgesCatalog
+        : Array.isArray(boot.botConfig?.badgesCatalog) &&
+          boot.botConfig!.badgesCatalog!.length > 0
+        ? boot.botConfig!.badgesCatalog!
+        : undefined;
+    if (incomingBadges) {
+      setBadgesCatalog(incomingBadges);
+      localStorage.setItem(BADGES_STORAGE_KEY, JSON.stringify(incomingBadges));
+    }
+
     if (Array.isArray(boot.events) && boot.events.length > 0) {
       setEventsCatalog((prev) => {
         const localMap = new Map<string, EventItem>();
@@ -1503,8 +1515,8 @@ export default function App() {
     const safeQuests = Array.isArray(quests) ? quests : [];
     const target = safeQuests.find((q) => q.id === questId);
     if (!target) return false;
-    const expected = (target.secretCode || 'IE1404').trim().toLowerCase();
-    if (enteredCode.trim().toLowerCase() !== expected) {
+    const expected = (target.secretCode || '').trim().toLowerCase();
+    if (!expected || enteredCode.trim().toLowerCase() !== expected) {
       return false;
     }
     const updatedQuests = safeQuests.map((q) =>
@@ -1822,6 +1834,7 @@ export default function App() {
                       quests={quests}
                       userTickets={currentStudentTickets}
                       realStudents={studentsCatalog}
+                      badgesCatalog={badgesCatalog}
                       lootboxConfig={lootboxConfig}
                       leaderboardEnabled={featureFlags.leaderboardEnabled}
                       lootboxStoreEnabled={featureFlags.lootboxStoreEnabled}

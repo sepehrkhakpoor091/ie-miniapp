@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   computeAdminPasswordHash,
   verifyMasterPasswordHash,
-  MASTER_ADMIN_SALTLOCK_HASH,
   MASTER_ADMIN_TELEGRAM_ID,
   BOT_WORKER_BASE_URL,
   isMasterAdminTelegramUser,
@@ -27,10 +26,9 @@ import {
 } from '../gamification';
 import { UserProfile } from '../../types';
 
-test('Patch 2 & Master Admin Binding: verifyMasterPasswordHash & Telegram ID 629890497 & @Isefum channel & Live Worker URL', () => {
-  const candidate = String.fromCharCode(48, 57, 51, 48, 57, 50, 50, 56, 52, 55, 55);
-  assert.equal(computeAdminPasswordHash(candidate), MASTER_ADMIN_SALTLOCK_HASH);
-  assert.equal(verifyMasterPasswordHash(candidate), true);
+test('Patch 2 & Master Admin Binding: Zero client password hash & Telegram ID 629890497 & @Isefum channel & Live Worker URL', () => {
+  // Zero hardcoded password hashes in client code: verifyMasterPasswordHash always returns false locally (server-only via /api/miniapp/admin-auth)
+  assert.equal(computeAdminPasswordHash('test-input').length, 17);
   assert.equal(verifyMasterPasswordHash('wrong-password-123'), false);
   assert.equal(verifyMasterPasswordHash(''), false);
 
@@ -78,6 +76,22 @@ test('Patch 2 & Master Admin Binding: verifyMasterPasswordHash & Telegram ID 629
   assert.equal(
     resolveBotEndpoint('/api/miniapp/admin-save-lootbox'),
     'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/admin-save-lootbox'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/admin-bot-config'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/admin-bot-config'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/ai-chat'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/ai-chat'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/admin-update-secrets'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/admin-update-secrets'
+  );
+  assert.equal(
+    resolveBotEndpoint('/api/miniapp/simulation-report'),
+    'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/simulation-report'
   );
 });
 

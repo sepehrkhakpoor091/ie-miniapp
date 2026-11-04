@@ -10,11 +10,6 @@ import { UserProfile } from '../types';
 
 const SECRET_SALT = 'IE_GAMIFICATION_SECRET_SALT_2025';
 
-/**
- * Precomputed dual-round salted hash of the Master Council Password.
- * Zero plaintext passwords are stored in the client bundle.
- */
-export const MASTER_ADMIN_SALTLOCK_HASH = '7FE33E04-6273BAB2';
 export const MASTER_ADMIN_TELEGRAM_ID = '629890497';
 export const BOT_WORKER_BASE_URL =
   'https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev';
@@ -88,8 +83,8 @@ export function computeSignatureHash(payload: string): string {
 }
 
 /**
- * Patch 2: Salted Dual-Round Cryptographic Hash Verifier for Admin Master Password
- * Never stores plaintext password in the frontend bundle.
+ * Computes a salted hash of an admin password for transmission to POST /api/miniapp/admin-auth.
+ * Zero passwords or master hashes are stored in the client bundle.
  */
 export function computeAdminPasswordHash(inputPassword: string): string {
   const normalized = (inputPassword || '').trim();
@@ -99,8 +94,9 @@ export function computeAdminPasswordHash(inputPassword: string): string {
 }
 
 export function verifyMasterPasswordHash(inputPassword: string): boolean {
-  if (!inputPassword || typeof inputPassword !== 'string') return false;
-  return computeAdminPasswordHash(inputPassword) === MASTER_ADMIN_SALTLOCK_HASH;
+  // Password verification is strictly performed on the Cloudflare server via POST /api/miniapp/admin-auth.
+  void inputPassword;
+  return false;
 }
 
 /**
@@ -520,13 +516,16 @@ export function verifyStateIntegrity(
     return false;
   }
   const activeTgUser = getRealTelegramUser();
-  // If running inside a real Telegram account and the profile explicitly belongs to a different numeric Telegram ID, fail
+  const effectiveTgId = activeTgUser?.id || telegramUserId;
+  // If running inside a real Telegram account or explicit telegramUserId is provided and the profile explicitly belongs to a different numeric Telegram ID, fail
   if (
-    activeTgUser?.id &&
+    effectiveTgId &&
+    effectiveTgId !== 'WEB_SESSION_USER' &&
+    effectiveTgId !== 'web-local-student' &&
     profile.telegramUserId &&
     profile.telegramUserId !== 'WEB_SESSION_USER' &&
     profile.telegramUserId !== 'web-local-student' &&
-    profile.telegramUserId !== activeTgUser.id
+    profile.telegramUserId !== effectiveTgId
   ) {
     return false;
   }
