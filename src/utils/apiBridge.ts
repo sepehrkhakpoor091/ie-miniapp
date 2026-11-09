@@ -9,20 +9,24 @@
 import {
   AdminReceiptItem,
   AdminStudentDossier,
+  AdminUser,
   BadgeItem,
   BootstrapResponse,
   BotConfigSettings,
+  CertificateInfo,
   ChannelAnnouncement,
   EventItem,
   LootboxConfig,
   OnlineSessionUser,
   Professor,
+  ScheduledTimer,
   SimulationReportPayload,
   SiteSwitches,
   StudentIdDisputeTicket,
   SupportTicket,
   TicketRecord,
   UserProfile,
+  WeeklyQuest,
 } from '../types';
 import { normalizeEvent, normalizeEventsList } from './events';
 import {
@@ -40,6 +44,57 @@ export const BOT_WORKER_BASE_URL =
 export const BOT_API_URL_STORAGE_KEY = 'ie_bot_api_base_url_v1';
 export const IDEMPOTENCY_STORAGE_KEY = 'ie_idempotency_keys_v1';
 export const SITE_SWITCHES_OVERRIDE_KEY = 'ie_site_switches_override_v1';
+export const BOT_CONFIG_STORAGE_KEY = 'ie_bot_config_v1';
+
+export const DEFAULT_BOT_CONFIG_SETTINGS: BotConfigSettings = {
+  welcomeText:
+    'سلام مهندس عزیز! 👋 به ربات رسمی انجمن علمی مهندسی صنایع خوش آمدید. از دکمه مینی‌اپ برای ثبت‌نام در کارگاه‌ها، مشاهده چارت درسی و دریافت بلیط QR استفاده کنید.',
+  cardNumber: '۶۲۱۹ - ۸۶۱۸ - ۱۱۴۸ - ۹۸۶۲',
+  cardHolder: 'انجمن علمی مهندسی صنایع',
+  channelUsername: '@isefum',
+  rulesText:
+    '۱. ثبت نام و شماره دانشجویی واقعی در مینی‌اپ الزامی است.\n۲. پس از واریز هزینه کارگاه، تصویر فیش را در مینی‌اپ یا ربات ارسال کنید.\n۳. بلیط QR صادرشده را در روز برگزاری کارگاه همراه داشته باشید.',
+  broadcastMessage: '',
+};
+
+export function loadStoredBotConfig(): BotConfigSettings {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return DEFAULT_BOT_CONFIG_SETTINGS;
+    }
+    const raw = window.localStorage.getItem(BOT_CONFIG_STORAGE_KEY);
+    const parsed = safeJsonParse<Partial<BotConfigSettings> | null>(raw, null);
+    if (!parsed || typeof parsed !== 'object') {
+      return DEFAULT_BOT_CONFIG_SETTINGS;
+    }
+    return {
+      ...DEFAULT_BOT_CONFIG_SETTINGS,
+      ...parsed,
+      cardNumber: parsed.cardNumber?.trim() || DEFAULT_BOT_CONFIG_SETTINGS.cardNumber,
+      cardHolder: parsed.cardHolder?.trim() || DEFAULT_BOT_CONFIG_SETTINGS.cardHolder,
+    };
+  } catch {
+    return DEFAULT_BOT_CONFIG_SETTINGS;
+  }
+}
+
+export function saveStoredBotConfig(partial: Partial<BotConfigSettings>): BotConfigSettings {
+  const current = loadStoredBotConfig();
+  const next: BotConfigSettings = {
+    ...current,
+    ...partial,
+    cardNumber: partial.cardNumber?.trim() || current.cardNumber,
+    cardHolder: partial.cardHolder?.trim() || current.cardHolder,
+  };
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(BOT_CONFIG_STORAGE_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // Ignore storage error
+  }
+  return next;
+}
 
 /**
  * Resolves the real displayable image URL for a receipt or KYC card item.
@@ -564,8 +619,48 @@ export async function fetchMiniAppBootstrap(
 
     const rawBadgesCatalog = Array.isArray(json.badgesCatalog)
       ? json.badgesCatalog
+      : Array.isArray(rawBotConfig?.badgesCatalog)
+      ? rawBotConfig!.badgesCatalog
       : Array.isArray(rawRecord.badges)
       ? (rawRecord.badges as BadgeItem[])
+      : undefined;
+
+    const rawAdminsCatalog = Array.isArray(json.adminsCatalog)
+      ? json.adminsCatalog
+      : Array.isArray(rawBotConfig?.adminsCatalog)
+      ? rawBotConfig!.adminsCatalog
+      : Array.isArray(rawRecord.admins)
+      ? (rawRecord.admins as AdminUser[])
+      : undefined;
+
+    const rawTimersCatalog = Array.isArray(json.timersCatalog)
+      ? json.timersCatalog
+      : Array.isArray(rawBotConfig?.timersCatalog)
+      ? rawBotConfig!.timersCatalog
+      : Array.isArray(rawRecord.timers)
+      ? (rawRecord.timers as ScheduledTimer[])
+      : undefined;
+
+    const rawQuestsCatalog = Array.isArray(json.questsCatalog)
+      ? json.questsCatalog
+      : Array.isArray(rawBotConfig?.questsCatalog)
+      ? rawBotConfig!.questsCatalog
+      : Array.isArray(rawRecord.quests)
+      ? (rawRecord.quests as WeeklyQuest[])
+      : undefined;
+
+    const rawCertificates = Array.isArray(json.certificates)
+      ? json.certificates
+      : Array.isArray(rawRecord.issuedCertificates)
+      ? (rawRecord.issuedCertificates as CertificateInfo[])
+      : undefined;
+
+    const rawMyRegistrations = Array.isArray(json.myRegistrations)
+      ? json.myRegistrations
+      : Array.isArray(rawRecord.registrations)
+      ? (rawRecord.registrations as Partial<TicketRecord>[])
+      : Array.isArray(rawRecord.userTickets)
+      ? (rawRecord.userTickets as Partial<TicketRecord>[])
       : undefined;
 
     const rawUiTexts =
@@ -618,6 +713,11 @@ export async function fetchMiniAppBootstrap(
       siteSwitches: rawSiteSwitches,
       botConfig: rawBotConfig,
       badgesCatalog: rawBadgesCatalog,
+      adminsCatalog: rawAdminsCatalog,
+      timersCatalog: rawTimersCatalog,
+      questsCatalog: rawQuestsCatalog,
+      certificates: rawCertificates,
+      myRegistrations: rawMyRegistrations,
       uiTexts: rawUiTexts,
       onlineCount: rawOnlineCount,
       onlineUsers: rawOnlineUsers,
@@ -1679,7 +1779,16 @@ export async function closeAdminChatOnBot(payload: {
 export async function saveAdminBotConfigToBot(
   payload: Partial<BotConfigSettings> & {
     badgesCatalog?: BadgeItem[];
-    action?: 'save_config' | 'broadcast' | 'save_badges';
+    adminsCatalog?: AdminUser[];
+    timersCatalog?: ScheduledTimer[];
+    questsCatalog?: WeeklyQuest[];
+    action?:
+      | 'save_config'
+      | 'broadcast'
+      | 'save_badges'
+      | 'save_admins'
+      | 'save_timers'
+      | 'save_quests';
     broadcastMessage?: string;
     targetAudience?: string;
   }
@@ -1689,22 +1798,35 @@ export async function saveAdminBotConfigToBot(
   sentCount?: number;
 }> {
   const savedAt = new Date().toISOString();
+  const mergedConfig = saveStoredBotConfig({
+    ...payload,
+    updatedAt: savedAt,
+  });
+
   const res = await postToMiniAppApi<{
     ok: boolean;
     savedAt?: string;
     sentCount?: number;
   }>('/api/miniapp/admin-bot-config', {
+    ...mergedConfig,
     ...payload,
     botConfig: {
-      welcomeText: payload.welcomeText,
-      cardNumber: payload.cardNumber,
-      cardHolder: payload.cardHolder,
-      channelUsername: payload.channelUsername,
-      rulesText: payload.rulesText,
+      welcomeText: mergedConfig.welcomeText,
+      cardNumber: mergedConfig.cardNumber,
+      cardHolder: mergedConfig.cardHolder,
+      channelUsername: mergedConfig.channelUsername,
+      rulesText: mergedConfig.rulesText,
+      badgesCatalog: payload.badgesCatalog ?? mergedConfig.badgesCatalog,
+      adminsCatalog: payload.adminsCatalog ?? mergedConfig.adminsCatalog,
+      timersCatalog: payload.timersCatalog ?? mergedConfig.timersCatalog,
+      questsCatalog: payload.questsCatalog ?? mergedConfig.questsCatalog,
       updatedAt: savedAt,
     },
-    badges: payload.badgesCatalog,
-    badgesCatalog: payload.badgesCatalog,
+    badges: payload.badgesCatalog ?? mergedConfig.badgesCatalog,
+    badgesCatalog: payload.badgesCatalog ?? mergedConfig.badgesCatalog,
+    adminsCatalog: payload.adminsCatalog ?? mergedConfig.adminsCatalog,
+    timersCatalog: payload.timersCatalog ?? mergedConfig.timersCatalog,
+    questsCatalog: payload.questsCatalog ?? mergedConfig.questsCatalog,
     adminId: MASTER_ADMIN_TELEGRAM_ID,
     updatedAt: savedAt,
   });
@@ -1728,7 +1850,7 @@ export async function saveAdminBotConfigToBot(
 
 /**
  * 24. POST ${BOT_WORKER_BASE_URL}/api/miniapp/ai-chat
- * Sends MiniApp AI chat & smart extraction prompts directly to the Cloudflare Worker's active AI engine.
+ * Sends MiniApp AI chat & smart extraction prompts strictly to the Cloudflare Worker's active AI engine.
  */
 export async function askMiniAppAiOnBot(payload: {
   prompt: string;
@@ -1736,6 +1858,15 @@ export async function askMiniAppAiOnBot(payload: {
   systemInstruction?: string;
   context?: Record<string, unknown>;
 }): Promise<{ ok: boolean; reply?: string; modelUsed?: string }> {
+  let storedApiKey = '';
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      storedApiKey = window.localStorage.getItem('ie_gemini_api_key_v1') || '';
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+
   const res = await postToMiniAppApi<{
     ok?: boolean;
     reply?: string;
@@ -1744,13 +1875,11 @@ export async function askMiniAppAiOnBot(payload: {
     modelUsed?: string;
   }>('/api/miniapp/ai-chat', {
     prompt: payload.prompt,
-    message: payload.prompt,
-    query: payload.prompt,
+    systemInstruction: payload.systemInstruction || '',
+    apiKey: storedApiKey,
     modelId: payload.modelId || 'gemini-3.8-flash',
-    systemInstruction: payload.systemInstruction,
     context: payload.context,
     adminId: MASTER_ADMIN_TELEGRAM_ID,
-    timestamp: new Date().toISOString(),
   });
 
   const replyText = (
@@ -1767,13 +1896,12 @@ export async function askMiniAppAiOnBot(payload: {
       modelUsed: res.data?.modelUsed || payload.modelId,
     };
   }
-  return { ok: false };
+  return { ok: false, reply: replyText || undefined };
 }
 
 /**
  * 25. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-update-secrets
- * Securely updates the Gemini API Key and/or Admin Panel password on the Cloudflare Worker server.
- * Zero plaintext keys or passwords are ever stored in localStorage or client state.
+ * Updates the Gemini API Key and/or Admin Panel password on the Cloudflare Worker server.
  */
 export async function updateAdminSecretsOnBot(payload: {
   geminiApiKey?: string;
@@ -1792,6 +1920,16 @@ export async function updateAdminSecretsOnBot(payload: {
   const newPasswordHash = cleanNewPassword
     ? computeAdminPasswordHash(cleanNewPassword)
     : undefined;
+
+  if (cleanApiKey) {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('ie_gemini_api_key_v1', cleanApiKey);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }
 
   const maskedKey =
     cleanApiKey.length >= 8

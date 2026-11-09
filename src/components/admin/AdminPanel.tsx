@@ -94,6 +94,7 @@ import {
 } from '../../utils/security';
 import {
   closeAdminChatOnBot,
+  loadStoredBotConfig,
   loadStoredSupportChats,
   normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
@@ -103,6 +104,7 @@ import {
   saveLootboxConfigOnBot,
   saveProfessorsOnBot,
   saveSiteSwitchesOnBot,
+  saveStoredBotConfig,
   saveStoredSupportChats,
   sendAdminChatMessageToBot,
   sendSimulationReportToBot,
@@ -471,9 +473,11 @@ interface AdminPanelProps {
   channelUrl?: string;
   featuredEventId?: string;
   aboutConfig?: AboutAssociationConfig;
+  botConfig?: Partial<BotConfigSettings>;
   uiTexts?: Record<string, string>;
   onUpdateUiTexts?: (nextUiTexts: Record<string, string>) => void;
   onEnterVisualEditMode?: () => void;
+  onUpdateBotConfig?: (nextBotConfig: BotConfigSettings) => void;
   onUpdateEvents?: (nextEvents: EventItem[]) => void;
   onUpdateFeaturedEventId?: (nextEventId: string) => void;
   onUpdateAboutConfig?: (nextAbout: AboutAssociationConfig) => void;
@@ -531,9 +535,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   channelUrl: propChannelUrl = DEFAULT_CHANNEL_URL,
   featuredEventId: propFeaturedEventId = 'ev-project-mgmt',
   aboutConfig: propAboutConfig = DEFAULT_ABOUT_CONFIG,
+  botConfig: propBotConfig,
   uiTexts = {},
   onUpdateUiTexts,
   onEnterVisualEditMode,
+  onUpdateBotConfig,
   onUpdateEvents,
   onUpdateFeaturedEventId,
   onUpdateAboutConfig,
@@ -738,8 +744,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   ) => {
     setTimerList((prev) => {
       const next = updater(Array.isArray(prev) ? prev : DEFAULT_TIMERS);
-      queueMicrotask(() => onUpdateTimers?.(next));
+      queueMicrotask(() => {
+        onUpdateTimers?.(next);
+        void saveAdminBotConfigToBot({
+          ...loadStoredBotConfig(),
+          timersCatalog: next,
+          action: 'save_config',
+        });
+      });
       return next;
+    });
+  };
+
+  const updateQuestsAndPersist = (next: WeeklyQuest[]) => {
+    setQuestList(next);
+    onUpdateQuests?.(next);
+    void saveAdminBotConfigToBot({
+      ...loadStoredBotConfig(),
+      questsCatalog: next,
+      action: 'save_config',
+    });
+  };
+
+  const updateAdminsAndPersist = (next: AdminUser[]) => {
+    setAdminList(next);
+    onUpdateAdmins?.(next);
+    void saveAdminBotConfigToBot({
+      ...loadStoredBotConfig(),
+      adminsCatalog: next,
+      action: 'save_config',
     });
   };
 
@@ -1134,16 +1167,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   });
 
   // Module 9 & Security State: Bot Config, Server API Key / Password Updater & 50-User Simulation Lab
-  const [botConfigDraft, setBotConfigDraft] = useState<BotConfigSettings>({
-    welcomeText:
-      'سلام مهندس عزیز! 👋 به ربات رسمی انجمن علمی مهندسی صنایع خوش آمدید. از دکمه مینی‌اپ برای ثبت‌نام در کارگاه‌ها، مشاهده چارت درسی و دریافت بلیط QR استفاده کنید.',
-    cardNumber: '۶۰۳۷-۹۹۷۵-۰۰۰۰-۰۰۰۰',
-    cardHolder: 'انجمن علمی مهندسی صنایع',
-    channelUsername: propChannelUrl || '@isefum',
-    rulesText:
-      '۱. ثبت نام و شماره دانشجویی واقعی در مینی‌اپ الزامی است.\n۲. پس از واریز هزینه کارگاه، تصویر فیش را در مینی‌اپ یا ربات ارسال کنید.\n۳. بلیط QR صادرشده را در روز برگزاری کارگاه همراه داشته باشید.',
-    broadcastMessage: '',
+  const [botConfigDraft, setBotConfigDraft] = useState<BotConfigSettings>(() => {
+    const stored = loadStoredBotConfig();
+    return {
+      ...stored,
+      ...(propBotConfig || {}),
+      channelUsername:
+        propBotConfig?.channelUsername || stored.channelUsername || propChannelUrl || '@isefum',
+    };
   });
+
+  useEffect(() => {
+    if (propBotConfig) {
+      setBotConfigDraft((prev) => ({
+        ...prev,
+        ...propBotConfig,
+      }));
+    }
+  }, [propBotConfig]);
   const [isSavingBotConfig, setIsSavingBotConfig] = useState(false);
   const [isSendingBroadcast, setIsSendingBroadcast] = useState(false);
   const [newGeminiApiKeyInput, setNewGeminiApiKeyInput] = useState('');
@@ -1726,29 +1767,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           onUpdateCurrentUserProfile?.({ kycStatus: nextKycStatus });
         }
       } else if (decision === 'approved') {
-        // It's a Payment Receipt -> ensure a real scannable QR ticket is issued for this student!
-        const evId = item.eventId || 'ev-python-data';
+        // Fix 3-3: Payment Receipt Approved -> look up real workshop date, time, location & rewardPoints!
+        const matchedEvent = (Array.isArray(eventList) ? eventList : []).find(
+          (e) =>
+            (item.eventId && e.id === item.eventId) ||
+            (item.eventTitle && e.title === item.eventTitle) ||
+            (item.title && item.title.includes(e.title))
+        );
+        const evId = matchedEvent?.id || item.eventId || 'ev-python-data';
         const evTitle =
-          item.eventTitle || item.title || 'کارگاه تحلیل داده با پایتون';
+          matchedEvent?.title || item.eventTitle || item.title || 'کارگاه انجمن علمی صنایع';
+        const evDate = matchedEvent?.date || 'به‌زودی';
+        const evTime = matchedEvent?.time || '۱۴:۰۰ الی ۱۷:۰۰';
+        const evLocation = matchedEvent?.location || 'دانشکده مهندسی صنایع';
+        const evRewardPoints = matchedEvent?.rewardPoints ?? 20;
+
         const qrCodePayload = generateTicketPayload(
           evId,
           item.studentId,
-          item.trackingCode
+          item.trackingCode,
+          item.amountTomans || item.amount || matchedEvent?.basePrice || 50000
         );
         const newApprovedTicket: TicketRecord = {
           id: `tkt-rcp-${item.id}`,
           eventId: evId,
           eventTitle: evTitle,
-          eventDate: '۲۸ آبان ۱۴۰۴',
-          eventTime: '۱۴:۰۰ الی ۱۷:۰۰',
-          location: 'آمفی‌تئاتر دانشکده مهندسی صنایع',
+          eventDate: evDate,
+          eventTime: evTime,
+          location: evLocation,
           studentId: item.studentId,
           studentName: item.studentName,
           trackingCode: item.trackingCode,
           qrPayload: qrCodePayload,
-          paidAmount: item.amountTomans || item.amount || 50000,
+          paidAmount: item.amountTomans || item.amount || matchedEvent?.basePrice || 50000,
           discountPointsUsed: 0,
-          issuedAt: 'هم‌اکنون (تایید فیش)',
+          issuedAt: new Date().toLocaleDateString('fa-IR'),
           sentToTelegram: true,
           checkedIn: false,
         };
@@ -1756,6 +1809,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           const exists = prev.some((t) => t.trackingCode === item.trackingCode);
           return exists ? prev : [newApprovedTicket, ...prev];
         });
+
+        // Award workshop rewardPoints to the student upon receipt approval
+        if (evRewardPoints > 0) {
+          updateStudentsAndPersist((prev) =>
+            prev.map((s) =>
+              s.studentId === item.studentId
+                ? {
+                    ...s,
+                    score: (Number(s.score) || 0) + evRewardPoints,
+                    workshopsAttended: Array.isArray(s.workshopsAttended)
+                      ? s.workshopsAttended.includes(evTitle)
+                        ? s.workshopsAttended
+                        : [evTitle, ...s.workshopsAttended]
+                      : [evTitle],
+                  }
+                : s
+            )
+          );
+          if (currentUser?.studentId && item.studentId === currentUser.studentId) {
+            onAwardCurrentStudentPoints?.(
+              evRewardPoints,
+              `تایید فیش و صدور بلیط کارگاه «${evTitle}»`
+            );
+          }
+        }
       }
 
       if (decision === 'approved' || decision === 'rejected') {
@@ -2961,8 +3039,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       unlockedByCode: false,
     };
     const updated = [createdQuest, ...(Array.isArray(questList) ? questList : [])];
-    setQuestList(updated);
-    onUpdateQuests?.(updated);
+    updateQuestsAndPersist(updated);
     setNewQuestTitle('');
     setNewQuestDescription('');
     appendLog('ایجاد ماموریت جدید', createdQuest.title, 'success');
@@ -3017,8 +3094,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
 
     const updatedAdmins = [newAdmin, ...(Array.isArray(adminList) ? adminList : [])];
-    setAdminList(updatedAdmins);
-    onUpdateAdmins?.(updatedAdmins);
+    updateAdminsAndPersist(updatedAdmins);
     setNewAdminName('');
     setNewAdminCanVisualEdit(false);
     appendLog(
@@ -3082,9 +3158,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         saveChannelUrl(cleanHandle);
         onUpdateChannelUrl?.(cleanHandle);
       }
+      saveStoredBotConfig(botConfigDraft);
+      onUpdateBotConfig?.(botConfigDraft);
       const res = await saveAdminBotConfigToBot({
         ...botConfigDraft,
         badgesCatalog: badgeList,
+        adminsCatalog: adminList,
+        timersCatalog: timerList,
+        questsCatalog: questList,
         action: 'save_config',
       });
       appendLog(
@@ -8636,8 +8717,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               const next = questList.map((item) =>
                                 item.id === q.id ? { ...item, title: val } : item
                               );
-                              setQuestList(next);
-                              onUpdateQuests?.(next);
+                              updateQuestsAndPersist(next);
                             }}
                             className={`w-full px-2.5 py-1 rounded-lg border text-xs font-black ${inputClass}`}
                           />
@@ -8649,8 +8729,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               const next = questList.map((item) =>
                                 item.id === q.id ? { ...item, description: val } : item
                               );
-                              setQuestList(next);
-                              onUpdateQuests?.(next);
+                              updateQuestsAndPersist(next);
                             }}
                             className={`w-full px-2.5 py-1 rounded-lg border text-[11px] font-bold opacity-85 ${inputClass}`}
                           />
@@ -8673,8 +8752,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 const next = questList.map((item) =>
                                   item.id === q.id ? { ...item, rewardPoints: pts } : item
                                 );
-                                setQuestList(next);
-                                onUpdateQuests?.(next);
+                                updateQuestsAndPersist(next);
                               }}
                               className={`w-16 px-2 py-1 rounded-lg border text-center font-mono font-black text-xs ${inputClass}`}
                             />
@@ -8685,8 +8763,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onClick={() => {
                               playTick();
                               const next = questList.filter((item) => item.id !== q.id);
-                              setQuestList(next);
-                              onUpdateQuests?.(next);
+                              updateQuestsAndPersist(next);
                               triggerToast(`🗑️ ماموریت «${q.title}» حذف شد.`);
                             }}
                             className="p-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 cursor-pointer"
@@ -8865,8 +8942,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
                                 a.id === adm.id ? { ...a, isFrozen: !a.isFrozen } : a
                               );
-                              setAdminList(updated);
-                              onUpdateAdmins?.(updated);
+                              updateAdminsAndPersist(updated);
                               appendLog(
                                 adm.isFrozen
                                   ? 'رفع مسدودیت دسترسی ادمین'
@@ -8891,8 +8967,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               const updated = (Array.isArray(adminList) ? adminList : []).filter(
                                 (a) => a.id !== adm.id
                               );
-                              setAdminList(updated);
-                              onUpdateAdmins?.(updated);
+                              updateAdminsAndPersist(updated);
                               appendLog('حذف کامل ادمین از سامانه', adm.fullName, 'danger');
                               triggerToast(`🗑️ ادمین «${adm.fullName}» به طور کامل حذف شد.`);
                             }}
@@ -8970,8 +9045,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
                               a.id === adm.id ? { ...a, canVisualEdit: nextVal } : a
                             );
-                            setAdminList(updated);
-                            onUpdateAdmins?.(updated);
+                            updateAdminsAndPersist(updated);
                             appendLog(
                               nextVal
                                 ? 'فعال‌سازی مجوز ویرایش دستی متن‌های مینی‌اپ'

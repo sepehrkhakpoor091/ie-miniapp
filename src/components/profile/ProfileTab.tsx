@@ -126,15 +126,15 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
 
   const safeTickets = Array.isArray(userTickets) ? userTickets : [];
   const safeVouchers = Array.isArray(vouchers) ? vouchers : [];
-  const certificates: CertificateInfo[] =
-    Array.isArray(propCertificates) && propCertificates.length > 0
-      ? propCertificates
-      : user.score >= 150
-      ? DEFAULT_CERTIFICATES.map((c) => ({
-          ...c,
-          studentName: user.fullName,
-        }))
-      : [];
+  const certificates: CertificateInfo[] = Array.isArray(propCertificates)
+    ? propCertificates.filter(
+        (c) =>
+          !c.studentName ||
+          !user.fullName ||
+          c.studentName === user.fullName ||
+          (user.studentId && c.certificateId?.includes(user.studentId.slice(0, 3)))
+      )
+    : [];
 
   // Dynamic Badges Catalog evaluated against real student progress
   const allBadges: BadgeItem[] =

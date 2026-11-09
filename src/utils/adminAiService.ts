@@ -2,8 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * Safe Admin AI Service (adminAiService.ts)
- * All AI requests are routed through the Cloudflare Worker (`POST /api/miniapp/ai-chat`)
- * and the server-side Express API (`/api/ai/looti`, `/api/ai/parse-professors`).
+ * All AI requests are routed strictly through the Cloudflare Worker (`POST ${BOT_WORKER_BASE_URL}/api/miniapp/ai-chat`).
  */
 
 import { LootiModelId, Professor, ScheduledTimer } from '../types';
@@ -26,35 +25,22 @@ export interface ParsedProfessorSchedule {
 export const ADMIN_LOOTI_SYSTEM_INSTRUCTION =
   'تو دستیار هوشمند و مشتی پنل ادمین انجمن علمی مهندسی صنایع هستی. با تکیه‌کلام‌های محترمانه و صمیمی مثل «سلام ستون!»، «روی چشمم» و «حله رفیق» به فارسی پاسخ کوتاه و کاربردی بده.';
 
-/**
- * Browser client never holds or exposes an API key; all AI calls execute server-side.
- */
 export function getSafeApiKey(): string {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem('ie_gemini_api_key_v1') || '';
+    }
+  } catch {
+    // Ignore storage errors
+  }
   return '';
 }
 
 /**
- * Deterministic fallback for Admin Looti AI when offline
- */
-export function buildLocalAdminLootiReply(query: string): string {
-  const q = (query || '').trim();
-  if (q.includes('گزارش') || q.includes('آمار') || q.includes('ورودی')) {
-    return 'سلام ستون! 📊 طبق آخرین وضعیت انجمن صنایع: ۱۲۸ دانشجو در سامانه فعال هستن، ورودی ۱۴۰۲ با ۴,۸۵۰ امتیاز صدرنشین جدول رقابته و ۳ فیش واریزی توی کارتابل منتظر تایید نهایی شماست. روی چشمم، هر دستوری داری بگو حله رفیق!';
-  }
-  if (q.includes('کارگاه') || q.includes('رویداد') || q.includes('بلیط')) {
-    return 'حله رفیق! 🎯 کارگاه تحلیل داده با پایتون ۱۸ نفر ظرفیت خالی داره و کارگاه مدیریت پروژه ۴۵ نفر. از بخش «مدیریت کارگاه‌ها و اساتید» می‌تونی ظرفیت یا امتیاز هر کارگاه رو درجا تغییر بدی ستون!';
-  }
-  if (q.includes('تخفیف') || q.includes('امتیاز') || q.includes('مدال')) {
-    return 'روی چشمم ستون! 🏆 الان فرمول تخفیف روی «هر ۲۰ امتیاز = ۱۰,۰۰۰ تومان تخفیف» تنظیم شده. از ماژول ۶ می‌تونی ضریب تخفیف رو عوض کنی یا به بچه‌های فعال مدال پیکسلی بدی!';
-  }
-  return 'سلام ستون! 🤖 دستیار ویژه انجمن علمی مهندسی صنایع آماده خدمت‌رسانیه. برای تبدیل متن خام برنامه اساتید، ساخت تایمر هوشمند، یا تحلیل آمار ورودی‌ها هر امری داری بگو، روی چشمم، حله رفیق!';
-}
-
-/**
- * Ask Admin Looti AI via:
- * 1) Live Cloudflare Worker AI Engine (`POST https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/ai-chat`)
- * 2) Local Server Proxy (`/api/ai/looti`)
- * 3) Deterministic Local Fallback
+ * Ask Admin Looti AI strictly via Cloudflare Worker AI Engine:
+ * POST `${BOT_WORKER_BASE_URL}/api/miniapp/ai-chat`
+ * Body: `{ prompt: userMessage, systemInstruction: systemRole, apiKey: localStorage.getItem('ie_gemini_api_key_v1') || '' }`
+ * Displays the exact `data.reply` returned from the bot server.
  */
 export async function askAdminLootiAi(
   rawPrompt: string,
@@ -71,72 +57,28 @@ export async function askAdminLootiAi(
 
   const systemRoleText = customSystemInstruction || ADMIN_LOOTI_SYSTEM_INSTRUCTION;
 
-  // 1. Send request directly to Cloudflare Worker Bot AI Engine (POST /api/miniapp/ai-chat)
-  try {
-    const botAiRes = await askMiniAppAiOnBot({
-      prompt: check.sanitized,
-      modelId,
-      systemInstruction: systemRoleText,
-      context: {
-        fullName: 'مدیر ارشد انجمن علمی مهندسی صنایع',
-        cohortYear: '۱۴۰۲',
-      },
-    });
-    if (botAiRes.ok && botAiRes.reply) {
-      return {
-        reply: botAiRes.reply,
-        modelUsed: (botAiRes.modelUsed as LootiModelId) || modelId,
-        source: 'cloudflare-worker',
-      };
-    }
-  } catch {
-    // Fall through to local server proxy
-  }
-
-  // 2. Try local server-side proxy route
-  try {
-    if (typeof fetch !== 'undefined') {
-      const response = await fetch('/api/ai/looti', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: check.sanitized,
-          message: check.sanitized,
-          systemInstruction: systemRoleText,
-          modelId,
-          userContext: {
-            fullName: 'مدیر ارشد انجمن علمی مهندسی صنایع',
-            cohortYear: '۱۴۰۲',
-            score: 999,
-            level: 5,
-          },
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data?.reply) {
-          return {
-            reply: String(data.reply),
-            modelUsed: data.modelUsed || modelId,
-            source: data.source || 'server-proxy',
-          };
-        }
-      }
-    }
-  } catch {
-    // Continue to local fallback
-  }
+  const botAiRes = await askMiniAppAiOnBot({
+    prompt: check.sanitized,
+    modelId,
+    systemInstruction: systemRoleText,
+    context: {
+      fullName: 'مدیر ارشد انجمن علمی مهندسی صنایع',
+      cohortYear: '۱۴۰۲',
+    },
+  });
 
   return {
-    reply: buildLocalAdminLootiReply(check.sanitized),
-    modelUsed: modelId,
-    source: 'fallback',
+    reply:
+      botAiRes.reply ||
+      '⚠️ پاسخی از سرور کلودفلر ربات دریافت نشد. لطفاً اتصال اینترنت یا کلید Gemini API ثبت‌شده در سرور را بررسی نمایید.',
+    modelUsed: (botAiRes.modelUsed as LootiModelId) || modelId,
+    source: 'cloudflare-worker',
   };
 }
 
 /**
  * Live AI Connection Tester (`⚡ تست زنده اتصال هوش مصنوعی`):
- * Sends a test message to POST /api/miniapp/ai-chat on the Cloudflare Worker and returns the real AI reply and active model.
+ * Sends a test message strictly to POST ${BOT_WORKER_BASE_URL}/api/miniapp/ai-chat and returns `data.reply`.
  */
 export async function testLiveAiConnectionOnBot(
   modelId: LootiModelId = 'gemini-3.8-flash'
@@ -152,63 +94,33 @@ export async function testLiveAiConnectionOnBot(
   const systemRoleText =
     'تو موتور هوش مصنوعی انجمن علمی مهندسی صنایع دانشگاه فردوسی مشهد هستی. بسیار کوتاه، پرانرژی و دقیق به فارسی پاسخ بده.';
 
-  try {
-    const botRes = await askMiniAppAiOnBot({
-      prompt: testPrompt,
-      modelId,
-      systemInstruction: systemRoleText,
-    });
-    const latencyMs = Math.max(12, Date.now() - startedAt);
-    if (botRes.ok && botRes.reply) {
-      return {
-        ok: true,
-        reply: botRes.reply,
-        modelUsed: botRes.modelUsed || modelId,
-        latencyMs,
-      };
-    }
-  } catch {
-    // Fall through to local server proxy check
-  }
-
-  try {
-    if (typeof fetch !== 'undefined') {
-      const response = await fetch('/api/ai/looti', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: testPrompt,
-          systemInstruction: systemRoleText,
-          modelId,
-        }),
-      });
-      const latencyMs = Math.max(15, Date.now() - startedAt);
-      if (response.ok) {
-        const data = await response.json();
-        if (data?.reply) {
-          return {
-            ok: true,
-            reply: String(data.reply),
-            modelUsed: String(data.modelUsed || modelId),
-            latencyMs,
-          };
-        }
-      }
-    }
-  } catch {
-    // Ignore
+  const botRes = await askMiniAppAiOnBot({
+    prompt: testPrompt,
+    modelId,
+    systemInstruction: systemRoleText,
+  });
+  const latencyMs = Math.max(12, Date.now() - startedAt);
+  if (botRes.ok && botRes.reply) {
+    return {
+      ok: true,
+      reply: botRes.reply,
+      modelUsed: botRes.modelUsed || modelId,
+      latencyMs,
+    };
   }
 
   return {
     ok: false,
-    reply: '⚠️ پاسخ مستقیمی از سرور هوش مصنوعی دریافت نشد. لطفاً کلید API را در سرور بررسی و ذخیره نمایید.',
+    reply:
+      botRes.reply ||
+      '⚠️ پاسخ مستقیمی از سرور هوش مصنوعی کلودفلر دریافت نشد. لطفاً کلید API را در سرور بررسی و ذخیره نمایید.',
     modelUsed: modelId,
-    latencyMs: Math.max(10, Date.now() - startedAt),
+    latencyMs,
   };
 }
 
 /**
- * Generates an engaging Persian announcement text via POST /api/miniapp/ai-chat
+ * Generates an engaging Persian announcement text via POST ${BOT_WORKER_BASE_URL}/api/miniapp/ai-chat
  */
 export async function generateSmartAnnouncementWithAi(
   title: string,
@@ -418,8 +330,8 @@ export function parseMultiProfessorSchedules(rawText: string): Professor[] {
 }
 
 /**
- * Server-Side AI + Regex Parser: sends professor timetable text to Cloudflare Worker (`POST /api/miniapp/ai-chat`)
- * or `/api/ai/parse-professors` on the server, and falls back seamlessly to `parseMultiProfessorSchedules`.
+ * Cloudflare Worker AI + Regex Parser: sends professor timetable text to Cloudflare Worker (`POST /api/miniapp/ai-chat`)
+ * and falls back to `parseMultiProfessorSchedules` if offline.
  */
 export async function parseMultiProfessorSchedulesWithAi(rawText: string): Promise<Professor[]> {
   const localParsed = parseMultiProfessorSchedules(rawText);
@@ -456,24 +368,6 @@ export async function parseMultiProfessorSchedulesWithAi(rawText: string): Promi
               ? item.courses
               : localParsed[idx]?.courses || [],
         }));
-      }
-    }
-  } catch {
-    // Fall back to local server proxy or deterministic parser
-  }
-
-  try {
-    if (typeof fetch !== 'undefined') {
-      const response = await fetch('/api/ai/parse-professors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (Array.isArray(data?.professors) && data.professors.length > 0) {
-          return data.professors;
-        }
       }
     }
   } catch {

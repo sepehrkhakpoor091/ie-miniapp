@@ -18,6 +18,7 @@ import {
   AdminUser,
   AvatarCatalogItem,
   BadgeItem,
+  BotConfigSettings,
   CertificateInfo,
   ChannelAnnouncement,
   DEFAULT_ABOUT_CONFIG,
@@ -82,6 +83,7 @@ import {
 import {
   EVENTS_DATA,
   decrementEventCapacityOnRegistration,
+  generateTicketPayload,
   normalizeEvent,
   normalizeEventsList,
 } from './utils/events';
@@ -89,11 +91,12 @@ import {
   BOT_WORKER_BASE_URL,
   fetchMiniAppBootstrap,
   getLocalSiteSwitchesOverride,
+  loadStoredBotConfig,
   loadStoredCustomUiTexts,
   loadStoredSupportChats,
   normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
-  saveEventsOnBot,
+  saveStoredBotConfig,
   saveStoredCustomUiTexts,
   saveStoredSupportChats,
   sendHeartbeatToBot,
@@ -135,6 +138,7 @@ import { ProfessorsModal, PROFESSORS_DATA } from './components/modals/Professors
 import { RemindersModal } from './components/modals/RemindersModal';
 import { SupportModal } from './components/modals/SupportModal';
 import { EventDetailsModal } from './components/modals/EventDetailsModal';
+import { LootiAiModal } from './components/modals/LootiAiModal';
 
 export const APP_STORAGE_VERSION = 'v17_clean';
 const APP_STORAGE_VERSION_KEY = 'ie_app_storage_version';
@@ -297,6 +301,9 @@ export default function App() {
   const [uiTexts, setUiTexts] = useState<Record<string, string>>(() =>
     loadStoredCustomUiTexts()
   );
+  const [botConfig, setBotConfig] = useState<BotConfigSettings>(() =>
+    loadStoredBotConfig()
+  );
   const [isVisualEditMode, setIsVisualEditMode] = useState<boolean>(false);
 
   // Modal States
@@ -316,6 +323,7 @@ export default function App() {
   const [isProfessorsModalOpen, setIsProfessorsModalOpen] = useState(false);
   const [isRemindersModalOpen, setIsRemindersModalOpen] = useState(false);
   const [isSupportModalOpen, setIsSupportModalOpen] = useState(false);
+  const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [selectedEventForCheckout, setSelectedEventForCheckout] =
     useState<EventItem | null>(null);
@@ -585,6 +593,7 @@ export default function App() {
       localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true';
 
     let hasValidLocalProfile = false;
+    let localSyncedUser: UserProfile | null = null;
     if (savedProfileRaw) {
       const parsed = safeJsonParse<UserProfile | null>(savedProfileRaw, null);
       const isLegacyMock =
@@ -607,33 +616,47 @@ export default function App() {
           (parsed.studentId && String(parsed.studentId).trim().length >= 6))
       ) {
         hasValidLocalProfile = true;
-        const safeScore =
+        const rawScore =
           typeof parsed.score === 'number' && !Number.isNaN(parsed.score) && parsed.score >= 0
             ? parsed.score
             : 0;
-        const dynamicLvl = calculateLevelFromScore(safeScore);
+        const candidateLvl = calculateLevelFromScore(rawScore);
         const effectiveTgId =
           tgIdForBootstrap || parsed.telegramUserId || 'web-local-student';
         const isMasterOwner =
           isMasterAdminTelegramUser(effectiveTgId) ||
           isProtectedMasterAccount(parsed);
-        const syncedUser: UserProfile = {
+        const candidateUser: UserProfile = {
           ...parsed,
-          score: safeScore,
-          level: dynamicLvl.level,
-          rankTitle: dynamicLvl.rankTitle,
+          score: rawScore,
+          level: candidateLvl.level,
+          rankTitle: candidateLvl.rankTitle,
           onboardingCompleted: true,
           kycStatus: isMasterOwner ? 'verified' : parsed.kycStatus || 'verified',
           telegramUserId: effectiveTgId,
         };
-        // Recompute and save fresh checksum so valid registered profiles are NEVER reset
-        void verifyStateIntegrity(syncedUser, savedChecksum, effectiveTgId);
+
+        // Fix 2: Never sign a tampered score in localStorage! If checksum verification fails, reset score to 0 until server bootstrap restores real score.
+        const isIntegrityValid = verifyStateIntegrity(
+          candidateUser,
+          savedChecksum,
+          effectiveTgId
+        );
+        const verifiedScore = isIntegrityValid ? rawScore : 0;
+        const verifiedLvl = calculateLevelFromScore(verifiedScore);
+        const syncedUser: UserProfile = {
+          ...candidateUser,
+          score: verifiedScore,
+          level: verifiedLvl.level,
+          rankTitle: verifiedLvl.rankTitle,
+        };
         const freshChecksum = computeStateChecksum(
           syncedUser.score,
           syncedUser.studentId,
           syncedUser.level,
           effectiveTgId
         );
+        localSyncedUser = syncedUser;
         setUser(syncedUser);
         setStateChecksum(freshChecksum);
         localStorage.setItem(scopedUserKey, JSON.stringify(syncedUser));
@@ -663,7 +686,15 @@ export default function App() {
       .then((boot) => {
         clearTimeout(bootstrapTimeout);
         bootstrapSettled = true;
-        applyBootstrapResponse(boot, tgIdForBootstrap, realTgUser?.username, true, hasValidLocalProfile, isOnboardingDone);
+        applyBootstrapResponse(
+          boot,
+          tgIdForBootstrap,
+          realTgUser?.username,
+          true,
+          hasValidLocalProfile,
+          isOnboardingDone,
+          localSyncedUser
+        );
         setIsBootstrapping(false);
       })
       .catch(() => {
@@ -711,8 +742,10 @@ export default function App() {
     tgUsername?: string,
     isInitialMount = false,
     hasValidLocalProfile = true,
-    isOnboardingDone = true
+    isOnboardingDone = true,
+    localProfileParam?: UserProfile | null
   ) => {
+    const activeUser = localProfileParam || user;
     let latestServerKycStatusForCurrentUser: KycStatus | undefined;
 
     if (Array.isArray(boot.students) && boot.students.length > 0) {
@@ -722,7 +755,7 @@ export default function App() {
           const protectedStu = isProtectedMasterAccount(s);
           const resolvedKyc = protectedStu ? 'verified' : s.kycStatus;
           if (
-            (user.studentId && s.studentId === user.studentId) ||
+            (activeUser.studentId && s.studentId === activeUser.studentId) ||
             (tgIdForBootstrap && s.telegramUserId === tgIdForBootstrap)
           ) {
             latestServerKycStatusForCurrentUser = resolvedKyc;
@@ -826,6 +859,68 @@ export default function App() {
     if (incomingBadges) {
       setBadgesCatalog(incomingBadges);
       localStorage.setItem(BADGES_STORAGE_KEY, JSON.stringify(incomingBadges));
+    }
+
+    // Fix 2-1 & 2-2: Hydrate botConfig, adminsCatalog, timersCatalog, questsCatalog, and certificates from Cloudflare Server
+    if (boot.botConfig && typeof boot.botConfig === 'object') {
+      setBotConfig((prev) => {
+        const mergedCfg: BotConfigSettings = {
+          ...prev,
+          ...boot.botConfig,
+        };
+        saveStoredBotConfig(mergedCfg);
+        return mergedCfg;
+      });
+    }
+
+    const incomingAdmins =
+      Array.isArray(boot.adminsCatalog) && boot.adminsCatalog.length > 0
+        ? boot.adminsCatalog
+        : Array.isArray(boot.botConfig?.adminsCatalog) &&
+          boot.botConfig!.adminsCatalog!.length > 0
+        ? boot.botConfig!.adminsCatalog!
+        : undefined;
+    if (incomingAdmins) {
+      setAdminsCatalog(incomingAdmins);
+      localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(incomingAdmins));
+    }
+
+    const incomingTimers =
+      Array.isArray(boot.timersCatalog) && boot.timersCatalog.length > 0
+        ? boot.timersCatalog
+        : Array.isArray(boot.botConfig?.timersCatalog) &&
+          boot.botConfig!.timersCatalog!.length > 0
+        ? boot.botConfig!.timersCatalog!
+        : undefined;
+    if (incomingTimers) {
+      setTimersCatalog(incomingTimers);
+      localStorage.setItem(TIMERS_STORAGE_KEY, JSON.stringify(incomingTimers));
+    }
+
+    const incomingQuests =
+      Array.isArray(boot.questsCatalog) && boot.questsCatalog.length > 0
+        ? boot.questsCatalog
+        : Array.isArray(boot.botConfig?.questsCatalog) &&
+          boot.botConfig!.questsCatalog!.length > 0
+        ? boot.botConfig!.questsCatalog!
+        : undefined;
+    if (incomingQuests) {
+      setQuests(incomingQuests);
+      localStorage.setItem(QUESTS_STORAGE_KEY, JSON.stringify(incomingQuests));
+    }
+
+    if (Array.isArray(boot.certificates) && boot.certificates.length > 0) {
+      setCertificates((prev) => {
+        const map = new Map<string, CertificateInfo>();
+        for (const c of [...boot.certificates!, ...(Array.isArray(prev) ? prev : [])]) {
+          if (c && c.certificateId) {
+            map.set(c.certificateId, c);
+          }
+        }
+        const mergedCerts = Array.from(map.values());
+        localStorage.setItem(CERTIFICATES_STORAGE_KEY, JSON.stringify(mergedCerts));
+        return mergedCerts;
+      });
     }
 
     if (Array.isArray(boot.events) && boot.events.length > 0) {
@@ -949,7 +1044,7 @@ export default function App() {
           const isKycItem =
             item.type === 'kyc' || item.type === 'student_card';
           const belongsToUser =
-            (user.studentId && item.studentId === user.studentId) ||
+            (activeUser.studentId && item.studentId === activeUser.studentId) ||
             (tgIdForBootstrap && item.telegramUserId === tgIdForBootstrap);
           if (isKycItem && belongsToUser) {
             if (item.status === 'approved') {
@@ -962,33 +1057,24 @@ export default function App() {
       }
       setReceiptsCatalog((prev) => {
         const safePrev = Array.isArray(prev) ? prev : [];
+        const prevMap = new Map<string, AdminReceiptItem>();
+        for (const loc of safePrev) {
+          if (loc && loc.id) prevMap.set(loc.id, loc);
+        }
+
         const map = new Map<string, AdminReceiptItem>();
         for (const item of serverApprovals) {
           if (item && item.id) {
+            const localItem = prevMap.get(item.id);
             const resolvedImg = resolveReceiptOrKycImageUrl(item);
+            const fallbackLocalImg = localItem?.receiptImageUrl || localItem?.imageUrl || '';
             const normalizedItem: AdminReceiptItem = {
               ...item,
-              imageUrl: resolvedImg || item.imageUrl,
-              receiptImageUrl: resolvedImg || item.receiptImageUrl,
-              imageBase64: item.imageBase64 || resolvedImg,
+              imageUrl: resolvedImg || item.imageUrl || fallbackLocalImg,
+              receiptImageUrl: resolvedImg || item.receiptImageUrl || fallbackLocalImg,
+              imageBase64: item.imageBase64 || resolvedImg || localItem?.imageBase64 || fallbackLocalImg,
             };
             map.set(item.id, normalizedItem);
-          }
-        }
-        for (const localItem of safePrev) {
-          if (localItem && localItem.id && !map.has(localItem.id)) {
-            map.set(localItem.id, localItem);
-          } else if (localItem && localItem.id && map.has(localItem.id)) {
-            // Preserve local base64 image if server payload omitted the heavy image field on status update
-            const serverVersion = map.get(localItem.id)!;
-            if (!serverVersion.receiptImageUrl && localItem.receiptImageUrl) {
-              map.set(localItem.id, {
-                ...serverVersion,
-                imageUrl: localItem.imageUrl || localItem.receiptImageUrl,
-                receiptImageUrl: localItem.receiptImageUrl,
-                imageBase64: localItem.imageBase64 || localItem.receiptImageUrl,
-              });
-            }
           }
         }
         const mergedReceipts = Array.from(map.values());
@@ -1002,24 +1088,26 @@ export default function App() {
       const normalizedServerChats = normalizeSupportTicketsList(serverSupportChats);
       setSupportTicketsCatalog((prev) => {
         const safePrev = Array.isArray(prev) ? prev : [];
+        const prevMap = new Map<string, SupportTicket>();
+        for (const loc of safePrev) {
+          if (loc && loc.id) prevMap.set(loc.id, loc);
+        }
+
         const map = new Map<string, SupportTicket>();
         for (const sc of normalizedServerChats) {
-          map.set(sc.id, sc);
-        }
-        for (const loc of safePrev) {
-          if (!map.has(loc.id)) {
-            map.set(loc.id, loc);
-          } else {
-            const srv = map.get(loc.id)!;
+          const loc = prevMap.get(sc.id);
+          if (loc) {
             const msgMap = new Map<string, SupportTicket['messages'][number]>();
-            for (const m of [...(loc.messages || []), ...(srv.messages || [])]) {
+            for (const m of [...(loc.messages || []), ...(sc.messages || [])]) {
               msgMap.set(m.id, m);
             }
-            map.set(loc.id, {
+            map.set(sc.id, {
               ...loc,
-              ...srv,
+              ...sc,
               messages: Array.from(msgMap.values()),
             });
+          } else {
+            map.set(sc.id, sc);
           }
         }
         const mergedChats = Array.from(map.values());
@@ -1036,27 +1124,132 @@ export default function App() {
     );
 
     const currentAdminOverride =
-      getAdminOverrideForStudent(user) ||
+      getAdminOverrideForStudent(activeUser) ||
       getAdminOverrideForStudent(boot.profile) ||
       (tgIdForBootstrap ? getAdminOverrideForStudent({ telegramUserId: tgIdForBootstrap }) : null);
+
+    const resolvedStudentId =
+      currentAdminOverride?.studentId ||
+      boot.profile?.studentId ||
+      activeUser.studentId ||
+      '';
+    const resolvedFullName =
+      currentAdminOverride?.fullName ||
+      boot.profile?.fullName ||
+      activeUser.fullName ||
+      'دانشجوی مهندسی صنایع';
+
+    // Sync boot.myRegistrations from Telegram Bot into allTickets (TicketRecord[])
+    if (Array.isArray(boot.myRegistrations) && boot.myRegistrations.length > 0) {
+      const referenceEvents =
+        Array.isArray(boot.events) && boot.events.length > 0
+          ? boot.events
+          : eventsCatalog;
+      setAllTickets((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const ticketMap = new Map<string, TicketRecord>();
+        for (const existing of safePrev) {
+          if (existing && (existing.trackingCode || existing.id)) {
+            ticketMap.set(existing.trackingCode || existing.id, existing);
+          }
+        }
+
+        for (const reg of boot.myRegistrations!) {
+          if (!reg) continue;
+          const rawReg = reg as Record<string, unknown>;
+          const evId = String(reg.eventId || rawReg.workshopId || 'ev-bot');
+          const matchedEv = referenceEvents.find((e) => e.id === evId);
+          const stuId = String(reg.studentId || resolvedStudentId || '402100000');
+          const stuName = String(reg.studentName || resolvedFullName);
+          const trackingCode = String(
+            reg.trackingCode ||
+              rawReg.code ||
+              `IE-${evId.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6)}-${stuId.slice(-4)}`
+          );
+          const qrPayload = String(
+            reg.qrPayload || generateTicketPayload(evId, stuId, trackingCode)
+          );
+
+          const existingTicket = ticketMap.get(trackingCode);
+          const normalizedTicket: TicketRecord = {
+            id: String(reg.id || existingTicket?.id || `tkt-bot-${trackingCode}`),
+            eventId: evId,
+            eventTitle: String(
+              reg.eventTitle ||
+                rawReg.title ||
+                matchedEv?.title ||
+                existingTicket?.eventTitle ||
+                'کارگاه انجمن علمی مهندسی صنایع'
+            ),
+            eventDate: String(
+              reg.eventDate ||
+                rawReg.date ||
+                matchedEv?.date ||
+                existingTicket?.eventDate ||
+                '۱۴۰۴'
+            ),
+            eventTime: String(
+              reg.eventTime ||
+                rawReg.time ||
+                matchedEv?.time ||
+                existingTicket?.eventTime ||
+                '۱۶:۰۰'
+            ),
+            location: String(
+              reg.location ||
+                matchedEv?.location ||
+                existingTicket?.location ||
+                'دانشکده مهندسی صنایع'
+            ),
+            studentId: stuId,
+            studentName: stuName,
+            trackingCode,
+            qrPayload,
+            paidAmount:
+              typeof reg.paidAmount === 'number'
+                ? reg.paidAmount
+                : existingTicket?.paidAmount ?? (matchedEv?.basePrice || 0),
+            discountPointsUsed:
+              typeof reg.discountPointsUsed === 'number'
+                ? reg.discountPointsUsed
+                : existingTicket?.discountPointsUsed ?? 0,
+            issuedAt: String(
+              reg.issuedAt ||
+                rawReg.createdAt ||
+                existingTicket?.issuedAt ||
+                new Date().toLocaleDateString('fa-IR')
+            ),
+            sentToTelegram: Boolean(reg.sentToTelegram ?? true),
+            voucherCodeUsed: reg.voucherCodeUsed || existingTicket?.voucherCodeUsed,
+            checkedIn: Boolean(reg.checkedIn ?? existingTicket?.checkedIn ?? false),
+            checkedInAt: reg.checkedInAt || existingTicket?.checkedInAt,
+          };
+          ticketMap.set(trackingCode, normalizedTicket);
+        }
+
+        const mergedTickets = Array.from(ticketMap.values());
+        localStorage.setItem(TICKETS_STORAGE_KEY, JSON.stringify(mergedTickets));
+        return mergedTickets;
+      });
+    }
 
     if (serverHasValidProfile && boot.profile) {
       const resolvedKyc =
         currentAdminOverride?.kycStatus ||
         latestServerKycStatusForCurrentUser ||
         boot.profile.kycStatus ||
-        user.kycStatus ||
+        activeUser.kycStatus ||
         'verified';
       const serverProfile: UserProfile = {
         ...DEFAULT_PROFILE,
-        ...user,
+        ...activeUser,
         ...boot.profile,
-        fullName: currentAdminOverride?.fullName || boot.profile.fullName || user.fullName,
-        studentId: currentAdminOverride?.studentId || boot.profile.studentId || user.studentId,
+        fullName: currentAdminOverride?.fullName || boot.profile.fullName || activeUser.fullName,
+        studentId: currentAdminOverride?.studentId || boot.profile.studentId || activeUser.studentId,
         score:
           typeof currentAdminOverride?.score === 'number'
             ? currentAdminOverride.score
-            : boot.profile.score ?? user.score,
+            : boot.profile.score ?? activeUser.score ?? 0,
         kycStatus: resolvedKyc,
         onboardingCompleted: true,
       };
@@ -1065,10 +1258,10 @@ export default function App() {
         setIsKycTestActive(false);
       }
       setIsOnboardingOpen(false);
-    } else if ((currentAdminOverride?.kycStatus || latestServerKycStatusForCurrentUser) && user.studentId) {
+    } else if ((currentAdminOverride?.kycStatus || latestServerKycStatusForCurrentUser) && activeUser.studentId) {
       const nextKyc = currentAdminOverride?.kycStatus || latestServerKycStatusForCurrentUser!;
       persistVerifiedProfile({
-        ...user,
+        ...activeUser,
         kycStatus: nextKyc,
       });
       if (nextKyc === 'verified') {
@@ -1076,6 +1269,9 @@ export default function App() {
       }
     } else if (isInitialMount) {
       if (hasValidLocalProfile || isOnboardingDone) {
+        if (localProfileParam) {
+          persistVerifiedProfile(localProfileParam);
+        }
         setIsOnboardingOpen(false);
       } else {
         setUser({
@@ -1379,7 +1575,7 @@ export default function App() {
     setAllTickets(updatedTickets);
     localStorage.setItem(TICKETS_STORAGE_KEY, JSON.stringify(updatedTickets));
 
-    // Decrement workshop remaining capacity if hasCapacityLimit is enabled
+    // Fix 1-5: Decrement workshop remaining capacity locally without overwriting the server's events list from a student client
     if (ticket.eventId) {
       setEventsCatalog((prev) => {
         const updatedEvents = decrementEventCapacityOnRegistration(
@@ -1387,7 +1583,6 @@ export default function App() {
           ticket.eventId
         );
         localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(updatedEvents));
-        void saveEventsOnBot(updatedEvents);
         return updatedEvents;
       });
     }
@@ -1411,6 +1606,31 @@ export default function App() {
         date: ticket.issuedAt,
         category: 'event',
         referenceCode: ticket.trackingCode,
+      });
+    }
+  };
+
+  const handleConsumeVoucherAndPoints = (voucherId: string, pointsDeducted: number) => {
+    if (voucherId) {
+      setVouchers((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const next = safePrev.map((v) =>
+          v.id === voucherId ? { ...v, isUsed: true } : v
+        );
+        localStorage.setItem(VOUCHERS_STORAGE_KEY, JSON.stringify(next));
+        return next;
+      });
+    }
+    if (pointsDeducted > 0) {
+      const nextScore = Math.max(0, user.score - pointsDeducted);
+      handleUpdateProfile({ score: nextScore });
+      appendTransaction({
+        id: `tx-disc-rcp-${Date.now()}`,
+        title: 'کسر امتیاز تخفیف کارگاه (ثبت فیش واریزی)',
+        amount: -pointsDeducted,
+        date: new Date().toLocaleDateString('fa-IR'),
+        category: 'discount',
+        referenceCode: `DISC-${Date.now().toString().slice(-4)}`,
       });
     }
   };
@@ -1473,9 +1693,22 @@ export default function App() {
       localStorage.getItem(scopedUserKey) || localStorage.getItem(USER_STORAGE_KEY);
     if (rawSaved) {
       const parsed = safeJsonParse<UserProfile | null>(rawSaved, null);
-      if (parsed && !verifyStateIntegrity(parsed, stateChecksum, parsed.telegramUserId)) {
-        // Recompute checksum without wiping the user's registered profile
-        persistVerifiedProfile(parsed);
+      if (
+        parsed &&
+        (!verifyStateIntegrity(parsed, stateChecksum, parsed.telegramUserId) ||
+          !verifyStateIntegrity(user, stateChecksum, user.telegramUserId))
+      ) {
+        // Fix 2: Never sign a tampered score! Reset score to 0 and resync from server.
+        playError();
+        const resetLvl = calculateLevelFromScore(0);
+        persistVerifiedProfile({
+          ...user,
+          score: 0,
+          level: resetLvl.level,
+          rankTitle: resetLvl.rankTitle,
+        });
+        void refreshFromServer();
+        return;
       }
     }
 
@@ -1613,10 +1846,15 @@ export default function App() {
             channelUrl={officialChannelUrl}
             featuredEventId={featuredEventId}
             aboutConfig={aboutConfig}
+            botConfig={botConfig}
             uiTexts={uiTexts}
             onUpdateUiTexts={(nextUiTexts) => {
               setUiTexts(nextUiTexts);
               saveStoredCustomUiTexts(nextUiTexts);
+            }}
+            onUpdateBotConfig={(nextBotConfig) => {
+              setBotConfig(nextBotConfig);
+              saveStoredBotConfig(nextBotConfig);
             }}
             onEnterVisualEditMode={() => {
               touchAdminSession();
@@ -1787,15 +2025,8 @@ export default function App() {
                       🚫 دسترسی این حساب دانشجویی توسط ادمین انجمن صنایع قفل شده است
                     </div>
                     <p className="text-xs opacity-85 leading-relaxed">
-                      برای باز کردن قفل حساب، از پنل مدیریت (ماژول ۳: مدیریت کاربران ← پرونده ۳۶۰ درجه) گزینه «🔓 باز کردن حساب» را انتخاب نمایید.
+                      در صورت نیاز به بررسی وضعیت حساب کاربری خود، از طریق ربات رسمی تلگرام انجمن علمی مهندسی صنایع با پشتیبانی در ارتباط باشید.
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => setIsAdminVaultOpen(true)}
-                      className="px-4 py-2 rounded-xl bg-[#D4AB58] text-[#101622] text-xs font-black cursor-pointer"
-                    >
-                      ورود به پنل ادمین جهت باز کردن قفل
-                    </button>
                   </div>
                 </div>
               ) : (
@@ -1822,6 +2053,7 @@ export default function App() {
                       onOpenRemindersModal={() => setIsRemindersModalOpen(true)}
                       onOpenSupportModal={() => setIsSupportModalOpen(true)}
                       onOpenCurriculumModal={() => setIsCurriculumModalOpen(true)}
+                      onOpenAiModal={() => setIsAiModalOpen(true)}
                       onStealthTap={handleStealthTapGesture}
                       onOpenEventDetails={(clickedEventId) => {
                         if (!featureFlags.eventsRegistrationEnabled) {
@@ -1938,6 +2170,11 @@ export default function App() {
           onClose={() => setSelectedEventForCheckout(null)}
           user={user}
           themeMode={themeMode}
+          botConfig={botConfig}
+          userTickets={currentStudentTickets}
+          receipts={receiptsCatalog}
+          vouchers={vouchers}
+          onConsumeVoucher={handleConsumeVoucherAndPoints}
           discountRule={{
             pointsStep: discountRule.pointsStep,
             discountTomansPerStep: discountRule.discountTomansPerStep,
@@ -2067,6 +2304,13 @@ export default function App() {
               score: user.score + 50,
             });
           }}
+        />
+
+        <LootiAiModal
+          isOpen={isAiModalOpen}
+          onClose={() => setIsAiModalOpen(false)}
+          user={user}
+          themeMode={themeMode}
         />
 
         <VisualTextEditorOverlay

@@ -262,6 +262,9 @@ export interface BotConfigSettings {
   rulesText: string;
   broadcastMessage?: string;
   badgesCatalog?: BadgeItem[];
+  adminsCatalog?: AdminUser[];
+  timersCatalog?: ScheduledTimer[];
+  questsCatalog?: WeeklyQuest[];
   maskedGeminiKey?: string;
   updatedAt?: string;
 }
@@ -305,6 +308,11 @@ export interface BootstrapResponse {
   siteSwitches?: Partial<SiteSwitches>;
   botConfig?: Partial<BotConfigSettings>;
   badgesCatalog?: BadgeItem[];
+  adminsCatalog?: AdminUser[];
+  timersCatalog?: ScheduledTimer[];
+  questsCatalog?: WeeklyQuest[];
+  certificates?: CertificateInfo[];
+  myRegistrations?: Partial<TicketRecord>[];
   uiTexts?: Record<string, string>;
   onlineCount?: number;
   onlineUsers?: OnlineSessionUser[];

@@ -149,30 +149,8 @@ export const EXTENDED_BADGES: BadgeItem[] = [
   },
 ];
 
-export const DEFAULT_CERTIFICATES: CertificateInfo[] = [
-  {
-    certificateId: generateCertificateCode('401', 'PMBOK-MSP', '402100000'),
-    studentName: 'علی محمدی',
-    courseTitle: 'کارگاه تخصصی کنترل پروژه با MSP و استاندارد PMBOK',
-    instructor: 'دکتر علی محمدی',
-    issueDate: '۱۵ مهر ۱۴۰۴',
-    grade: 'عالی (۹۸ از ۱۰۰)',
-    isValid: true,
-    hours: 16,
-    signatureHash: computeSignatureHash('CERT:PMBOK-MSP:402100000'),
-  },
-  {
-    certificateId: generateCertificateCode('401', 'PYTHON-IE', '402100000'),
-    studentName: 'علی محمدی',
-    courseTitle: 'بوت‌کمپ تحلیل داده‌های صنعتی با Python و Pandas',
-    instructor: 'مهندس آرش شمس',
-    issueDate: '۲۸ مهر ۱۴۰۴',
-    grade: 'عالی (۹۵ از ۱۰۰)',
-    isValid: true,
-    hours: 24,
-    signatureHash: computeSignatureHash('CERT:PYTHON-IE:402100000'),
-  },
-];
+// Zero fake/hardcoded certificates — only real certificates issued upon QR check-in are stored
+export const DEFAULT_CERTIFICATES: CertificateInfo[] = [];
 
 export const INITIAL_POINT_TRANSACTIONS: PointTransaction[] = [
   {

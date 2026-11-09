@@ -95,11 +95,10 @@ const REAL_BOT_STUDENTS: AdminStudentDossier[] = [
   },
 ];
 
-test('SHOWCASE_BADGES and DEFAULT_CERTIFICATES have valid cryptographic hashes', () => {
+test('SHOWCASE_BADGES have valid hashes and DEFAULT_CERTIFICATES is empty (zero fake certificates)', () => {
   assert.equal(SHOWCASE_BADGES.length, 5);
   assert.ok(SHOWCASE_BADGES.every((b) => b.verificationHash.length >= 8));
-  assert.equal(DEFAULT_CERTIFICATES.length, 2);
-  assert.ok(DEFAULT_CERTIFICATES.every((c) => c.certificateId.startsWith('CERT-401-')));
+  assert.equal(DEFAULT_CERTIFICATES.length, 0);
 });
 
 test('getFilteredLeaderboard uses ONLY real registered students and recalculates 1-based rank', () => {

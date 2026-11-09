@@ -46,28 +46,7 @@ interface SupportModalProps {
   onTriggerStealthAdmin?: () => void;
 }
 
-const VERIFIED_CERTIFICATES: Record<string, CertificateInfo> = {
-  'CERT-402-IE': {
-    certificateId: 'CERT-402-IE',
-    studentName: 'علی محمدی',
-    courseTitle: 'کارگاه تخصصی شبیه‌سازی سیستم‌های گسسته با Arena',
-    instructor: 'دکتر محمدرضا رضایی (عضو هیئت علمی دانشکده صنایع)',
-    issueDate: '۱۵ مهر ۱۴۰۴',
-    grade: 'عالی (نمره ۹۴ از ۱۰۰)',
-    isValid: true,
-    hours: 24,
-  },
-  'CERT-401-PY': {
-    certificateId: 'CERT-401-PY',
-    studentName: 'سارا حسینی',
-    courseTitle: 'تحلیل داده و علم داده کاربردی در مهندسی صنایع با پایتون',
-    instructor: 'مهندس آرش شمس',
-    issueDate: '۲۸ مرداد ۱۴۰۴',
-    grade: 'بسیار خوب (نمره ۸۸ از ۱۰۰)',
-    isValid: true,
-    hours: 32,
-  },
-};
+// Zero fake/mock certificates — certificate verification strictly checks real issued certificates
 
 function belongsToCurrentStudent(ticket: SupportTicket, user?: UserProfile): boolean {
   if (!user) return true;
@@ -406,15 +385,12 @@ export const SupportModal: React.FC<SupportModalProps> = ({
     setCertSearched(true);
 
     const dynamicMatch = (Array.isArray(certificates) ? certificates : []).find(
-      (c) => c.certificateId.toUpperCase() === code
+      (c) => (c.certificateId || '').toUpperCase() === code
     );
 
     if (dynamicMatch) {
       playCoin();
       setQueriedCert(dynamicMatch);
-    } else if (VERIFIED_CERTIFICATES[code]) {
-      playCoin();
-      setQueriedCert(VERIFIED_CERTIFICATES[code]);
     } else {
       playError();
       setQueriedCert(null);

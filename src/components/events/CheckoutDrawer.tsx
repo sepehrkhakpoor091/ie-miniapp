@@ -8,7 +8,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AdminReceiptItem,
+  BotConfigSettings,
   DiscountRuleConfig,
+  DiscountVoucher,
   EventItem,
   ThemeMode,
   TicketRecord,
@@ -29,6 +31,7 @@ import { RealQrCode } from '../ui/RealQrCode';
 import { playCoin, playError, playFanfare, playTick } from '../../utils/soundEngine';
 import { validateUploadedImageFile } from '../../utils/security';
 import {
+  loadStoredBotConfig,
   sendQrTicketToTelegramChat,
   uploadPaymentReceiptToBot,
 } from '../../utils/apiBridge';
@@ -55,6 +58,11 @@ interface CheckoutDrawerProps {
     pointsUnit?: number;
     discountToman?: number;
   };
+  botConfig?: Partial<BotConfigSettings>;
+  userTickets?: TicketRecord[];
+  receipts?: AdminReceiptItem[];
+  vouchers?: DiscountVoucher[];
+  onConsumeVoucher?: (voucherId: string, pointsDeducted: number) => void;
   onCompleteRegistration: (ticket: TicketRecord, pointsDeducted: number, pointsEarned: number) => void;
   onSubmitReceipt?: (receipt: AdminReceiptItem) => void;
   onRefreshFromServer?: () => Promise<void> | void;
@@ -72,20 +80,27 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
     minPoints: 20,
     maxPoints: 100,
   },
+  botConfig,
+  userTickets = [],
+  receipts = [],
+  vouchers = [],
+  onConsumeVoucher,
   onCompleteRegistration,
   onSubmitReceipt,
   onRefreshFromServer,
 }) => {
   const isNight = themeMode === 'night';
 
-  const [step, setStep] = useState<'checkout' | 'success'>('checkout');
+  const [step, setStep] = useState<'checkout' | 'pending_approval' | 'success'>('checkout');
   const [pointsToRedeem, setPointsToRedeem] = useState<number>(0);
+  const [selectedVoucherId, setSelectedVoucherId] = useState<string>('');
   const [isDiamondShaking, setIsDiamondShaking] = useState(false);
 
   const [cardCopied, setCardCopied] = useState(false);
   const [receiptUploaded, setReceiptUploaded] = useState(false);
   const [receiptDataUrl, setReceiptDataUrl] = useState<string>('');
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [pendingTrackingCode, setPendingTrackingCode] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const inFlightRequestRef = useRef<boolean>(false);
@@ -97,6 +112,10 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
   useEffect(() => {
     setPointsToRedeem(0);
+    setSelectedVoucherId('');
+    setReceiptUploaded(false);
+    setReceiptDataUrl('');
+    setUploadError(null);
     setStep('checkout');
   }, [rawEvent?.id, isOpen]);
 
@@ -106,12 +125,51 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   const isFull = isEventCapacityFull(event);
   const effectiveRule = resolveEventDiscountRule(event, discountRule);
 
-  const { discountAmount, finalPrice, pointsUsed, discountCode } = calculateFinalPayable(
+  // Fix 1-2: Read dynamic bank card number and holder from botConfig / localStorage
+  const storedConfig = loadStoredBotConfig();
+  const rawCardNumber = (botConfig?.cardNumber || storedConfig.cardNumber || '6219861811489862').trim();
+  const cleanCardDigits = rawCardNumber.replace(/\D/g, '') || '6219861811489862';
+  const formattedCardNumber = cleanCardDigits.replace(/(\d{4})(?=\d)/g, '$1 - ');
+  const activeCardHolder = (botConfig?.cardHolder || storedConfig.cardHolder || 'انجمن علمی مهندسی صنایع').trim();
+
+  // Fix 1-3: Check if student already has an active ticket or a pending receipt for this workshop
+  const alreadyHasTicket = userTickets.some(
+    (t) => t.eventId === event.id && (!t.studentId || t.studentId === user.studentId)
+  );
+  const alreadyHasPendingReceipt = receipts.some(
+    (r) =>
+      (r.eventId === event.id || r.eventTitle === event.title) &&
+      r.studentId === user.studentId &&
+      r.status === 'pending' &&
+      (r.type === 'receipt' || r.type === 'payment_receipt')
+  );
+  const isDuplicateRegistration = alreadyHasTicket || alreadyHasPendingReceipt;
+
+  // Fix 1-4: Unused Lootbox Vouchers
+  const unusedVouchers = vouchers.filter((v) => !v.isUsed && v.discountPercent > 0);
+  const selectedVoucher = unusedVouchers.find((v) => v.id === selectedVoucherId) || null;
+
+  const {
+    discountAmount,
+    finalPrice: priceAfterPoints,
+    pointsUsed,
+    discountCode: pointsDiscountCode,
+  } = calculateFinalPayable(
     event.basePrice,
     pointsToRedeem,
     discountRule,
     event
   );
+
+  const voucherDiscountAmount = selectedVoucher
+    ? Math.round((priceAfterPoints * selectedVoucher.discountPercent) / 100)
+    : 0;
+  const finalPrice = Math.max(0, priceAfterPoints - voucherDiscountAmount);
+  const discountCode = selectedVoucher
+    ? pointsDiscountCode
+      ? `${pointsDiscountCode}+${selectedVoucher.code}`
+      : selectedVoucher.code
+    : pointsDiscountCode;
 
   const applySelectedPoints = (rawVal: number) => {
     const val = Number(rawVal) || 0;
@@ -139,7 +197,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
   const handleCopyCard = () => {
     playTick();
-    navigator.clipboard?.writeText('6219861811489862');
+    navigator.clipboard?.writeText(cleanCardDigits);
     setCardCopied(true);
     setTimeout(() => setCardCopied(false), 2000);
   };
@@ -172,18 +230,22 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   };
 
   const handleConfirmOrder = async () => {
-    if (isFull) {
+    if (isFull || isDuplicateRegistration) {
       playError();
       return;
     }
-    if (inFlightRequestRef.current || isSubmitting || step === 'success') {
+    if (finalPrice > 0 && (!receiptUploaded || !receiptDataUrl)) {
+      playError();
+      setUploadError('لطفاً ابتدا تصویر فیش واریزی را بارگذاری نمایید.');
+      return;
+    }
+    if (inFlightRequestRef.current || isSubmitting || step !== 'checkout') {
       return;
     }
     inFlightRequestRef.current = true;
     setIsSubmitting(true);
 
     try {
-      playFanfare();
       const trackingCode = `TK-${Math.floor(100000 + Math.random() * 900000)}`;
       const idempotencyKey = trackingCode;
       try {
@@ -192,6 +254,61 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
         // Ignore storage error
       }
 
+      const actualPointsDeducted = Math.min(user.score, pointsUsed);
+
+      // Fix 1-1: If finalPrice > 0, DO NOT issue QR ticket or award rewardPoints before admin approval!
+      if (finalPrice > 0) {
+        const receiptItemId = `rcp-${Date.now()}`;
+        if (onSubmitReceipt) {
+          onSubmitReceipt({
+            id: receiptItemId,
+            studentId: user.studentId,
+            studentName: user.fullName,
+            telegramUserId: user.telegramUserId,
+            cohortYear: user.cohortYear,
+            type: 'payment_receipt',
+            title: `فیش ثبت‌نام ${event.title}`,
+            eventId: event.id,
+            eventTitle: event.title,
+            amount: finalPrice,
+            amountTomans: finalPrice,
+            trackingCode,
+            submittedAt: 'همین الان',
+            status: 'pending',
+            imageUrl: receiptDataUrl || undefined,
+            receiptImageUrl: receiptDataUrl || undefined,
+            imageBase64: receiptDataUrl || undefined,
+          });
+        }
+
+        // Push the compressed Base64 JPEG receipt to the Telegram Bot (`POST /api/miniapp/upload-receipt`)
+        await uploadPaymentReceiptToBot({
+          itemId: receiptItemId,
+          eventId: event.id,
+          eventTitle: event.title,
+          amountTomans: finalPrice,
+          trackingCode,
+          studentId: user.studentId,
+          studentName: user.fullName,
+          cohortYear: user.cohortYear,
+          imageBase64: receiptDataUrl || '',
+          telegramUserId: user.telegramUserId,
+        });
+
+        // Consume redeemed discount points and selected voucher immediately
+        if (selectedVoucher || actualPointsDeducted > 0) {
+          onConsumeVoucher?.(selectedVoucher?.id || '', actualPointsDeducted);
+        }
+
+        playFanfare();
+        setPendingTrackingCode(trackingCode);
+        setStep('pending_approval');
+        await onRefreshFromServer?.();
+        return;
+      }
+
+      // Free event or 100% discount (finalPrice === 0) -> Issue QR Ticket immediately
+      playFanfare();
       const qrPayload = generateTicketPayload(
         event.id,
         user.studentId,
@@ -218,46 +335,13 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
         checkedIn: false,
       };
 
-      const receiptItemId = `rcp-${Date.now()}`;
-      if (finalPrice > 0 && onSubmitReceipt) {
-        onSubmitReceipt({
-          id: receiptItemId,
-          studentId: user.studentId,
-          studentName: user.fullName,
-          telegramUserId: user.telegramUserId,
-          cohortYear: user.cohortYear,
-          type: 'payment_receipt',
-          title: `فیش ثبت‌نام ${event.title}`,
-          eventId: event.id,
-          eventTitle: event.title,
-          amount: finalPrice,
-          amountTomans: finalPrice,
-          trackingCode,
-          submittedAt: 'همین الان',
-          status: 'pending',
-          imageUrl: receiptDataUrl || undefined,
-          receiptImageUrl: receiptDataUrl || undefined,
-          imageBase64: receiptDataUrl || undefined,
-        });
-
-        // Push the compressed Base64 JPEG receipt to the Telegram Bot (`POST /api/miniapp/upload-receipt`)
-        await uploadPaymentReceiptToBot({
-          itemId: receiptItemId,
-          eventId: event.id,
-          eventTitle: event.title,
-          amountTomans: finalPrice,
-          trackingCode,
-          studentId: user.studentId,
-          studentName: user.fullName,
-          cohortYear: user.cohortYear,
-          imageBase64: receiptDataUrl || '',
-          telegramUserId: user.telegramUserId,
-        });
+      if (selectedVoucher) {
+        onConsumeVoucher?.(selectedVoucher.id, 0);
       }
 
       setGeneratedTicket(ticket);
       setStep('success');
-      onCompleteRegistration(ticket, Math.min(user.score, pointsUsed), event.rewardPoints);
+      onCompleteRegistration(ticket, actualPointsDeducted, event.rewardPoints);
 
       // Push the QR ticket once to the live Cloudflare Worker Telegram Bot
       const sendRes = await sendQrTicketToTelegramChat(ticket, user);
@@ -307,7 +391,11 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
             </div>
             <div>
               <h3 className="font-black text-sm">
-                {step === 'checkout' ? 'ثبت‌نام و صدور بلیط الکترونیکی' : 'بلیط رسمی صادر گردید ✨'}
+                {step === 'checkout'
+                  ? 'ثبت‌نام و صدور بلیط الکترونیکی'
+                  : step === 'pending_approval'
+                  ? '⏳ در انتظار بررسی و تایید فیش توسط ادمین'
+                  : 'بلیط رسمی صادر گردید ✨'}
               </h3>
               <p className="text-[11px] opacity-70">انجمن علمی مهندسی صنایع</p>
             </div>
@@ -326,6 +414,27 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
         {step === 'checkout' ? (
           <div className="space-y-4">
+            {/* Fix 1-3: Duplicate Registration Guard Banner */}
+            {isDuplicateRegistration && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/15 border-2 border-amber-500/50 text-amber-300 text-xs font-extrabold space-y-1">
+                {alreadyHasTicket ? (
+                  <>
+                    <div>✅ شما قبلاً در این کارگاه ثبت‌نام کرده‌اید و بلیط فعال دارید!</div>
+                    <div className="text-[11px] opacity-85 font-normal">
+                      بلیط QR شما در تب «پروفایل ← بلیط‌های من» در دسترس است و امکان ثبت‌نام تکراری وجود ندارد.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>⏳ فیش واریزی شما برای این کارگاه در انتظار بررسی و تایید ادمین است!</div>
+                    <div className="text-[11px] opacity-85 font-normal">
+                      پس از بررسی و تایید فیش توسط ادمین در کارتابل مالی، بلیط QR و امتیاز کارگاه برای شما صادر خواهد شد.
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Event Summary Card */}
             <div
               className={`p-3.5 rounded-2xl border flex items-center gap-3 ${
@@ -476,6 +585,58 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
               </div>
             )}
 
+            {/* Fix 1-4: Lootbox Discount Vouchers Selector */}
+            {event.basePrice > 0 && unusedVouchers.length > 0 && (
+              <div
+                className={`p-3.5 rounded-2xl border space-y-2 text-xs ${
+                  isNight ? 'bg-white/5 border-white/10' : 'bg-[#FFFFFF] border-[#C8BFA8]'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-black text-[#D4AB58]">
+                    🎁 اعمال کد تخفیف صندوقچه شانس ({unusedVouchers.length.toLocaleString('fa-IR')} کد فعال):
+                  </span>
+                  {selectedVoucher && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playTick();
+                        setSelectedVoucherId('');
+                      }}
+                      className="text-[10px] text-rose-400 underline cursor-pointer"
+                    >
+                      حذف کد تخفیف
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {unusedVouchers.map((v) => {
+                    const isSelected = selectedVoucherId === v.id;
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => {
+                          playCoin();
+                          setSelectedVoucherId(isSelected ? '' : v.id);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer flex items-center gap-1.5 ${
+                          isSelected
+                            ? 'bg-emerald-500 text-[#101622] border-emerald-300 shadow'
+                            : 'bg-black/25 text-[#D4AB58] border-[#D4AB58]/40 hover:border-[#D4AB58]'
+                        }`}
+                      >
+                        <span>🎟 {v.title}</span>
+                        <span className="font-mono text-[10px] opacity-85" dir="ltr">
+                          ({v.code} • {v.discountPercent}%)
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Price Breakdown */}
             <div
               className={`p-3.5 rounded-2xl border space-y-2 text-xs ${
@@ -490,9 +651,18 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
               {discountAmount > 0 && (
                 <div className="flex items-center justify-between text-emerald-500 font-bold">
                   <span>
-                    تخفیف امتیازی ({pointsUsed.toLocaleString('fa-IR')} الماس • کد {discountCode}):
+                    تخفیف امتیازی ({pointsUsed.toLocaleString('fa-IR')} الماس • کد {pointsDiscountCode}):
                   </span>
                   <span>- {discountAmount.toLocaleString('fa-IR')} تومان</span>
+                </div>
+              )}
+
+              {selectedVoucher && voucherDiscountAmount > 0 && (
+                <div className="flex items-center justify-between text-emerald-400 font-bold">
+                  <span>
+                    کد تخفیف صندوقچه ({selectedVoucher.discountPercent}% • {selectedVoucher.code}):
+                  </span>
+                  <span>- {voucherDiscountAmount.toLocaleString('fa-IR')} تومان</span>
                 </div>
               )}
 
@@ -508,7 +678,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
               </div>
             </div>
 
-            {/* Bank Card info if price > 0 */}
+            {/* Bank Card info if price > 0 (Fix 1-2: Dynamic Card Number & Holder) */}
             {finalPrice > 0 && (
               <div
                 className={`p-3.5 rounded-2xl border space-y-2.5 ${
@@ -516,7 +686,9 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between text-xs">
-                  <span className="opacity-70 text-[11px]">شماره کارت انجمن مهندسی صنایع:</span>
+                  <span className="opacity-70 text-[11px]">
+                    شماره کارت ({activeCardHolder}):
+                  </span>
                   <button
                     onClick={handleCopyCard}
                     className="text-[10px] font-bold text-[#D4AB58] hover:underline flex items-center gap-1 cursor-pointer"
@@ -534,7 +706,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                   className="p-2.5 rounded-xl bg-[#101622] border border-white/10 text-center font-mono text-sm tracking-widest text-[#D4AB58]"
                   dir="ltr"
                 >
-                  6219 - 8618 - 1148 - 9862
+                  {formattedCardNumber}
                 </div>
 
                 <input
@@ -559,13 +731,13 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                       className="w-full py-2.5 px-3 rounded-xl border border-dashed border-[#D4AB58] text-xs font-bold flex items-center justify-center gap-1.5 transition-all text-[#D4AB58] active:scale-95 cursor-pointer"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>انتخاب تصویر فیش واریزی از گالری</span>
+                      <span>انتخاب تصویر فیش واریزی از گالری (الزامی)</span>
                     </button>
                   ) : (
                     <div className="p-2.5 rounded-xl bg-emerald-950/60 border border-emerald-700/60 flex items-center justify-between text-xs text-emerald-300">
                       <span className="flex items-center gap-1.5 font-bold">
                         <FileCheck className="w-4 h-4 text-emerald-400" />
-                        فیش واریزی پیوست گردید (آماده ثبت در کارتابل ادمین)
+                        فیش واریزی پیوست گردید (آماده ارسال برای بررسی ادمین)
                       </span>
                       <button
                         onClick={() => {
@@ -593,6 +765,18 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                 >
                   🔒 تکمیل ظرفیت
                 </PushButton>
+              ) : isDuplicateRegistration ? (
+                <PushButton
+                  variant="secondary"
+                  size="lg"
+                  fullWidth
+                  disabled
+                  onClick={() => playError()}
+                >
+                  {alreadyHasTicket
+                    ? '✅ قبلاً در این کارگاه ثبت‌نام کرده‌اید'
+                    : '⏳ فیش شما در انتظار بررسی ادمین است'}
+                </PushButton>
               ) : (
                 <PushButton
                   variant="gold"
@@ -602,16 +786,56 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
                   onClick={handleConfirmOrder}
                 >
                   {isSubmitting
-                    ? 'در حال ثبت و صدور بلیط...'
+                    ? 'در حال ارسال اطلاعات...'
                     : finalPrice === 0
                     ? 'تأیید و دریافت فوری بلیط رایگان ✨'
-                    : 'ثبت نهایی فیش و صدور بلیط الکترونیکی QR'}
+                    : '📤 ارسال فیش واریزی برای بررسی و تایید ادمین'}
                 </PushButton>
               )}
             </div>
           </div>
+        ) : step === 'pending_approval' ? (
+          /* STEP 2A: PAID WORKSHOP RECEIPT SUBMITTED -> WAITING FOR ADMIN APPROVAL */
+          <div className="space-y-4 animate-fade-in text-center py-2">
+            <div className="rounded-3xl border-2 border-amber-500/60 bg-gradient-to-br from-[#1C2826] via-[#1A2424] to-[#122020] p-5 shadow-2xl space-y-3 text-right text-[#F6F1E7]">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-lg">
+                    ⏳
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-amber-400 font-black block">
+                      ⏳ در انتظار بررسی و تایید فیش توسط ادمین
+                    </span>
+                    <h4 className="font-black text-sm text-[#F6F1E7]">{event.title}</h4>
+                  </div>
+                </div>
+                {pendingTrackingCode && (
+                  <span className="text-[10px] font-mono text-[#D4AB58] px-2 py-0.5 rounded bg-black/40 border border-[#D4AB58]/30">
+                    {pendingTrackingCode}
+                  </span>
+                )}
+              </div>
+
+              <p className="text-xs leading-relaxed text-[#E2ECE7]">
+                تصویر فیش واریزی شما به مبلغ{' '}
+                <span className="font-black text-[#D4AB58]">
+                  {finalPrice.toLocaleString('fa-IR')} تومان
+                </span>{' '}
+                با موفقیت به کارتابل مدیریت و ربات تلگرام ارسال گردید.
+              </p>
+
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 font-bold leading-relaxed">
+                📌 بلیط الکترونیکی QR و امتیاز شرکت در کارگاه (+{event.rewardPoints} الماس) بلافاصله پس از بررسی و تایید فیش توسط ادمین در بخش ۲ صادر شده و به چت تلگرام و پروفایل شما ارسال می‌گردد.
+              </div>
+            </div>
+
+            <PushButton variant="secondary" fullWidth onClick={onClose}>
+              متوجه شدم • بازگشت به برنامه رویدادها
+            </PushButton>
+          </div>
         ) : (
-          /* STEP 2: 100% REAL SCANNABLE QR TICKET */
+          /* STEP 2B: FREE / 100% DISCOUNT -> 100% REAL SCANNABLE QR TICKET */
           generatedTicket && (
             <div className="space-y-4 animate-fade-in text-center">
               <div className="rounded-3xl border-2 border-[#D4AB58] bg-gradient-to-br from-[#1C2826] via-[#1A2424] to-[#122020] p-5 shadow-2xl space-y-4 text-right relative overflow-hidden text-[#F6F1E7]">

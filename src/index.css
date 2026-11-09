@@ -12,8 +12,14 @@
     touch-action: manipulation;
   }
 
+  input, textarea, [contenteditable="true"], .select-text {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
   code, kbd, samp, pre, .font-mono {
     font-family: 'Vazirmatn', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
   }
 }
 

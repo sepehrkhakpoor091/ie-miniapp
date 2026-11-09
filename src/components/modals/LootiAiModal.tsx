@@ -51,19 +51,6 @@ const QUICK_PROMPTS = [
 const STUDENT_LOOTI_SYSTEM_INSTRUCTION =
   'تو «دستیار مشتی و باحال انجمن علمی مهندسی صنایع» هستی؛ یک دانشجوی ارشد باتجربه، بامعرفت، محترمانه و پرانرژی مهندسی صنایع که هوای بچه‌های ورودی‌های مختلف (۱۴۰۰ تا ۱۴۰۵) رو داره. همیشه با لحن گرم، صمیمی، مودبانه و کوتاه به فارسی پاسخ بده.';
 
-function getClientSideLootiFallback(prompt: string, firstName: string, score: number): string {
-  if (prompt.includes('امتیاز') || prompt.includes('الماس')) {
-    return `دمت گرم ${firstName} جان! الان ${score.toLocaleString('fa-IR')} امتیاز الماس داری 💎\nواسه اینکه سریع‌تر الماس جمع کنی:\n۱. تو تب «افتخارات» ماموریت «شرکت در ۲ کارگاه تخصصی» رو بزن (+۴۰ امتیاز فوری) و اگه مقاله واسه نشریه بفرستی +۱۰۰ امتیاز می‌گیری!\n۲. هر ۲۰ امتیاز = ۱۰,۰۰۰ تومان تخفیف مستقیم کارگاه‌هاست یا می‌تونی با ۱۰۰ امتیاز «صندوقچه طلایی صنایع» رو باز کنی مشتی!`;
-  }
-  if (prompt.includes('کارگاه') || prompt.includes('بازار کار')) {
-    return `سوال طلایی پرسیدی مهندس! 🎯\nاین هفته حتماً «کارگاه تحلیل داده با پایتون» (۲۵ آبان با مهندس آرش شمس، +۲۰ امتیاز) و «دوره نرم‌افزار شبیه‌سازی Arena و Python» (۱۸ آذر با دکتر کاظمی، +۲۵ امتیاز) رو دریاب که خوراک رزومه و بازار کاره!\n۵ آذر هم «سمینار آینده شغلی در مهندسی صنایع» داریم که نباید از دستش بدی رفیق!`;
-  }
-  if (prompt.includes('اساتید') || prompt.includes('حضور') || prompt.includes('استاد')) {
-    return `روی چشمم رفیق! برنامه حضور اساتید دانشکده مهندسی صنایع 👨‍🏫:\n• دکتر علی محمدی (تحقیق در عملیات): شنبه و دوشنبه ۱۰ تا ۱۲ (اتاق ۳۱۲)\n• دکتر سارا شمسایی (کنترل کیفیت): یکشنبه و سه‌شنبه ۱۳ تا ۱۵ (اتاق ۲۰۸)\n• دکتر محمدرضا رضایی (زنجیره تامین): دوشنبه و چهارشنبه ۱۱ تا ۱۲:۳۰ (اتاق ۳۰۵)\n• دکتر بهزاد کاظمی (شبیه‌سازی): شنبه و چهارشنبه ۱۴ تا ۱۶ (اتاق ۲۱۵)`;
-  }
-  return `مخلصیم ${firstName} عزیز! هر سوالی راجع به کارگاه‌های پایتون و کنترل پروژه، جمع کردن الماس، یا اساتید دانشکده داری بپرس، خودم کامل راهنماییت می‌کنم مهندس!`;
-}
-
 export const LootiAiModal: React.FC<LootiAiModalProps> = ({
   isOpen,
   onClose,
@@ -138,7 +125,6 @@ export const LootiAiModal: React.FC<LootiAiModalProps> = ({
     setIsLoading(true);
 
     try {
-      // 1. Primary: Cloudflare Worker Bot AI Engine (POST /api/miniapp/ai-chat)
       const botAiRes = await askMiniAppAiOnBot({
         prompt: sanitizedCheck.sanitized,
         modelId: selectedModel,
@@ -166,32 +152,16 @@ export const LootiAiModal: React.FC<LootiAiModalProps> = ({
             modelUsed: (botAiRes.modelUsed as LootiModelId) || selectedModel,
           },
         ]);
-        return;
-      }
-
-      // 2. Secondary: Local Server Proxy (/api/ai/looti)
-      const res = await secureFetch('/api/ai/looti', {
-        method: 'POST',
-        body: JSON.stringify({
-          prompt: sanitizedCheck.sanitized,
-          systemInstruction: STUDENT_LOOTI_SYSTEM_INSTRUCTION,
-          modelId: selectedModel,
-          userName: user.firstName,
-          userScore: user.score,
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        playCoin();
+      } else {
+        playError();
         setMessages((prev) => [
           ...prev,
           {
             id: `looti-${Date.now()}`,
             sender: 'looti',
             text:
-              data.reply ||
-              getClientSideLootiFallback(sanitizedCheck.sanitized, user.firstName, user.score),
+              botAiRes.reply ||
+              '⚠️ خطا در دریافت پاسخ از سرور کلودفلر ربات. لطفاً اتصال اینترنت یا کلید API سرور را بررسی نمایید.',
             timestamp: new Date().toLocaleTimeString('fa-IR', {
               hour: '2-digit',
               minute: '2-digit',
@@ -199,17 +169,15 @@ export const LootiAiModal: React.FC<LootiAiModalProps> = ({
             modelUsed: selectedModel,
           },
         ]);
-      } else {
-        throw new Error('Fallback to local Looti');
       }
     } catch {
-      playCoin();
+      playError();
       setMessages((prev) => [
         ...prev,
         {
           id: `looti-${Date.now()}`,
           sender: 'looti',
-          text: getClientSideLootiFallback(sanitizedCheck.sanitized, user.firstName, user.score),
+          text: '⚠️ ارتباط با سرور هوش مصنوعی کلودفلر برقرار نشد. لطفاً لحظاتی دیگر تلاش کنید.',
           timestamp: new Date().toLocaleTimeString('fa-IR', {
             hour: '2-digit',
             minute: '2-digit',

@@ -46,6 +46,7 @@ interface HomeTabProps {
   onOpenRemindersModal: () => void;
   onOpenSupportModal: () => void;
   onOpenCurriculumModal: () => void;
+  onOpenAiModal?: () => void;
   onOpenEventDetails: (eventId: string) => void;
   onStealthTap?: () => void;
 }
@@ -84,6 +85,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   onOpenRemindersModal,
   onOpenSupportModal,
   onOpenCurriculumModal,
+  onOpenAiModal,
   onOpenEventDetails,
   onStealthTap,
 }) => {
@@ -543,6 +545,43 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               </span>
             </TactileCard>
           </div>
+
+          {/* 3A. Student AI Co-Pilot Card (Fix 3-1: دستیار هوشمند انجمن (هوش مصنوعی)) */}
+          {onOpenAiModal && (
+            <TactileCard
+              themeMode={themeMode}
+              interactive
+              onClick={() => {
+                playCoin();
+                onOpenAiModal();
+              }}
+              className="p-3.5 border-2 border-[#D4AB58]/70 flex items-center justify-between gap-3 bg-gradient-to-r from-[#1A2636]/90 to-[#162230]/90 text-[#F6F1E7]"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="w-11 h-11 rounded-2xl bg-[#D4AB58]/20 border border-[#D4AB58]/60 flex items-center justify-center shrink-0 p-1 shadow">
+                  <PixelImage
+                    filename="04_char_welcome.png"
+                    alt="دستیار هوشمند انجمن"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div className="min-w-0 flex-1 space-y-0.5 text-right">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-xs lg:text-sm font-black text-[#F6F1E7]">
+                      🤖 دستیار هوشمند انجمن (هوش مصنوعی)
+                    </span>
+                    <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      آنلاین
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-bold text-[#A3C1AD] truncate">
+                    پاسخگوی هوشمند سوالات کارگاه‌ها، چارت درسی، اساتید و امتیازها
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs font-black text-[#D4AB58] shrink-0">گفتگو ←</span>
+            </TactileCard>
+          )}
 
           {/* 3B. Interactive FUM 142-Unit Curriculum & Prerequisite Flowchart Card */}
           <TactileCard

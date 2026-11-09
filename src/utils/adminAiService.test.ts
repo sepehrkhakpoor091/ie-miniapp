@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ADMIN_LOOTI_SYSTEM_INSTRUCTION,
   getSafeApiKey,
-  buildLocalAdminLootiReply,
   parseRawProfessorScheduleDeterministic,
   parseMultiProfessorSchedules,
   parseNaturalLanguageTimerDeterministic,
@@ -14,7 +14,7 @@ import {
 } from './apiBridge.ts';
 
 describe('adminAiService safety, server AI routes, and visual text editor helpers', () => {
-  it('getSafeApiKey never exposes any client-side API key in browser code', () => {
+  it('getSafeApiKey safely reads ie_gemini_api_key_v1 or returns empty string in non-DOM env', () => {
     const key = getSafeApiKey();
     assert.equal(key, '');
   });
@@ -41,10 +41,9 @@ describe('adminAiService safety, server AI routes, and visual text editor helper
     saveStoredCustomUiTexts({ 'کارگاه‌ها': 'دوره‌های تخصصی صنایع' });
   });
 
-  it('buildLocalAdminLootiReply returns Mashdi Persian persona response', () => {
-    const reply = buildLocalAdminLootiReply('وضعیت آمار ورودی‌ها چطوره؟');
-    assert.ok(reply.includes('ستون'));
-    assert.ok(reply.includes('حله رفیق'));
+  it('ADMIN_LOOTI_SYSTEM_INSTRUCTION defines the Persian Admin AI system role', () => {
+    assert.ok(ADMIN_LOOTI_SYSTEM_INSTRUCTION.includes('ستون'));
+    assert.ok(ADMIN_LOOTI_SYSTEM_INSTRUCTION.includes('حله رفیق'));
   });
 
   it('parseRawProfessorScheduleDeterministic extracts professor name, room, and courses', () => {
