@@ -68,6 +68,7 @@ import {
   isProtectedMasterAccount,
   safeJsonParse,
   saveAdminStudentOverride,
+  touchAdminSession,
   verifyStateIntegrity,
 } from './utils/security';
 import {
@@ -88,10 +89,12 @@ import {
   BOT_WORKER_BASE_URL,
   fetchMiniAppBootstrap,
   getLocalSiteSwitchesOverride,
+  loadStoredCustomUiTexts,
   loadStoredSupportChats,
   normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
   saveEventsOnBot,
+  saveStoredCustomUiTexts,
   saveStoredSupportChats,
   sendHeartbeatToBot,
   syncUserProfileToBot,
@@ -118,6 +121,7 @@ import {
   DEFAULT_TIMERS,
   mergeSiteSwitchesIntoFlags,
 } from './components/admin/AdminPanel';
+import { VisualTextEditorOverlay } from './components/admin/VisualTextEditorOverlay';
 
 // Drawers & Modals
 import { QuickMenuDrawer } from './components/ui/QuickMenuDrawer';
@@ -286,7 +290,14 @@ export default function App() {
   // Navigation tab & Authenticated Admin Panel State
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [adminInitialModule, setAdminInitialModule] = useState<
+    1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
+  >(1);
   const [authenticatedAdmin, setAuthenticatedAdmin] = useState<AdminUser | null>(null);
+  const [uiTexts, setUiTexts] = useState<Record<string, string>>(() =>
+    loadStoredCustomUiTexts()
+  );
+  const [isVisualEditMode, setIsVisualEditMode] = useState<boolean>(false);
 
   // Modal States
   const [isBootstrapping, setIsBootstrapping] = useState(true);
@@ -912,6 +923,14 @@ export default function App() {
 
     if (boot.referralStats) {
       setServerReferralStats(boot.referralStats);
+    }
+
+    if (boot.uiTexts && typeof boot.uiTexts === 'object') {
+      setUiTexts((prev) => {
+        const merged = { ...prev, ...boot.uiTexts };
+        saveStoredCustomUiTexts(merged);
+        return merged;
+      });
     }
 
     const serverDisputes = boot.disputeTickets || boot.disputes;
@@ -1561,6 +1580,7 @@ export default function App() {
         {isAdminPanelOpen && getValidAdminSession() ? (
           <AdminPanel
             isOpen={isAdminPanelOpen}
+            initialModule={adminInitialModule}
             onClose={() => {
               clearAdminSession();
               setAuthenticatedAdmin(null);
@@ -1593,6 +1613,16 @@ export default function App() {
             channelUrl={officialChannelUrl}
             featuredEventId={featuredEventId}
             aboutConfig={aboutConfig}
+            uiTexts={uiTexts}
+            onUpdateUiTexts={(nextUiTexts) => {
+              setUiTexts(nextUiTexts);
+              saveStoredCustomUiTexts(nextUiTexts);
+            }}
+            onEnterVisualEditMode={() => {
+              touchAdminSession();
+              setIsAdminPanelOpen(false);
+              setIsVisualEditMode(true);
+            }}
             onlineCount={onlineCount}
             onlineUsers={onlineUsers}
             onUpdateEvents={(nextEvents) => {
@@ -1922,6 +1952,7 @@ export default function App() {
         />
 
         {!isAdminPanelOpen &&
+          !isVisualEditMode &&
           !isMasterAdminTelegramUser(user.telegramUserId) &&
           !isProtectedMasterAccount(user) &&
           (user.kycStatus === 'required' ||
@@ -1950,6 +1981,7 @@ export default function App() {
           admins={adminsCatalog}
           onUnlockSuccess={(matchedAdmin) => {
             setAuthenticatedAdmin(matchedAdmin || null);
+            setAdminInitialModule(1);
             setIsAdminVaultOpen(false);
             setIsAdminPanelOpen(true);
           }}
@@ -1957,7 +1989,7 @@ export default function App() {
         />
 
         <OnboardingModal
-          isOpen={isOnboardingOpen && !isAdminPanelOpen && !isAdminVaultOpen}
+          isOpen={isOnboardingOpen && !isAdminPanelOpen && !isAdminVaultOpen && !isVisualEditMode}
           onClose={() => setIsOnboardingOpen(false)}
           onComplete={handleUpdateProfile}
           currentProfile={user}
@@ -2034,6 +2066,22 @@ export default function App() {
             handleUpdateProfile({
               score: user.score + 50,
             });
+          }}
+        />
+
+        <VisualTextEditorOverlay
+          uiTexts={uiTexts}
+          isVisualEditMode={isVisualEditMode}
+          adminTelegramId={authenticatedAdmin?.telegramId || user.telegramUserId}
+          onUpdateUiTexts={(nextUiTexts) => {
+            setUiTexts(nextUiTexts);
+            saveStoredCustomUiTexts(nextUiTexts);
+          }}
+          onExitVisualEditMode={() => {
+            touchAdminSession();
+            setIsVisualEditMode(false);
+            setAdminInitialModule(10);
+            setIsAdminPanelOpen(true);
           }}
         />
       </div>

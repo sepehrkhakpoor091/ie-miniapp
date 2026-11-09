@@ -305,6 +305,7 @@ export interface BootstrapResponse {
   siteSwitches?: Partial<SiteSwitches>;
   botConfig?: Partial<BotConfigSettings>;
   badgesCatalog?: BadgeItem[];
+  uiTexts?: Record<string, string>;
   onlineCount?: number;
   onlineUsers?: OnlineSessionUser[];
   referralStats?: {
@@ -381,6 +382,7 @@ export interface AdminUser {
   roleLabel: string;
   personalPassword: string;
   permissions: Record<AdminPermissionKey, boolean>;
+  canVisualEdit?: boolean;
   isFrozen: boolean;
   lastActive: string;
 }

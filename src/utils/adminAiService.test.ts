@@ -7,11 +7,38 @@ import {
   parseMultiProfessorSchedules,
   parseNaturalLanguageTimerDeterministic,
 } from './adminAiService.ts';
+import {
+  resolveBotEndpoint,
+  loadStoredCustomUiTexts,
+  saveStoredCustomUiTexts,
+} from './apiBridge.ts';
 
-describe('adminAiService safety and deterministic parsers', () => {
-  it('getSafeApiKey never throws ReferenceError in any environment', () => {
+describe('adminAiService safety, server AI routes, and visual text editor helpers', () => {
+  it('getSafeApiKey never exposes any client-side API key in browser code', () => {
     const key = getSafeApiKey();
-    assert.equal(typeof key, 'string');
+    assert.equal(key, '');
+  });
+
+  it('resolveBotEndpoint resolves /api/miniapp/ai-chat, /api/miniapp/admin-update-secrets, and /api/miniapp/admin-save-ui-texts', () => {
+    assert.ok(
+      resolveBotEndpoint('/api/miniapp/ai-chat').endsWith('/api/miniapp/ai-chat')
+    );
+    assert.ok(
+      resolveBotEndpoint('/api/miniapp/admin-update-secrets').endsWith(
+        '/api/miniapp/admin-update-secrets'
+      )
+    );
+    assert.ok(
+      resolveBotEndpoint('/api/miniapp/admin-save-ui-texts').endsWith(
+        '/api/miniapp/admin-save-ui-texts'
+      )
+    );
+  });
+
+  it('loadStoredCustomUiTexts and saveStoredCustomUiTexts safely handle non-DOM or empty storage', () => {
+    const loaded = loadStoredCustomUiTexts();
+    assert.equal(typeof loaded, 'object');
+    saveStoredCustomUiTexts({ 'کارگاه‌ها': 'دوره‌های تخصصی صنایع' });
   });
 
   it('buildLocalAdminLootiReply returns Mashdi Persian persona response', () => {
@@ -66,3 +93,4 @@ describe('adminAiService safety and deterministic parsers', () => {
     assert.ok(timer.targetAudience.includes('۱۴۰۲'));
   });
 });
+

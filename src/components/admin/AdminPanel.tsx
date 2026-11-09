@@ -98,6 +98,7 @@ import {
   normalizeSupportTicketsList,
   resolveReceiptOrKycImageUrl,
   saveAdminBotConfigToBot,
+  saveCustomUiTextsOnBot,
   saveEventsOnBot,
   saveLootboxConfigOnBot,
   saveProfessorsOnBot,
@@ -113,9 +114,11 @@ import {
 } from '../../utils/apiBridge';
 import {
   askAdminLootiAi,
+  generateSmartAnnouncementWithAi,
   parseMultiProfessorSchedules,
   parseMultiProfessorSchedulesWithAi,
   parseNaturalLanguageTimerDeterministic,
+  testLiveAiConnectionOnBot,
 } from '../../utils/adminAiService';
 import {
   playCoin,
@@ -286,6 +289,7 @@ export const DEFAULT_ADMINS: AdminUser[] = [
       finance: true,
       broadcast: true,
     },
+    canVisualEdit: true,
     isFrozen: false,
     lastActive: 'هم‌اکنون آنلاین',
   },
@@ -435,12 +439,13 @@ const PERMISSION_LABELS: { key: AdminPermissionKey; label: string }[] = [
   { key: 'broadcast', label: 'همگانی' },
 ];
 
-type AdminModuleId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+type AdminModuleId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 interface AdminPanelProps {
   isOpen?: boolean;
   onClose: () => void;
   themeMode?: ThemeMode;
+  initialModule?: AdminModuleId;
   currentAdmin?: AdminUser | null;
   currentUser?: UserProfile;
   userTickets?: TicketRecord[];
@@ -466,6 +471,9 @@ interface AdminPanelProps {
   channelUrl?: string;
   featuredEventId?: string;
   aboutConfig?: AboutAssociationConfig;
+  uiTexts?: Record<string, string>;
+  onUpdateUiTexts?: (nextUiTexts: Record<string, string>) => void;
+  onEnterVisualEditMode?: () => void;
   onUpdateEvents?: (nextEvents: EventItem[]) => void;
   onUpdateFeaturedEventId?: (nextEventId: string) => void;
   onUpdateAboutConfig?: (nextAbout: AboutAssociationConfig) => void;
@@ -498,6 +506,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   isOpen = true,
   onClose,
   themeMode = 'night',
+  initialModule,
   currentAdmin = DEFAULT_ADMINS[0],
   currentUser,
   userTickets = [],
@@ -522,6 +531,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   channelUrl: propChannelUrl = DEFAULT_CHANNEL_URL,
   featuredEventId: propFeaturedEventId = 'ev-project-mgmt',
   aboutConfig: propAboutConfig = DEFAULT_ABOUT_CONFIG,
+  uiTexts = {},
+  onUpdateUiTexts,
+  onEnterVisualEditMode,
   onUpdateEvents,
   onUpdateFeaturedEventId,
   onUpdateAboutConfig,
@@ -548,7 +560,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const isNight = themeMode === 'night';
   const activeAdmin = currentAdmin || DEFAULT_ADMINS[0];
 
-  const [activeModule, setActiveModule] = useState<AdminModuleId>(1);
+  const [activeModule, setActiveModule] = useState<AdminModuleId>(initialModule || 1);
+
+  useEffect(() => {
+    if (initialModule) {
+      setActiveModule(initialModule);
+    }
+  }, [initialModule]);
   const [toastBanner, setToastBanner] = useState<string | null>(null);
   const [isSyncingBotQueue, setIsSyncingBotQueue] = useState(false);
   const [previewImageModalSrc, setPreviewImageModalSrc] = useState<string | null>(null);
@@ -950,6 +968,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [manualAnnTitle, setManualAnnTitle] = useState('');
   const [manualAnnTag, setManualAnnTag] = useState('اطلاعیه فوری');
   const [manualAnnContent, setManualAnnContent] = useState('');
+  const [isGeneratingAnnAi, setIsGeneratingAnnAi] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [eventTitleInput, setEventTitleInput] = useState('');
   const [eventCategoryInput, setEventCategoryInput] = useState<
@@ -1088,6 +1107,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [newAdminTelegram, setNewAdminTelegram] = useState('');
   const [newAdminLevel, setNewAdminLevel] = useState<1 | 2 | 3 | 4 | 5 | 6>(6);
   const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [newAdminCanVisualEdit, setNewAdminCanVisualEdit] = useState<boolean>(false);
   const [customPermissions, setCustomPermissions] = useState<
     Record<AdminPermissionKey, boolean>
   >({
@@ -1132,6 +1152,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   );
   const [newMasterAdminPassInput, setNewMasterAdminPassInput] = useState('');
   const [isUpdatingSecrets, setIsUpdatingSecrets] = useState(false);
+  const [isTestingAiLive, setIsTestingAiLive] = useState(false);
+  const [liveAiTestResult, setLiveAiTestResult] = useState<{
+    ok: boolean;
+    reply: string;
+    modelUsed: string;
+  } | null>(null);
+  const [isSavingUiTextsServer, setIsSavingUiTextsServer] = useState(false);
   const [isRunningSimulation, setIsRunningSimulation] = useState(false);
   const [lastSimulationSummary, setLastSimulationSummary] = useState<string | null>(null);
 
@@ -1175,6 +1202,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!activeAdmin?.permissions) return true;
     return !!activeAdmin.permissions[perm];
   };
+
+  const canAccessVisualEditor = useMemo(() => {
+    if (
+      isMasterAdminTelegramUser(activeAdmin?.telegramId) ||
+      activeAdmin?.telegramId === MASTER_ADMIN_TELEGRAM_ID ||
+      isProtectedMasterAccount(activeAdmin)
+    ) {
+      return true;
+    }
+    const matchingAdmin = (Array.isArray(adminList) ? adminList : []).find(
+      (a) => a.id === activeAdmin?.id || a.telegramId === activeAdmin?.telegramId
+    );
+    return Boolean(matchingAdmin?.canVisualEdit ?? activeAdmin?.canVisualEdit);
+  }, [activeAdmin, adminList]);
 
   const filteredStudents = useMemo(() => {
     const safeList = Array.isArray(studentList) ? studentList : [];
@@ -2970,6 +3011,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       roleLabel: presetRoleLabels[newAdminLevel],
       personalPassword: newAdminPassword.trim() || 'IE_ADMIN_2026',
       permissions: resolvedPermissions,
+      canVisualEdit: newAdminLevel === 1 ? true : newAdminCanVisualEdit,
       isFrozen: false,
       lastActive: 'تازه اضافه شده',
     };
@@ -2978,6 +3020,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setAdminList(updatedAdmins);
     onUpdateAdmins?.(updatedAdmins);
     setNewAdminName('');
+    setNewAdminCanVisualEdit(false);
     appendLog(
       'تعریف ادمین جدید با رمز اختصاصی',
       `${newAdmin.fullName} (${newAdmin.roleLabel})`,
@@ -3100,6 +3143,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       triggerToast('⚠️ لطفاً کلید API جدید یا رمز عبور جدید ادمین را وارد کنید.');
       return;
     }
+    if (trimmedKey && !trimmedKey.startsWith('AIza')) {
+      playError();
+      triggerToast('⚠️ کلید API گوگل جمینای باید با عبارت AIza شروع شود.');
+      return;
+    }
     playCoin();
     setIsUpdatingSecrets(true);
     try {
@@ -3126,6 +3174,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       );
     } finally {
       setIsUpdatingSecrets(false);
+    }
+  };
+
+  const handleTestLiveAiConnection = async () => {
+    if (isTestingAiLive) return;
+    playTick();
+    setIsTestingAiLive(true);
+    setLiveAiTestResult(null);
+    try {
+      const res = await testLiveAiConnectionOnBot();
+      setLiveAiTestResult(res);
+      if (res.ok) {
+        playFanfare();
+        triggerToast(`✅ اتصال هوش مصنوعی برقرار است! پاسخ از مدل: ${res.modelUsed}`);
+      } else {
+        playError();
+        triggerToast('⚠️ خطا در تست اتصال هوش مصنوعی سرور.');
+      }
+    } finally {
+      setIsTestingAiLive(false);
+    }
+  };
+
+  const handleGenerateSmartAnnouncement = async () => {
+    if (isGeneratingAnnAi) return;
+    playTick();
+    setIsGeneratingAnnAi(true);
+    try {
+      const topic =
+        manualAnnTitle.trim() ||
+        'برگزاری کارگاه تخصصی جدید انجمن علمی مهندسی صنایع دانشگاه فردوسی مشهد';
+      const generated = await generateSmartAnnouncementWithAi(topic, manualAnnTag);
+      if (!manualAnnTitle.trim()) {
+        setManualAnnTitle('اطلاعیه ویژه انجمن علمی مهندسی صنایع');
+      }
+      setManualAnnContent(generated);
+      playCoin();
+      triggerToast('✨ متن اطلاعیه با هوش مصنوعی سرور تولید شد!');
+    } finally {
+      setIsGeneratingAnnAi(false);
     }
   };
 
@@ -3244,6 +3332,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     { id: 7, shortLabel: '۷. سطوح ادمین', icon: <Lock className="w-3.5 h-3.5" /> },
     { id: 8, shortLabel: '۸. کلیدهای سایت و کلودفلر', icon: <Activity className="w-3.5 h-3.5" /> },
     { id: 9, shortLabel: '۹. 📊 داشبورد جامع و تنظیمات ربات', icon: <Sparkles className="w-3.5 h-3.5" /> },
+    { id: 10, shortLabel: '۱۰. ✏️ ویرایش دستی مینی‌اپ', icon: <Edit3 className="w-3.5 h-3.5" /> },
   ];
 
   const cardSurfaceClass = isNight
@@ -3341,15 +3430,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
 
-          {/* 8-Module Grid Navigation Bar */}
+          {/* 10-Module Grid Navigation Bar */}
           <div
-            className={`p-2.5 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 ${
+            className={`p-2.5 grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-5 gap-1.5 ${
               isNight ? 'bg-black/25' : 'bg-[#EAE3D2]'
             }`}
           >
             {MODULE_TABS.map((tab) => {
               const isSelected = activeModule === tab.id;
-              const isPermitted = !tab.permKey || hasPermission(tab.permKey);
+              const isPermitted =
+                tab.id === 10
+                  ? canAccessVisualEditor
+                  : !tab.permKey || hasPermission(tab.permKey);
               return (
                 <button
                   key={tab.id}
@@ -3358,7 +3450,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     if (!isPermitted) {
                       playError();
                       triggerToast(
-                        `⛔ دسترسی به «${tab.shortLabel}» برای نقش شما محدود شده است.`
+                        tab.id === 10
+                          ? '⛔ دسترسی به «✏️ ویرایش دستی متن‌های مینی‌اپ» فقط با مجوز مدیر ارشد فعال می‌شود.'
+                          : `⛔ دسترسی به «${tab.shortLabel}» برای نقش شما محدود شده است.`
                       );
                       return;
                     }
@@ -6499,8 +6593,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   }}
                   className={`p-4 rounded-2xl border space-y-2.5 text-xs ${subCardClass}`}
                 >
-                  <div className="font-black">
-                    📌 انتشار و سنجاق اطلاعیه دستی در صدر مینی‌اپ:
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-black">
+                      📌 انتشار و سنجاق اطلاعیه دستی در صدر مینی‌اپ:
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isGeneratingAnnAi}
+                      onClick={handleGenerateSmartAnnouncement}
+                      className="px-3 py-1.5 rounded-xl bg-[#D4AB58]/20 hover:bg-[#D4AB58]/30 text-[#D4AB58] border border-[#D4AB58]/50 text-[11px] font-black cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>
+                        {isGeneratingAnnAi
+                          ? '⏳ در حال نگارش با هوش مصنوعی...'
+                          : '✨ تولید هوشمند متن اطلاعیه با هوش مصنوعی'}
+                      </span>
+                    </button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <input
@@ -6921,7 +7030,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="font-black text-sm text-[#D4AB58] flex items-center gap-1.5">
                   <Key className="w-4 h-4" />
-                  <span>🔑 تغییر کلید API هوش مصنوعی (Gemini API Key) در سرور</span>
+                  <span>🔑 تنظیم و تغییر کلید API هوش مصنوعی (Gemini API Key)</span>
                 </div>
                 <span
                   className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono text-[11px] font-black"
@@ -6931,7 +7040,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </span>
               </div>
               <p className="text-[11px] font-bold opacity-85">
-                کلید جدید مستقیماً از طریق مسیر امن <code dir="ltr">/api/miniapp/admin-update-secrets</code> به سرور کلودفلر ارسال می‌شود و هیچ کلیدی در کدهای فرانت‌اند یا حافظه مرورگر ذخیره نمی‌گردد.
+                کلید جدید مستقیماً از طریق مسیر امن <code dir="ltr">/api/miniapp/admin-update-secrets</code> به سرور کلودفلر ارسال می‌شود و تمام درخواست‌های هوش مصنوعی از طریق <code dir="ltr">/api/miniapp/ai-chat</code> اجرا می‌گردند.
               </p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
@@ -6948,10 +7057,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shrink-0 shadow"
                 >
                   {isUpdatingSecrets
-                    ? '⏳ در حال ثبت امن در سرور...'
-                    : '🔒 ذخیره امن کلید API در سرور'}
+                    ? '⏳ در حال ذخیره در سرور...'
+                    : '💾 ذخیره کلید API در سرور'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isTestingAiLive}
+                  onClick={handleTestLiveAiConnection}
+                  className="px-4 py-2.5 rounded-xl bg-[#D4AB58] hover:bg-[#e1b864] text-[#101622] font-black text-xs cursor-pointer shrink-0 shadow"
+                >
+                  {isTestingAiLive
+                    ? '⏳ در حال تست زنده...'
+                    : '⚡ تست زنده اتصال هوش مصنوعی'}
                 </button>
               </div>
+
+              {liveAiTestResult && (
+                <div
+                  className={`p-3 rounded-xl border text-xs space-y-1 ${
+                    liveAiTestResult.ok
+                      ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                      : 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between font-black">
+                    <span>
+                      {liveAiTestResult.ok
+                        ? '✅ اتصال زنده هوش مصنوعی سرور برقرار است'
+                        : '⚠️ خطا در برقراری ارتباط با هوش مصنوعی'}
+                    </span>
+                    <span dir="ltr" className="text-[11px] font-mono px-2 py-0.5 rounded bg-black/30">
+                      Model: {liveAiTestResult.modelUsed}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-bold leading-relaxed">
+                    پاسخ دریافتی از هوش مصنوعی: «{liveAiTestResult.reply}»
+                  </p>
+                </div>
+              )}
             </form>
           </div>
         )}
@@ -8656,6 +8799,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     );
                   })}
                 </div>
+                <div className="pt-2 border-t border-current/10">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playTick();
+                      setNewAdminCanVisualEdit((prev) => !prev);
+                    }}
+                    className={`w-full p-2.5 rounded-xl text-xs font-black flex items-center justify-between border cursor-pointer transition-all ${
+                      newAdminCanVisualEdit || newAdminLevel === 1
+                        ? 'bg-[#D4AB58]/20 border-[#D4AB58] text-[#D4AB58]'
+                        : 'bg-black/20 border-current/15 opacity-75'
+                    }`}
+                  >
+                    <span>✏️ دسترسی به ویرایش دستی متن‌های مینی‌اپ (canVisualEdit)</span>
+                    <span>
+                      {newAdminLevel === 1 || newAdminCanVisualEdit ? 'فعال ✓' : 'غیرفعال ✕'}
+                    </span>
+                  </button>
+                </div>
               </div>
 
               <button
@@ -8670,6 +8832,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {(Array.isArray(adminList) ? adminList : []).map((adm) => {
                 const isProtectedMaster = isProtectedMasterAccount(adm);
+                const hasVisualEditPerm = isProtectedMaster ? true : Boolean(adm.canVisualEdit);
                 return (
                   <div
                     key={adm.id}
@@ -8786,6 +8949,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             {p.label} ✓
                           </span>
                         ) : null
+                      )}
+                    </div>
+
+                    {/* Selective Visual Edit Permission Toggle */}
+                    <div className="pt-2 border-t border-current/10 flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-black text-[#D4AB58]">
+                        ✏️ دسترسی به ویرایش دستی متن‌های مینی‌اپ:
+                      </span>
+                      {isProtectedMaster ? (
+                        <span className="px-2.5 py-1 rounded-lg bg-[#D4AB58]/20 text-[#D4AB58] border border-[#D4AB58]/50 text-[10px] font-black">
+                          همیشه فعال (مدیر ارشد) ✓
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playSwitch();
+                            const nextVal = !hasVisualEditPerm;
+                            const updated = (Array.isArray(adminList) ? adminList : []).map((a) =>
+                              a.id === adm.id ? { ...a, canVisualEdit: nextVal } : a
+                            );
+                            setAdminList(updated);
+                            onUpdateAdmins?.(updated);
+                            appendLog(
+                              nextVal
+                                ? 'فعال‌سازی مجوز ویرایش دستی متن‌های مینی‌اپ'
+                                : 'لغو مجوز ویرایش دستی متن‌های مینی‌اپ',
+                              adm.fullName,
+                              'info'
+                            );
+                            triggerToast(
+                              nextVal
+                                ? `✅ دسترسی «✏️ ویرایش دستی متن‌های مینی‌اپ» برای ${adm.fullName} فعال شد.`
+                                : `🔒 دسترسی «✏️ ویرایش دستی متن‌های مینی‌اپ» برای ${adm.fullName} غیرفعال شد.`
+                            );
+                          }}
+                          className={`px-3 py-1 rounded-lg text-[10px] font-black border cursor-pointer transition-all ${
+                            hasVisualEditPerm
+                              ? 'bg-emerald-600 text-white border-emerald-400'
+                              : 'bg-zinc-800 text-zinc-300 border-zinc-600'
+                          }`}
+                        >
+                          {hasVisualEditPerm ? 'فعال ✓ (کلیک جهت لغو)' : 'غیرفعال ✕ (کلیک جهت اعطا)'}
+                        </button>
                       )}
                     </div>
                   </div>
@@ -9223,7 +9430,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="font-black text-sm text-emerald-400 flex items-center gap-1.5">
                   <Key className="w-4 h-4" />
-                  <span>🔑 تغییر کلید API هوش مصنوعی (Gemini API Key) و رمز عبور پنل مدیریت در سرور</span>
+                  <span>🔑 تنظیم و تغییر کلید API هوش مصنوعی (Gemini API Key)</span>
                 </div>
                 <span
                   className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 font-mono text-[11px] font-black"
@@ -9262,15 +9469,51 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={isUpdatingSecrets}
-                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow"
-              >
-                {isUpdatingSecrets
-                  ? '⏳ در حال ارسال امن به سرور کلودفلر...'
-                  : '🔒 ذخیره امن کلید API و رمز مدیریت در سرور'}
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="submit"
+                  disabled={isUpdatingSecrets}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow"
+                >
+                  {isUpdatingSecrets
+                    ? '⏳ در حال ارسال امن به سرور کلودفلر...'
+                    : '💾 ذخیره کلید API در سرور'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isTestingAiLive}
+                  onClick={handleTestLiveAiConnection}
+                  className="px-5 py-2.5 rounded-xl bg-[#D4AB58] hover:bg-[#e1b864] text-[#101622] font-black text-xs cursor-pointer shadow"
+                >
+                  {isTestingAiLive
+                    ? '⏳ در حال تست زنده...'
+                    : '⚡ تست زنده اتصال هوش مصنوعی'}
+                </button>
+              </div>
+
+              {liveAiTestResult && (
+                <div
+                  className={`p-3 rounded-xl border text-xs space-y-1 ${
+                    liveAiTestResult.ok
+                      ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                      : 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between font-black">
+                    <span>
+                      {liveAiTestResult.ok
+                        ? '✅ اتصال زنده هوش مصنوعی سرور برقرار است'
+                        : '⚠️ خطا در برقراری ارتباط با هوش مصنوعی'}
+                    </span>
+                    <span dir="ltr" className="text-[11px] font-mono px-2 py-0.5 rounded bg-black/30">
+                      Model: {liveAiTestResult.modelUsed}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-bold leading-relaxed">
+                    پاسخ دریافتی از هوش مصنوعی: «{liveAiTestResult.reply}»
+                  </p>
+                </div>
+              )}
             </form>
 
             {/* 5. 50-USER & 5-ADMIN SIMULATION LAB + AUTOMATIC TELEGRAM REPORT & 100% CLEANUP */}
@@ -9299,6 +9542,150 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {lastSimulationSummary && (
                 <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-500/40 whitespace-pre-line font-bold text-[11px] text-emerald-200 leading-relaxed">
                   {lastSimulationSummary}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ===================================================================
+            MODULE 10: ✏️ ۱۰. ویرایش دستی مینی‌اپ (Live Visual Text Editor)
+           =================================================================== */}
+        {activeModule === 10 && canAccessVisualEditor && (
+          <div className={`rounded-3xl p-4 lg:p-6 border space-y-4 ${cardSurfaceClass}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-current/10 pb-3">
+              <div>
+                <h2 className="text-sm lg:text-base font-black text-[#D4AB58]">
+                  ✏️ ۱۰. ویرایش دستی و زنده متن‌های مینی‌اپ (Visual Text Editor)
+                </h2>
+                <p className="text-[11px] font-bold opacity-80 mt-0.5">
+                  در این بخش می‌توانید مستقیماً وارد محیط واقعی مینی‌اپ شوید، روی هر تیتر، دکمه یا متن ثابت کلیک کنید و متن دلخواه خود را جایگزین و در سرور کلودفلر ذخیره نمایید.
+                </p>
+              </div>
+              <span className="px-3 py-1 rounded-xl bg-[#D4AB58]/20 text-[#D4AB58] border border-[#D4AB58]/40 text-xs font-black shrink-0">
+                {Object.keys(uiTexts || {}).length.toLocaleString('fa-IR')} متن ویرایش‌شده
+              </span>
+            </div>
+
+            {/* Big Launch Visual Editor Button */}
+            <div className={`p-5 rounded-2xl border-2 border-[#D4AB58]/60 space-y-3 text-center ${subCardClass}`}>
+              <div className="text-xs sm:text-sm font-black text-[#D4AB58]">
+                آماده ویرایش زنده متن‌های صفحات خانه، کارگاه‌ها، دستاوردها و پروفایل هستید؟
+              </div>
+              <p className="text-[11px] font-bold opacity-85 max-w-2xl mx-auto leading-relaxed">
+                با زدن دکمه زیر، پنل مدیریت بسته شده و نوار ابزار شناور ویرایشگر در بالای مینی‌اپ ظاهر می‌شود. بین «🚶‍♂️ حالت جابه‌جایی در اپ» و «✏️ حالت انتخاب متن» سوییچ کنید و هر متنی را در لحظه تغییر دهید.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  playFanfare();
+                  onEnterVisualEditMode?.();
+                }}
+                className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-[#D4AB58] hover:bg-[#e2b968] text-[#101622] font-black text-xs sm:text-sm border-b-4 border-[#8A6A26] shadow-xl cursor-pointer transition-all active:translate-y-0.5"
+              >
+                🎨 ورود به محیط واقعی مینی‌اپ در حالت ویرایش زنده متن‌ها
+              </button>
+            </div>
+
+            {/* Action Buttons: Save to Cloudflare & Reset All to Default */}
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <button
+                type="button"
+                disabled={isSavingUiTextsServer}
+                onClick={async () => {
+                  playCoin();
+                  setIsSavingUiTextsServer(true);
+                  try {
+                    const res = await saveCustomUiTextsOnBot(
+                      uiTexts || {},
+                      activeAdmin?.telegramId || MASTER_ADMIN_TELEGRAM_ID
+                    );
+                    appendLog(
+                      'ذخیره دیکشنری متن‌های سفارشی مینی‌اپ در سرور کلودفلر',
+                      `${Object.keys(uiTexts || {}).length} متن سفارشی`,
+                      res.ok ? 'success' : 'warning'
+                    );
+                    triggerToast(res.message);
+                  } finally {
+                    setIsSavingUiTextsServer(false);
+                  }
+                }}
+                className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs cursor-pointer shadow flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                <span>
+                  {isSavingUiTextsServer
+                    ? '⏳ در حال ذخیره در سرور کلودفلر...'
+                    : '💾 ذخیره نهایی در سرور کلودفلر (/api/miniapp/admin-save-ui-texts)'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  playSwitch();
+                  onUpdateUiTexts?.({});
+                  await saveCustomUiTextsOnBot(
+                    {},
+                    activeAdmin?.telegramId || MASTER_ADMIN_TELEGRAM_ID
+                  );
+                  appendLog(
+                    'بازگردانی تمام متن‌های مینی‌اپ به حالت پیش‌فرض',
+                    'پاکسازی کامل تغییرات متنی',
+                    'warning'
+                  );
+                  triggerToast('🔄 تمام متن‌های مینی‌اپ به حالت پیش‌فرض اولیه بازگردانده شدند.');
+                }}
+                className="px-5 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 font-black text-xs cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <span>🔄 بازگردانی تمام متن‌ها به حالت پیش‌فرض</span>
+              </button>
+            </div>
+
+            {/* Modified Texts Dictionary Table */}
+            <div className={`p-4 rounded-2xl border space-y-3 text-xs ${subCardClass}`}>
+              <div className="font-black text-sm flex items-center justify-between">
+                <span>📋 لیست متن‌های تغییریافته تا این لحظه:</span>
+                <span className="text-[11px] opacity-75">
+                  ({Object.keys(uiTexts || {}).length.toLocaleString('fa-IR')} مورد)
+                </span>
+              </div>
+
+              {Object.keys(uiTexts || {}).length === 0 ? (
+                <div className="p-6 rounded-xl bg-black/20 border border-current/10 text-center text-xs font-bold opacity-75">
+                  هنوز هیچ متنی تغییر داده نشده است. روی دکمه «🎨 ورود به محیط واقعی مینی‌اپ در حالت ویرایش زنده متن‌ها» بزنید و روی هر متنی که می‌خواهید کلیک کنید.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  {Object.entries(uiTexts || {}).map(([origText, customVal]) => (
+                    <div
+                      key={origText}
+                      className="p-3 rounded-xl bg-black/25 border border-current/15 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                    >
+                      <div className="space-y-1 flex-1 min-w-0">
+                        <div className="text-[11px] opacity-70 break-words">
+                          <span className="font-black text-amber-400">متن پیش‌فرض: </span>
+                          {origText}
+                        </div>
+                        <div className="text-xs font-black text-emerald-400 break-words">
+                          <span className="text-[#D4AB58]">متن جدید: </span>
+                          {customVal}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playTick();
+                          const next = { ...(uiTexts || {}) };
+                          delete next[origText];
+                          onUpdateUiTexts?.(next);
+                          triggerToast('🔄 این متن به حالت پیش‌فرض بازگردانده شد.');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[11px] font-black shrink-0 cursor-pointer"
+                      >
+                        حذف و بازگشت به پیش‌فرض ✕
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

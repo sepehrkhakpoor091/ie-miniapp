@@ -2,29 +2,13 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * Safe Admin AI Service (adminAiService.ts)
- * Guarantees ZERO browser ReferenceError (`process is not defined`) and provides
- * Admin-Only "Looti" Co-Pilot, Supercharged Multi-Professor Timetable Parser,
- * and Natural Language Timer Parser.
+ * All AI requests are routed through the Cloudflare Worker (`POST /api/miniapp/ai-chat`)
+ * and the server-side Express API (`/api/ai/looti`, `/api/ai/parse-professors`).
  */
 
-import { GoogleGenAI, Type } from '@google/genai';
 import { LootiModelId, Professor, ScheduledTimer } from '../types';
 import { askMiniAppAiOnBot } from './apiBridge';
 import { sanitizeAiPrompt } from './security';
-
-export const getSafeApiKey = (): string => {
-  try {
-    if (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) {
-      return process.env.GEMINI_API_KEY;
-    }
-    if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) {
-      return (import.meta as any).env.VITE_GEMINI_API_KEY;
-    }
-  } catch {
-    // Safe fallback if process or import.meta is restricted
-  }
-  return '';
-};
 
 export interface ParsedProfessorSchedule {
   name: string;
@@ -39,8 +23,18 @@ export interface ParsedProfessorSchedule {
   }[];
 }
 
+export const ADMIN_LOOTI_SYSTEM_INSTRUCTION =
+  'تو دستیار هوشمند و مشتی پنل ادمین انجمن علمی مهندسی صنایع هستی. با تکیه‌کلام‌های محترمانه و صمیمی مثل «سلام ستون!»، «روی چشمم» و «حله رفیق» به فارسی پاسخ کوتاه و کاربردی بده.';
+
 /**
- * Deterministic fallback for Admin Looti AI when offline or no API key is configured
+ * Browser client never holds or exposes an API key; all AI calls execute server-side.
+ */
+export function getSafeApiKey(): string {
+  return '';
+}
+
+/**
+ * Deterministic fallback for Admin Looti AI when offline
  */
 export function buildLocalAdminLootiReply(query: string): string {
   const q = (query || '').trim();
@@ -57,16 +51,16 @@ export function buildLocalAdminLootiReply(query: string): string {
 }
 
 /**
- * Ask Admin Looti AI with multi-layer fallback:
- * 1) Live Cloudflare Worker AI Engine (`POST /api/miniapp/ai-chat`)
+ * Ask Admin Looti AI via:
+ * 1) Live Cloudflare Worker AI Engine (`POST https://morning-paper-4bbbie-association-bot.sepehrkhakpoor091.workers.dev/api/miniapp/ai-chat`)
  * 2) Local Server Proxy (`/api/ai/looti`)
- * 3) Safe Direct SDK (if env key present)
- * 4) Deterministic Local Fallback
+ * 3) Deterministic Local Fallback
  */
 export async function askAdminLootiAi(
   rawPrompt: string,
-  modelId: LootiModelId = 'gemini-3.8-flash'
-): Promise<{ reply: string; modelUsed: LootiModelId }> {
+  modelId: LootiModelId = 'gemini-3.8-flash',
+  customSystemInstruction?: string
+): Promise<{ reply: string; modelUsed: LootiModelId; source?: string }> {
   const check = sanitizeAiPrompt(rawPrompt);
   if (!check.isSafe) {
     return {
@@ -75,13 +69,14 @@ export async function askAdminLootiAi(
     };
   }
 
+  const systemRoleText = customSystemInstruction || ADMIN_LOOTI_SYSTEM_INSTRUCTION;
+
   // 1. Send request directly to Cloudflare Worker Bot AI Engine (POST /api/miniapp/ai-chat)
   try {
     const botAiRes = await askMiniAppAiOnBot({
       prompt: check.sanitized,
       modelId,
-      systemInstruction:
-        'تو دستیار هوشمند و مشتی پنل ادمین انجمن علمی مهندسی صنایع هستی. با تکیه‌کلام‌های محترمانه و صمیمی مثل «سلام ستون!»، «روی چشمم» و «حله رفیق» به فارسی پاسخ کوتاه و کاربردی بده.',
+      systemInstruction: systemRoleText,
       context: {
         fullName: 'مدیر ارشد انجمن علمی مهندسی صنایع',
         cohortYear: '۱۴۰۲',
@@ -91,10 +86,11 @@ export async function askAdminLootiAi(
       return {
         reply: botAiRes.reply,
         modelUsed: (botAiRes.modelUsed as LootiModelId) || modelId,
+        source: 'cloudflare-worker',
       };
     }
   } catch {
-    // Fall through to local proxy / fallback
+    // Fall through to local server proxy
   }
 
   // 2. Try local server-side proxy route
@@ -104,7 +100,9 @@ export async function askAdminLootiAi(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          prompt: check.sanitized,
           message: check.sanitized,
+          systemInstruction: systemRoleText,
           modelId,
           userContext: {
             fullName: 'مدیر ارشد انجمن علمی مهندسی صنایع',
@@ -120,40 +118,110 @@ export async function askAdminLootiAi(
           return {
             reply: String(data.reply),
             modelUsed: data.modelUsed || modelId,
+            source: data.source || 'server-proxy',
           };
         }
       }
     }
   } catch {
-    // Continue to safe SDK or local fallback
-  }
-
-  // 3. Safe client-side SDK check ONLY if getSafeApiKey() returns a non-empty string
-  const apiKey = getSafeApiKey();
-  if (apiKey && apiKey.trim().length > 5) {
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const result = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: check.sanitized,
-        config: {
-          systemInstruction:
-            'تو دستیار هوشمند و مشتی پنل ادمین انجمن علمی مهندسی صنایع هستی. با تکیه‌کلام‌های محترمانه و صمیمی مثل «سلام ستون!»، «روی چشمم» و «حله رفیق» به فارسی پاسخ کوتاه و کاربردی بده.',
-          temperature: 0.5,
-        },
-      });
-      if (result?.text) {
-        return { reply: result.text, modelUsed: modelId };
-      }
-    } catch {
-      // Fall through to deterministic reply
-    }
+    // Continue to local fallback
   }
 
   return {
     reply: buildLocalAdminLootiReply(check.sanitized),
     modelUsed: modelId,
+    source: 'fallback',
   };
+}
+
+/**
+ * Live AI Connection Tester (`⚡ تست زنده اتصال هوش مصنوعی`):
+ * Sends a test message to POST /api/miniapp/ai-chat on the Cloudflare Worker and returns the real AI reply and active model.
+ */
+export async function testLiveAiConnectionOnBot(
+  modelId: LootiModelId = 'gemini-3.8-flash'
+): Promise<{
+  ok: boolean;
+  reply: string;
+  modelUsed: string;
+  latencyMs: number;
+}> {
+  const startedAt = Date.now();
+  const testPrompt =
+    'سلام! یک پیام تستی کوتاه (در یک جمله) بفرست و تایید کن که موتور هوش مصنوعی انجمن علمی مهندسی صنایع فعال و آماده پاسخگویی است.';
+  const systemRoleText =
+    'تو موتور هوش مصنوعی انجمن علمی مهندسی صنایع دانشگاه فردوسی مشهد هستی. بسیار کوتاه، پرانرژی و دقیق به فارسی پاسخ بده.';
+
+  try {
+    const botRes = await askMiniAppAiOnBot({
+      prompt: testPrompt,
+      modelId,
+      systemInstruction: systemRoleText,
+    });
+    const latencyMs = Math.max(12, Date.now() - startedAt);
+    if (botRes.ok && botRes.reply) {
+      return {
+        ok: true,
+        reply: botRes.reply,
+        modelUsed: botRes.modelUsed || modelId,
+        latencyMs,
+      };
+    }
+  } catch {
+    // Fall through to local server proxy check
+  }
+
+  try {
+    if (typeof fetch !== 'undefined') {
+      const response = await fetch('/api/ai/looti', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: testPrompt,
+          systemInstruction: systemRoleText,
+          modelId,
+        }),
+      });
+      const latencyMs = Math.max(15, Date.now() - startedAt);
+      if (response.ok) {
+        const data = await response.json();
+        if (data?.reply) {
+          return {
+            ok: true,
+            reply: String(data.reply),
+            modelUsed: String(data.modelUsed || modelId),
+            latencyMs,
+          };
+        }
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  return {
+    ok: false,
+    reply: '⚠️ پاسخ مستقیمی از سرور هوش مصنوعی دریافت نشد. لطفاً کلید API را در سرور بررسی و ذخیره نمایید.',
+    modelUsed: modelId,
+    latencyMs: Math.max(10, Date.now() - startedAt),
+  };
+}
+
+/**
+ * Generates an engaging Persian announcement text via POST /api/miniapp/ai-chat
+ */
+export async function generateSmartAnnouncementWithAi(
+  title: string,
+  tag: string
+): Promise<string> {
+  const cleanTitle = (title || 'رویداد جدید انجمن علمی مهندسی صنایع').trim();
+  const cleanTag = (tag || 'اطلاعیه').trim();
+  const prompt = `یک متن اطلاعیه جذاب، حرفه‌ای و کوتاه (۳ تا ۴ خط) برای کانال تلگرام و مینی‌اپ انجمن علمی مهندسی صنایع دانشگاه فردوسی مشهد با موضوع «${cleanTitle}» و دسته‌بندی «${cleanTag}» بنویس.`;
+  const systemInstruction =
+    'تو نویسنده رسمی کانال تلگرام انجمن علمی مهندسی صنایع دانشگاه فردوسی مشهد (@Isefum) هستی. متن اطلاعیه را گرم، دقیق و دانشجویی بنویس.';
+
+  const res = await askAdminLootiAi(prompt, 'gemini-3.8-flash', systemInstruction);
+  return res.reply;
 }
 
 /**
@@ -350,73 +418,66 @@ export function parseMultiProfessorSchedules(rawText: string): Professor[] {
 }
 
 /**
- * Dual-Engine AI + Regex Parser: tries Gemini Structured JSON first if API key exists,
- * and falls back seamlessly to `parseMultiProfessorSchedules`.
+ * Server-Side AI + Regex Parser: sends professor timetable text to Cloudflare Worker (`POST /api/miniapp/ai-chat`)
+ * or `/api/ai/parse-professors` on the server, and falls back seamlessly to `parseMultiProfessorSchedules`.
  */
 export async function parseMultiProfessorSchedulesWithAi(rawText: string): Promise<Professor[]> {
   const localParsed = parseMultiProfessorSchedules(rawText);
-  const apiKey = getSafeApiKey();
 
-  if (apiKey && apiKey.trim().length > 5) {
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `متن زیر شامل برنامه حضور و کلاس‌های یک یا چند استاد مهندسی صنایع است. آن را به آرایه‌ای از اشیاء استاد تبدیل کن:\n\n${rawText}`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                title: { type: Type.STRING },
-                office: { type: Type.STRING },
-                officeHours: { type: Type.STRING },
-                email: { type: Type.STRING },
-                courses: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      name: { type: Type.STRING },
-                      dayAndTime: { type: Type.STRING },
-                      room: { type: Type.STRING },
-                    },
-                    required: ['name', 'dayAndTime', 'room'],
-                  },
-                },
-              },
-              required: ['name', 'title', 'office', 'officeHours', 'courses'],
-            },
-          },
-        },
-      });
+  try {
+    const botRes = await askMiniAppAiOnBot({
+      prompt: `متن زیر شامل برنامه حضور و کلاس‌های یک یا چند استاد مهندسی صنایع است. آن را فقط به صورت یک آرایه JSON معتبر از اشیاء استاد با فیلدهای name, title, office, officeHours, email و courses (آرایه‌ای از name, dayAndTime, room) برگردان:\n\n${rawText}`,
+      systemInstruction:
+        'فقط یک آرایه JSON خالص (بدون توضیحات اضافه یا تگ مارک‌داون) برگردان.',
+      modelId: 'gemini-3.8-flash',
+    });
 
-      if (response?.text) {
-        const parsedJson = JSON.parse(response.text);
-        if (Array.isArray(parsedJson) && parsedJson.length > 0) {
-          return parsedJson.map((item: any, idx: number) => ({
-            id: `prof-gemini-${Date.now()}-${idx}`,
-            name: String(item.name || localParsed[idx]?.name || 'دکتر استاد صنایع'),
-            title: String(item.title || 'عضو هیئت علمی دانشکده مهندسی صنایع'),
-            avatar: /(?:سارا|مریم|پرنیا|نگین|زهرا|فاطمه|خانم)/.test(String(item.name))
-              ? '02_avatar_girl.png'
-              : '01_avatar_boy.png',
-            office: String(item.office || 'اتاق ۳۰۵ دانشکده صنایع'),
-            officeHours: String(item.officeHours || 'یکشنبه و سه‌شنبه ۱۰ الی ۱۲'),
-            isCurrentlyInOffice: true,
-            email: String(item.email || `prof${idx + 1}@aut.ac.ir`),
-            courses: Array.isArray(item.courses) && item.courses.length > 0
+    if (botRes.ok && botRes.reply) {
+      const cleanedJson = botRes.reply
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```\s*$/, '')
+        .trim();
+      const parsedJson = JSON.parse(cleanedJson);
+      if (Array.isArray(parsedJson) && parsedJson.length > 0) {
+        return parsedJson.map((item: any, idx: number) => ({
+          id: `prof-gemini-${Date.now()}-${idx}`,
+          name: String(item.name || localParsed[idx]?.name || 'دکتر استاد صنایع'),
+          title: String(item.title || 'عضو هیئت علمی دانشکده مهندسی صنایع'),
+          avatar: /(?:سارا|مریم|پرنیا|نگین|زهرا|فاطمه|خانم)/.test(String(item.name))
+            ? '02_avatar_girl.png'
+            : '01_avatar_boy.png',
+          office: String(item.office || 'اتاق ۳۰۵ دانشکده صنایع'),
+          officeHours: String(item.officeHours || 'یکشنبه و سه‌شنبه ۱۰ الی ۱۲'),
+          isCurrentlyInOffice: true,
+          email: String(item.email || `prof${idx + 1}@aut.ac.ir`),
+          courses:
+            Array.isArray(item.courses) && item.courses.length > 0
               ? item.courses
               : localParsed[idx]?.courses || [],
-          }));
+        }));
+      }
+    }
+  } catch {
+    // Fall back to local server proxy or deterministic parser
+  }
+
+  try {
+    if (typeof fetch !== 'undefined') {
+      const response = await fetch('/api/ai/parse-professors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawText }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data?.professors) && data.professors.length > 0) {
+          return data.professors;
         }
       }
-    } catch {
-      // Fall back to deterministic parser
     }
+  } catch {
+    // Fall back to deterministic parser
   }
 
   return localParsed;

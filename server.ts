@@ -7,12 +7,23 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const PORT = 3000;
+
+function createServerGeminiClient(apiKey: string): GoogleGenAI {
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
 
 const LOOTI_SYSTEM_INSTRUCTION = `تو «دستیار مشتی و باحال انجمن علمی مهندسی صنایع» هستی؛ یک دانشجوی ارشد باتجربه، بامعرفت، لوطی‌منش، محترمانه و پرانرژی مهندسی صنایع که هوای بچه‌های ورودی‌های مختلف (۱۴۰۰ تا ۱۴۰۵) رو داره.
 همیشه با لحن گرم، صمیمی، مودبانه و اصطلاحات شیرین دانشجویی و مهندسی صنایع («دمت گرم مهندس»، «روی چشمم رفیق»، «حواسم بهت هست»، «سوال خوبی پرسیدی مشتی») به فارسی پاسخ بده.
@@ -26,7 +37,7 @@ const LOOTI_SYSTEM_INSTRUCTION = `تو «دستیار مشتی و باحال ا�
 - دوره نرم‌افزار شبیه‌سازی Arena و Python (مدرس: دکتر بهزاد کاظمی، ۱۸ آذر، هزینه ۲۰۰ هزار تومان، جایزه: +۲۵ امتیاز)
 
 ۲. قوانین امتیاز و تخفیف (الماس):
-- هر ۱۰ امتیاز = ۵۰,۰۰۰ تومان تخفیف مستقیم موقع ثبت‌نام کارگاه‌ها!
+- هر ۲۰ امتیاز = ۱۰,۰۰۰ تومان تخفیف مستقیم موقع ثبت‌نام کارگاه‌ها!
 - در تب «افتخارات» می‌تونی با ۵۰ امتیاز «صندوقچه برنزی» (۲۵ تا ۴۰ درصد تخفیف) یا با ۱۰۰ امتیاز «صندوقچه طلایی صنایع» (۵۰ تا ۱۰۰ درصد تخفیف VIP) باز کنی.
 - راه‌های جمع کردن سریع امتیاز: تکمیل ثبت‌نام اولیه (+۵۰ امتیاز)، شرکت در ۲ کارگاه تخصصی (+۴۰ امتیاز)، ارسال مقاله به نشریه صنایع (+۱۰۰ امتیاز)، معرفی هم‌ورودی‌ها (+۳۰ امتیاز).
 
@@ -45,7 +56,7 @@ function buildLocalLootiFallback(prompt: string, userName: string, userScore: nu
   const q = prompt.toLowerCase();
 
   if (q.includes('امتیاز') || q.includes('الماس') || q.includes('تخفیف') || q.includes('صندوقچه')) {
-    return `دمت گرم ${userName} عزیز! الان ${userScore} تا الماس تو جیبته 💎\nواسه اینکه سریع‌تر الماس جمع کنی:\n۱. تو تب «افتخارات» ماموریت «شرکت در ۲ کارگاه تخصصی» رو بزن (+۴۰ امتیاز فوری) و اگه مقاله واسه نشریه بفرستی +۱۰۰ امتیاز می‌گیری!\n۲. یادت نره هر ۱۰ امتیاز = ۵۰ هزار تومن تخفیف نقده، یا می‌تونی با ۱۰۰ امتیاز «صندوقچه طلایی صنایع» رو باز کنی و کد تخفیف ۱۰۰٪ بگیری مشتی!`;
+    return `دمت گرم ${userName} عزیز! الان ${userScore} تا الماس تو جیبته 💎\nواسه اینکه سریع‌تر الماس جمع کنی:\n۱. تو تب «افتخارات» ماموریت «شرکت در ۲ کارگاه تخصصی» رو بزن (+۴۰ امتیاز فوری) و اگه مقاله واسه نشریه بفرستی +۱۰۰ امتیاز می‌گیری!\n۲. یادت نره هر ۲۰ امتیاز = ۱۰ هزار تومن تخفیف نقده، یا می‌تونی با ۱۰۰ امتیاز «صندوقچه طلایی صنایع» رو باز کنی و کد تخفیف ۱۰۰٪ بگیری مشتی!`;
   }
 
   if (q.includes('کارگاه') || q.includes('بازار کار') || q.includes('پایتون') || q.includes('برنامه') || q.includes('رویداد')) {
@@ -63,38 +74,50 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // API 1: Looti AI Co-Pilot Route
-  app.post('/api/ai/looti', async (req, res) => {
+  let serverCustomUiTexts: Record<string, string> = {};
+
+  // Shared handler for /api/ai/looti and /api/miniapp/ai-chat
+  const handleAiChatRequest = async (req: express.Request, res: express.Response) => {
     try {
-      const { prompt, modelId, userName = 'مهندس', userScore = 280 } = req.body || {};
-      const cleanPrompt = String(prompt || '').trim().slice(0, 350);
+      const {
+        prompt,
+        message,
+        query,
+        systemInstruction,
+        modelId,
+        userName = 'مهندس',
+        userScore = 280,
+      } = req.body || {};
+      const cleanPrompt = String(prompt || message || query || '').trim().slice(0, 1200);
 
       if (!cleanPrompt) {
-        return res.status(400).json({ error: 'پیام خالی است.' });
+        return res.status(400).json({ ok: false, error: 'پیام خالی است.' });
       }
 
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
         const reply = buildLocalLootiFallback(cleanPrompt, userName, userScore);
-        return res.json({ reply, modelUsed: modelId || 'gemini-3.8-flash', source: 'local-looti' });
+        return res.json({
+          ok: true,
+          reply,
+          modelUsed: modelId || 'gemini-3.8-flash',
+          source: 'local-looti',
+        });
       }
 
       // Map UI model switcher selection to supported @google/genai model
       const sdkModel =
-        modelId === 'gemini-3.8-flash'
-          ? 'gemini-3-flash-preview'
-          : 'gemini-2.5-flash';
+        modelId === 'gemini-3.5-flash-lite'
+          ? 'gemini-3.1-flash-lite'
+          : 'gemini-3.8-flash';
 
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      });
+      const ai = createServerGeminiClient(apiKey);
 
       const response = await ai.models.generateContent({
         model: sdkModel,
-        contents: `نام دانشجو: ${userName} | امتیاز فعلی: ${userScore}\nسوال دانشجو: ${cleanPrompt}`,
+        contents: `نام دانشجو: ${userName} | امتیاز فعلی: ${userScore}\nسوال/دستور: ${cleanPrompt}`,
         config: {
-          systemInstruction: LOOTI_SYSTEM_INSTRUCTION,
+          systemInstruction: systemInstruction || LOOTI_SYSTEM_INSTRUCTION,
           temperature: 0.7,
         },
       });
@@ -103,19 +126,108 @@ async function startServer() {
         response.text || buildLocalLootiFallback(cleanPrompt, userName, userScore);
 
       return res.json({
+        ok: true,
         reply: replyText,
-        modelUsed: modelId || 'gemini-3.8-flash',
+        modelUsed: modelId || sdkModel,
         source: 'gemini-api',
       });
     } catch {
-      const { prompt = '', modelId = 'gemini-3.8-flash', userName = 'مهندس', userScore = 280 } =
+      const { prompt = '', message = '', modelId = 'gemini-3.8-flash', userName = 'مهندس', userScore = 280 } =
         req.body || {};
       return res.json({
-        reply: buildLocalLootiFallback(String(prompt), userName, userScore),
+        ok: true,
+        reply: buildLocalLootiFallback(String(prompt || message), userName, userScore),
         modelUsed: modelId,
         source: 'fallback',
       });
     }
+  };
+
+  // API 1: Looti AI Co-Pilot Route & MiniApp AI Chat Route
+  app.post('/api/ai/looti', handleAiChatRequest);
+  app.post('/api/miniapp/ai-chat', handleAiChatRequest);
+
+  // API 1B: Server-Side Professor Schedule Structured Parser
+  app.post('/api/ai/parse-professors', async (req, res) => {
+    try {
+      const { rawText } = req.body || {};
+      const cleanText = String(rawText || '').trim();
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!cleanText || !apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+        return res.json({ ok: false, professors: [] });
+      }
+
+      const ai = createServerGeminiClient(apiKey);
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `متن زیر شامل برنامه حضور و کلاس‌های یک یا چند استاد مهندسی صنایع است. آن را به آرایه‌ای از اشیاء استاد تبدیل کن:\n\n${cleanText}`,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                title: { type: Type.STRING },
+                office: { type: Type.STRING },
+                officeHours: { type: Type.STRING },
+                email: { type: Type.STRING },
+                courses: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      name: { type: Type.STRING },
+                      dayAndTime: { type: Type.STRING },
+                      room: { type: Type.STRING },
+                    },
+                    required: ['name', 'dayAndTime', 'room'],
+                  },
+                },
+              },
+              required: ['name', 'title', 'office', 'officeHours', 'courses'],
+            },
+          },
+        },
+      });
+
+      if (response.text) {
+        const parsedJson = JSON.parse(response.text);
+        if (Array.isArray(parsedJson) && parsedJson.length > 0) {
+          const professors = parsedJson.map((item: any, idx: number) => ({
+            id: `prof-gemini-${Date.now()}-${idx}`,
+            name: String(item.name || 'دکتر استاد صنایع'),
+            title: String(item.title || 'عضو هیئت علمی دانشکده مهندسی صنایع'),
+            avatar: /(?:سارا|مریم|پرنیا|نگین|زهرا|فاطمه|خانم)/.test(String(item.name))
+              ? '02_avatar_girl.png'
+              : '01_avatar_boy.png',
+            office: String(item.office || 'اتاق ۳۰۵ دانشکده صنایع'),
+            officeHours: String(item.officeHours || 'یکشنبه و سه‌شنبه ۱۰ الی ۱۲'),
+            isCurrentlyInOffice: true,
+            email: String(item.email || `prof${idx + 1}@aut.ac.ir`),
+            courses: Array.isArray(item.courses) ? item.courses : [],
+          }));
+          return res.json({ ok: true, professors });
+        }
+      }
+      return res.json({ ok: false, professors: [] });
+    } catch {
+      return res.json({ ok: false, professors: [] });
+    }
+  });
+
+  // API 1C: Save Custom UI Texts from Live Visual Text Editor
+  app.post('/api/miniapp/admin-save-ui-texts', (req, res) => {
+    const { uiTexts } = req.body || {};
+    if (uiTexts && typeof uiTexts === 'object' && !Array.isArray(uiTexts)) {
+      serverCustomUiTexts = { ...uiTexts };
+    }
+    return res.json({
+      ok: true,
+      uiTexts: serverCustomUiTexts,
+      savedAt: new Date().toISOString(),
+    });
   });
 
   // In-memory store for bot sync & anti-replay check-in verification

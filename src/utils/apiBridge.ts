@@ -568,6 +568,15 @@ export async function fetchMiniAppBootstrap(
       ? (rawRecord.badges as BadgeItem[])
       : undefined;
 
+    const rawUiTexts =
+      json.uiTexts && typeof json.uiTexts === 'object' && !Array.isArray(json.uiTexts)
+        ? (json.uiTexts as Record<string, string>)
+        : rawRecord.customUiTexts &&
+          typeof rawRecord.customUiTexts === 'object' &&
+          !Array.isArray(rawRecord.customUiTexts)
+        ? (rawRecord.customUiTexts as Record<string, string>)
+        : undefined;
+
     return {
       ok: true,
       completedProfile: Boolean(
@@ -609,6 +618,7 @@ export async function fetchMiniAppBootstrap(
       siteSwitches: rawSiteSwitches,
       botConfig: rawBotConfig,
       badgesCatalog: rawBadgesCatalog,
+      uiTexts: rawUiTexts,
       onlineCount: rawOnlineCount,
       onlineUsers: rawOnlineUsers,
       referralStats: json.referralStats,
@@ -1839,6 +1849,66 @@ export async function sendSimulationReportToBot(
   };
 }
 
+export const CUSTOM_UI_TEXTS_STORAGE_KEY = 'ie_custom_ui_texts_v1';
 
+export function loadStoredCustomUiTexts(): Record<string, string> {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return {};
+    const raw = window.localStorage.getItem(CUSTOM_UI_TEXTS_STORAGE_KEY);
+    const parsed = safeJsonParse<Record<string, string> | null>(raw, null);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const sanitized: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof k === 'string' && typeof v === 'string' && k.trim() && v.trim()) {
+        sanitized[k.trim()] = v.trim();
+      }
+    }
+    return sanitized;
+  } catch {
+    return {};
+  }
+}
+
+export function saveStoredCustomUiTexts(uiTexts: Record<string, string>): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(CUSTOM_UI_TEXTS_STORAGE_KEY, JSON.stringify(uiTexts || {}));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+/**
+ * 27. POST ${BOT_WORKER_BASE_URL}/api/miniapp/admin-save-ui-texts
+ * Persists custom UI text overrides edited via Module 10 (Live Visual Text Editor) to Cloudflare KV.
+ */
+export async function saveCustomUiTextsOnBot(
+  uiTexts: Record<string, string>,
+  adminTelegramId?: string
+): Promise<{ ok: boolean; savedAt: string; message: string }> {
+  const savedAt = new Date().toISOString();
+  saveStoredCustomUiTexts(uiTexts);
+
+  const res = await postToMiniAppApi<{
+    ok: boolean;
+    savedAt?: string;
+    message?: string;
+  }>('/api/miniapp/admin-save-ui-texts', {
+    uiTexts,
+    customUiTexts: uiTexts,
+    adminId: adminTelegramId || MASTER_ADMIN_TELEGRAM_ID,
+    updatedAt: savedAt,
+  });
+
+  return {
+    ok: res.ok,
+    savedAt: res.data?.savedAt || savedAt,
+    message:
+      res.data?.message ||
+      (res.ok
+        ? '✅ تمام تغییرات متنی مینی‌اپ با موفقیت در سرور کلودفلر ذخیره شدند!'
+        : '✅ تغییرات متنی در حافظه مینی‌اپ ذخیره شد و در صف همگام‌سازی سرور کلودفلر قرار گرفت.'),
+  };
+}
 
 
